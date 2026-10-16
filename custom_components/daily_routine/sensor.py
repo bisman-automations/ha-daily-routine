@@ -8,10 +8,12 @@ from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, SIGNAL_ROUTINES_CHANGED
+from .devices import async_sync_routine_devices, routine_identifier
 
 
 async def async_setup_entry(
@@ -34,6 +36,7 @@ async def async_setup_entry(
             if sensor.entity_id and registry.async_get(sensor.entity_id):
                 registry.async_remove(sensor.entity_id)
             hass.async_create_task(sensor.async_remove(force_remove=True))
+        async_sync_routine_devices(hass, entry, coordinator.routines)
 
     _sync()
     entry.async_on_unload(async_dispatcher_connect(hass, SIGNAL_ROUTINES_CHANGED, _sync))
@@ -57,6 +60,10 @@ class RoutineStatusSensor(SensorEntity):
     def name(self) -> str:
         routine = self.coordinator._find(self.routine_id)  # noqa: SLF001
         return f"{routine['name']} status" if routine else f"{self.routine_id} status"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={routine_identifier(self.routine_id)})
 
     @property
     def native_value(self) -> str:

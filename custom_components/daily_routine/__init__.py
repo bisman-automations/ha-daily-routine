@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 
 from .const import DOMAIN
 from .coordinator import HomeRoutinesCoordinator
+from .devices import async_ensure_hub
 from .legacy import is_legacy, legacy_routines
 
 _LOGGER = logging.getLogger(__name__)
@@ -82,6 +83,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         await async_register_panel(hass)
 
+    async_ensure_hub(hass, entry)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 

@@ -84,3 +84,11 @@ def test_delay_forms() -> None:
         parse_delay("soon")
     with pytest.raises(vol.Invalid):
         parse_delay(-1)
+
+
+def test_linked_device_is_optional_and_must_be_an_id() -> None:
+    assert make_routine()["device_id"] is None
+    assert make_routine(device_id="  ")["device_id"] is None
+    assert make_routine(device_id="abc123")["device_id"] == "abc123"
+    with pytest.raises(vol.Invalid):
+        make_routine(device_id={"id": "abc"})

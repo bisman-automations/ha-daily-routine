@@ -10,6 +10,8 @@ import voluptuous as vol
 from homeassistant.components import frontend, panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN
 from .coordinator import HomeRoutinesCoordinator, list_areas
@@ -34,6 +36,27 @@ def _coordinator(hass: HomeAssistant) -> HomeRoutinesCoordinator | None:
     return (hass.data.get(DOMAIN) or {}).get("coordinator")
 
 
+def _devices(hass: HomeAssistant) -> list[dict[str, Any]]:
+    """Devices a routine can be linked to. Our own routine and hub devices are left out."""
+    registry = dr.async_get(hass)
+    areas = ar.async_get(hass)
+    devices = []
+    for device in registry.devices.values():
+        if device.disabled or any(domain == DOMAIN for domain, _ in device.identifiers):
+            continue
+        area = areas.async_get_area(device.area_id) if device.area_id else None
+        devices.append(
+            {
+                "id": device.id,
+                "name": device.name_by_user or device.name or device.id,
+                "area_id": device.area_id,
+                "area_name": area.name if area else None,
+                "model": device.model,
+            }
+        )
+    return sorted(devices, key=lambda d: str(d["name"]).lower())
+
+
 def _overview(hass: HomeAssistant, coordinator: HomeRoutinesCoordinator) -> dict[str, Any]:
     people = [
         {
@@ -55,6 +78,7 @@ def _overview(hass: HomeAssistant, coordinator: HomeRoutinesCoordinator) -> dict
     statuses = {r["id"]: coordinator.get_status(r["id"]) or {} for r in coordinator.routines}
     return {
         "areas": list_areas(hass),
+        "devices": _devices(hass),
         "people": people,
         "binary_sensors": sensors,
         "routines": coordinator.routines,

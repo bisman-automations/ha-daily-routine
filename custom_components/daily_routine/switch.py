@@ -7,28 +7,31 @@ from typing import Any
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
+from .devices import hub_identifier
 
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    async_add_entities([RoutinesPausedSwitch(hass.data[DOMAIN]["coordinator"])])
+    async_add_entities([RoutinesPausedSwitch(hass.data[DOMAIN]["coordinator"], entry.entry_id)])
 
 
 class RoutinesPausedSwitch(SwitchEntity):
     """On = routines are paused. Manual runs still work."""
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
     _attr_name = "Pause all routines"
     _attr_unique_id = f"{DOMAIN}_paused"
     _attr_should_poll = False
     _attr_icon = "mdi:pause-circle-outline"
 
-    def __init__(self, coordinator: Any) -> None:
+    def __init__(self, coordinator: Any, entry_id: str) -> None:
         self.coordinator = coordinator
+        self._attr_device_info = DeviceInfo(identifiers={hub_identifier(entry_id)})
 
     @property
     def is_on(self) -> bool:

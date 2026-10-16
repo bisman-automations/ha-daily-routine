@@ -33,6 +33,10 @@ const overview = {
     },
     { id: "bedroom", name: "Bedroom", icon: "mdi:bed", entities: [] },
   ],
+  devices: [
+    { id: "lamp_1", name: "Kitchen lamp", area_id: "kitchen", area_name: "Kitchen", model: "Lamp" },
+    { id: "tv_1", name: "Living room TV", area_id: null, area_name: null, model: "TV" },
+  ],
   people: [{ entity_id: "person.alex", name: "Alex", state: "home" }],
   binary_sensors: [{ entity_id: "binary_sensor.kitchen_motion", name: "Kitchen motion", device_class: "motion", state: "off" }],
   routines: [
@@ -140,4 +144,48 @@ test("entity picker lists only the requested domain, sorted by name", () => {
   panel._data.areas[0].entities.push({ entity_id: "light.hall", name: "Hall", domain: "light", state: "off" });
   const lights = panel._allEntities().filter((e) => e.domain === "light").map((e) => e.name);
   assert.deepEqual(lights, ["Hall", "Kitchen light"]);
+});
+
+test("room view shows the linked device and a delete button on each routine", () => {
+  const panel = makePanel();
+  panel._data.routines[0].device_id = "lamp_1";
+  panel._view = { name: "room", room: "kitchen" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Linked to: Kitchen lamp/);
+  assert.match(html, /data-act="delete" data-id="kitchen_lights"/);
+});
+
+test("routine without a device is linked to the Daily Routine hub", () => {
+  const panel = makePanel();
+  panel._view = { name: "room", room: "kitchen" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /Linked to: Daily Routine \(no device\)/);
+});
+
+test("editor offers a linked device picker and delete only for saved routines", () => {
+  const panel = makePanel();
+  panel._draft = panel._draftFromRoutine({ ...panel._data.routines[0], device_id: "lamp_1" });
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+  let html = panel.shadowRoot.innerHTML;
+  assert.match(html, /data-f="device_id"/);
+  assert.match(html, /<option value="lamp_1" selected>Kitchen lamp/);
+  assert.match(html, /data-act="delete">Delete</);
+
+  panel._draft = panel._applyTemplate({ title: "Blank routine", draft: {} }, "kitchen");
+  panel._render();
+  html = panel.shadowRoot.innerHTML;
+  assert.doesNotMatch(html, /data-act="delete">Delete</);
+});
+
+test("new room routine defaults to a device in that room; payload carries the choice", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "Blank routine", draft: {} }, "kitchen");
+  assert.equal(panel._draft.device_id, "lamp_1");
+  panel._draft.name = "Kitchen lamp off";
+  panel._draft.actions[0].service = "light.turn_off";
+  assert.equal(panel._draftToRaw(panel._draft).device_id, "lamp_1");
+  panel._draft.device_id = "";
+  assert.equal(panel._draftToRaw(panel._draft).device_id, null);
 });

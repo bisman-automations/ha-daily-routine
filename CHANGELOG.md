@@ -2,6 +2,17 @@
 
 All notable changes to the **ha-daily-routine** Home Assistant integration will be documented in this file.
 
+## [1.1.1] - 2026-10-16
+
+### Routines as devices
+* Each routine is its own service device under Daily Routine, linked to the device it belongs to ("Connected via").
+* New **Linked device** picker in the routine editor. Routines without a device link to the Daily Routine device.
+* The routine's status sensor and the pause switch attach to their devices.
+
+### Sidebar
+* **Delete** button on each routine card and in the editor.
+* Each routine card shows which device it is linked to.
+
 ## [1.1.0] - 2026-10-16
 
 ### Sidebar

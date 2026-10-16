@@ -135,6 +135,31 @@ class DailyRoutinePanel extends HTMLElement {
 
   // ----- data helpers -----
 
+  _devices() {
+    return this._data?.devices || [];
+  }
+
+  _defaultDevice(roomId) {
+    if (!roomId) return "";
+    return this._devices().find((d) => d.area_id === roomId)?.id || "";
+  }
+
+  _linkedName(deviceId) {
+    const device = this._devices().find((d) => d.id === deviceId);
+    return device ? device.name : "Daily Routine (no device)";
+  }
+
+  _deviceOptions(selected, roomId) {
+    const devices = [...this._devices()].sort((a, b) =>
+      Number(roomId && b.area_id === roomId) - Number(roomId && a.area_id === roomId) || a.name.localeCompare(b.name));
+    const none = `<option value="" ${selected ? "" : "selected"}>Daily Routine (no device)</option>`;
+    const options = devices.map((d) => {
+      const place = d.area_name ? ` · ${d.area_name}` : "";
+      return `<option value="${esc(d.id)}" ${d.id === selected ? "selected" : ""}>${esc(d.name)}${esc(place)}</option>`;
+    });
+    return [none, ...options].join("");
+  }
+
   _areas() {
     return this._data?.areas || [];
   }
@@ -180,7 +205,7 @@ class DailyRoutinePanel extends HTMLElement {
 
   _newDraft(roomId) {
     return {
-      id: "", name: "", room: roomId || null, enabled: true,
+      id: "", name: "", room: roomId || null, device_id: this._defaultDevice(roomId), enabled: true,
       trigger: "time", time: "07:00:00", offset_minutes: 0, days: [...WEEKDAYS],
       people: [], require_everyone_away: false, sensors: [], require_sensors_clear: false, clear_minutes: 0,
       require_states: [], repeat: false, catch_up_minutes: 0, retries: 0, skip_noop: true,
@@ -215,7 +240,7 @@ class DailyRoutinePanel extends HTMLElement {
   _draftFromRoutine(routine) {
     const areaIds = this._areas().map((a) => a.id);
     return {
-      id: routine.id, name: routine.name, room: routine.room || null, enabled: routine.enabled,
+      id: routine.id, name: routine.name, room: routine.room || null, device_id: routine.device_id || "", enabled: routine.enabled,
       trigger: routine.trigger, time: routine.time, offset_minutes: routine.offset_minutes || 0, days: [...routine.days],
       people: [...routine.people], require_everyone_away: routine.require_everyone_away,
       sensors: [...routine.sensors], require_sensors_clear: routine.require_sensors_clear, clear_minutes: routine.clear_minutes,
@@ -265,6 +290,7 @@ class DailyRoutinePanel extends HTMLElement {
       name: draft.name.trim(),
       enabled: draft.enabled,
       room: draft.room || null,
+      device_id: draft.device_id || null,
       trigger: draft.trigger,
       time: draft.time,
       offset_minutes: Number(draft.offset_minutes) || 0,
@@ -340,8 +366,9 @@ class DailyRoutinePanel extends HTMLElement {
           break;
         }
         case "delete": {
-          if (!window.confirm("Delete this routine?")) return;
-          await this._call({ type: `${DOMAIN}/routine/delete`, routine_id: el.dataset.id });
+          const id = el.dataset.id || this._draft?.id;
+          if (!id || !window.confirm("Delete this routine? Its service device is removed too.")) return;
+          await this._call({ type: `${DOMAIN}/routine/delete`, routine_id: id });
           this._view = { name: "room", room: this._view.room ?? null };
           this._draft = null;
           this._showNotice("Routine deleted.");
@@ -550,6 +577,7 @@ class DailyRoutinePanel extends HTMLElement {
           <h3>${esc(routine.name)}</h3>
           <div class="muted small">${esc(this._describeTrigger(routine))} · ${routine.days.length === 7 ? "every day" : routine.days.join(", ")}</div>
           <div class="muted small">Next: ${esc(formatTime(status.next_run))}${esc(reason)}${detail}</div>
+          <div class="muted small">Linked to: ${esc(this._linkedName(routine.device_id))}</div>
         </div>
         <span class="pill ${state === "error" ? "error" : state === "waiting" ? "warn" : ""}">${esc(STATE_LABELS[state] || state)}</span>
       </div>
@@ -557,6 +585,7 @@ class DailyRoutinePanel extends HTMLElement {
         <button class="ghost" data-act="run" data-id="${esc(routine.id)}">Run now</button>
         <button class="ghost" data-act="edit" data-id="${esc(routine.id)}">Edit</button>
         <button class="ghost" data-act="toggle-enabled" data-id="${esc(routine.id)}">${routine.enabled ? "Disable" : "Enable"}</button>
+        <button class="ghost danger" data-act="delete" data-id="${esc(routine.id)}">Delete</button>
       </div>
     </article>`;
   }
@@ -607,6 +636,8 @@ class DailyRoutinePanel extends HTMLElement {
       <section class="card">
         <h3>Basics</h3>
         <label>Name<input data-f="name" value="${esc(d.name)}" placeholder="e.g. Morning curtains"></label>
+        <label>Linked device<select data-f="device_id">${this._deviceOptions(d.device_id, roomId)}</select></label>
+        <p class="muted small">Each routine is a service under Daily Routine, linked to this device in Home Assistant.</p>
         <label class="check"><input type="checkbox" data-f="enabled" ${d.enabled ? "checked" : ""}> Enabled</label>
         <p class="muted small">${roomId ? `Room: ${esc(this._area(roomId)?.name || roomId)}` : "Whole house"}</p>
       </section>
@@ -653,6 +684,7 @@ class DailyRoutinePanel extends HTMLElement {
       ${this._notice ? `<div class="notice ${this._error ? "error" : ""}">${esc(this._notice)}</div>` : ""}
       <datalist id="services">${SERVICE_SUGGESTIONS.map((s) => `<option value="${s}">`).join("")}</datalist>
       <div class="footer">
+        ${d.isNew ? "" : `<button class="ghost danger" data-act="delete">Delete</button>`}
         <button class="ghost" data-act="cancel">Cancel</button>
         <button class="ghost" data-act="test">Test (dry run)</button>
         <button class="primary" data-act="save">Save</button>
@@ -734,6 +766,7 @@ const STYLES = `<style>
            background: var(--card-background-color, #fff); color: var(--primary-text-color, #212121); }
   button.primary { background: var(--primary-color, #03a9f4); color: #fff; border-color: transparent; }
   button.warn { background: var(--warning-color, #ffa600); color: #000; border-color: transparent; }
+  button.danger { color: var(--error-color, #b3261e); }
   button.ghost { background: transparent; }
   button:disabled { opacity: .4; cursor: default; }
   input, select, textarea { font: inherit; width: 100%; box-sizing: border-box; padding: 8px; border-radius: 8px;

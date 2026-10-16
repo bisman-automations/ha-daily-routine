@@ -218,6 +218,11 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
             raise vol.Invalid("Each extra condition needs an entity and a state.")
         require_states.append({"entity_id": entity_id, "state": state})
 
+    device_raw = raw.get("device_id")
+    if device_raw is not None and not isinstance(device_raw, str):
+        raise vol.Invalid("The linked device must be a device id.")
+    device_id = (device_raw or "").strip() or None
+
     actions_raw = _as_list(raw.get("actions"))
     if not actions_raw:
         raise vol.Invalid("Add at least one step.")
@@ -232,6 +237,7 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "name": name,
         "enabled": bool(raw.get("enabled", True)),
         "room": room,
+        "device_id": device_id,
         "trigger": trigger,
         "time": normalize_time(raw.get("time") or "07:00:00"),
         "offset_minutes": _int(raw.get("offset_minutes"), -720, 720, "Offset"),

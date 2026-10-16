@@ -61,7 +61,11 @@ Your routines are moved into the new storage automatically on the first start. O
 
 Room routines target the room itself, so lights or covers you add to that room later are included without editing the routine.
 
-Each routine card has **Run now**, **Edit**, and **Enable/Disable**.
+Each routine card has **Run now**, **Edit**, **Enable/Disable**, and **Delete**. In the editor, **Linked device** picks the device the routine belongs to.
+
+## Routines as devices
+
+Each routine is its own service under the Daily Routine integration. It is linked to the device you picked (shown as *Connected via* on the routine's page). Routines without a device link to the **Daily Routine** device. Deleting a routine removes its service.
 
 ---
 
