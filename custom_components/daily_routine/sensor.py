@@ -1,4 +1,4 @@
-"""Status sensors for Daily Routine — one device per routine."""
+"""One status sensor per routine. Sensors follow routines as they are added and removed."""
 
 from __future__ import annotations
 
@@ -7,60 +7,56 @@ from typing import Any
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.restore_state import RestoreEntity
 
-from .const import CONF_NAME, CONF_ROUTINE_ID, DOMAIN
+from .const import DOMAIN, SIGNAL_ROUTINES_CHANGED
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    """Set up the status sensor for this routine entry."""
     coordinator = hass.data[DOMAIN]["coordinator"]
-    routine_id = entry.data.get(CONF_ROUTINE_ID) or entry.unique_id or entry.entry_id
-    name = entry.options.get(CONF_NAME) or entry.title or routine_id
+    entities: dict[str, RoutineStatusSensor] = {}
 
-    # Legacy JSON entry may define multiple routines
-    if "routines_json" in entry.options and not entry.data.get(CONF_ROUTINE_ID):
-        entities = []
-        for routine in coordinator.routines:
-            if routine.get("entry_id") == entry.entry_id:
-                entities.append(
-                    RoutineStatusSensor(coordinator, routine["id"], routine["name"], entry.entry_id)
-                )
-        if entities:
-            async_add_entities(entities)
-        return
+    @callback
+    def _sync() -> None:
+        wanted = {r["id"] for r in coordinator.routines}
+        new = [RoutineStatusSensor(coordinator, rid) for rid in sorted(wanted - entities.keys())]
+        for sensor in new:
+            entities[sensor.routine_id] = sensor
+        if new:
+            async_add_entities(new)
+        for rid in sorted(entities.keys() - wanted):
+            sensor = entities.pop(rid)
+            registry = er.async_get(hass)
+            if sensor.entity_id and registry.async_get(sensor.entity_id):
+                registry.async_remove(sensor.entity_id)
+            hass.async_create_task(sensor.async_remove(force_remove=True))
 
-    async_add_entities([RoutineStatusSensor(coordinator, routine_id, name, entry.entry_id)])
+    _sync()
+    entry.async_on_unload(async_dispatcher_connect(hass, SIGNAL_ROUTINES_CHANGED, _sync))
 
 
-class RoutineStatusSensor(SensorEntity, RestoreEntity):
-    """Expose the current status of a single routine."""
+class RoutineStatusSensor(SensorEntity):
+    """Status of one routine: idle, waiting, running, skipped or error."""
 
-    _attr_has_entity_name = True
     _attr_should_poll = False
+    _attr_has_entity_name = False
+    _attr_icon = "mdi:calendar-clock"
 
-    def __init__(self, coordinator, routine_id: str, name: str, entry_id: str) -> None:
+    def __init__(self, coordinator: Any, routine_id: str) -> None:
         self.coordinator = coordinator
         self.routine_id = routine_id
         self._attr_unique_id = f"{DOMAIN}_{routine_id}_status"
-        self._attr_name = "Status"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, routine_id)},
-            name=name,
-            manufacturer="Daily Routine",
-            model="Routine",
-            sw_version="1.0.0",
-            configuration_url="homeassistant://navigate/daily-routine",
-        )
-        self._entry_id = entry_id
-        self._state = "idle"
         self._attrs: dict[str, Any] = {}
+        self._state = "idle"
+
+    @property
+    def name(self) -> str:
+        routine = self.coordinator._find(self.routine_id)  # noqa: SLF001
+        return f"{routine['name']} status" if routine else f"{self.routine_id} status"
 
     @property
     def native_value(self) -> str:
@@ -72,10 +68,6 @@ class RoutineStatusSensor(SensorEntity, RestoreEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        last = await self.async_get_last_state()
-        if last and last.state:
-            self._state = last.state
-            self._attrs = dict(last.attributes)
         self.async_on_remove(self.coordinator.async_add_listener(self._handle_update))
         self._handle_update()
 
@@ -84,19 +76,24 @@ class RoutineStatusSensor(SensorEntity, RestoreEntity):
         status = self.coordinator.get_status(self.routine_id)
         if not status:
             return
-        self._state = status.get("state", "idle")
+        self._state = status["state"]
         self._attrs = {
             "routine_id": self.routine_id,
-            "name": status.get("name"),
-            "enabled": status.get("enabled"),
-            "last_run": status.get("last_run"),
-            "last_result": status.get("last_result"),
-            "next_run": status.get("next_run"),
-            "conditions_ok": status.get("conditions_ok"),
-            "block_reason": status.get("block_reason"),
-            "waiting": status.get("waiting"),
-            "clear_since": status.get("clear_since"),
-            "time": status.get("time"),
-            "days": status.get("days"),
+            "name": status["name"],
+            "enabled": status["enabled"],
+            "room": status["room"],
+            "trigger": status["trigger"],
+            "paused": status["paused"],
+            "last_run": status["last_run"],
+            "last_result": status["last_result"],
+            "next_run": status["next_run"],
+            "clear_since": status["clear_since"],
+            "conditions_ok": status["conditions_ok"],
+            "block_reason": status["block_reason"],
+            "waiting": status["waiting"],
+            "repeat": status["repeat"],
+            "time": status["time"],
+            "days": status["days"],
         }
-        self.async_write_ha_state()
+        if self.hass is not None:
+            self.async_write_ha_state()

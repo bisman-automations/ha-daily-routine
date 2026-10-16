@@ -1,4 +1,4 @@
-"""Sidebar panel + websocket API for Daily Routine."""
+"""Sidebar panel and websocket API. Rooms come from Home Assistant areas; nothing to set up."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
+from .coordinator import HomeRoutinesCoordinator, list_areas
+from .routines import normalize_routine
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,94 +27,162 @@ _PANEL_REGISTERED = f"{DOMAIN}_panel_registered"
 _STATIC_REGISTERED = f"{DOMAIN}_panel_static_registered"
 _API_REGISTERED = f"{DOMAIN}_panel_api_registered"
 
+SENSOR_CLASSES = ("motion", "occupancy", "presence", "moving")
+
+
+def _coordinator(hass: HomeAssistant) -> HomeRoutinesCoordinator | None:
+    return (hass.data.get(DOMAIN) or {}).get("coordinator")
+
+
+def _overview(hass: HomeAssistant, coordinator: HomeRoutinesCoordinator) -> dict[str, Any]:
+    people = [
+        {
+            "entity_id": s.entity_id,
+            "name": s.attributes.get("friendly_name") or s.entity_id,
+            "state": s.state,
+        }
+        for s in sorted(hass.states.async_all("person"), key=lambda s: s.entity_id)
+    ]
+    sensors = [
+        {
+            "entity_id": s.entity_id,
+            "name": s.attributes.get("friendly_name") or s.entity_id,
+            "device_class": s.attributes.get("device_class"),
+            "state": s.state,
+        }
+        for s in sorted(hass.states.async_all("binary_sensor"), key=lambda s: s.entity_id)
+    ]
+    statuses = {r["id"]: coordinator.get_status(r["id"]) or {} for r in coordinator.routines}
+    return {
+        "areas": list_areas(hass),
+        "people": people,
+        "binary_sensors": sensors,
+        "routines": coordinator.routines,
+        "statuses": statuses,
+        "paused": coordinator.paused,
+    }
+
 
 def async_setup_panel_api(hass: HomeAssistant) -> None:
-    """Register websocket commands once."""
     if hass.data.get(_API_REGISTERED):
         return
-    websocket_api.async_register_command(hass, ws_get_routines)
-    websocket_api.async_register_command(hass, ws_save_routines)
-    websocket_api.async_register_command(hass, ws_run_routine)
+    for command in (
+        ws_overview,
+        ws_save_routine,
+        ws_delete_routine,
+        ws_run_routine,
+        ws_preview_routine,
+        ws_set_paused,
+    ):
+        websocket_api.async_register_command(hass, command)
     hass.data[_API_REGISTERED] = True
 
 
-def _entry(hass: HomeAssistant):
-    entries = hass.config_entries.async_entries(DOMAIN)
-    return entries[0] if entries else None
-
-
-@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/panel/routines"})
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/overview"})
 @websocket_api.async_response
-async def ws_get_routines(
-    hass: HomeAssistant,
-    connection: websocket_api.ActiveConnection,
-    msg: dict[str, Any],
+async def ws_overview(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Return current routines + live status."""
-    coordinator = (hass.data.get(DOMAIN) or {}).get("coordinator")
-    if coordinator is None:
-        connection.send_result(msg["id"], {"routines": [], "statuses": {}})
-        return
-
-    routines = list(coordinator.routines)
-    statuses: dict[str, Any] = {r["id"]: coordinator.get_status(r["id"]) or {} for r in routines}
-    connection.send_result(
-        msg["id"],
-        {
-            "routines": routines,
-            "statuses": statuses,
-        },
-    )
-
-
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): f"{DOMAIN}/panel/save",
-        vol.Required("routines"): list,
-    }
-)
-@websocket_api.require_admin
-@websocket_api.async_response
-async def ws_save_routines(
-    hass: HomeAssistant,
-    connection: websocket_api.ActiveConnection,
-    msg: dict[str, Any],
-) -> None:
-    """Dashboard bulk save is not used — each routine is a config entry."""
-    connection.send_error(
-        msg["id"],
-        "use_configure",
-        "Edit routines with Configure on each entry under Settings → Devices & services → Daily Routine, or use Add service to create a new routine.",
-    )
-
-
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): f"{DOMAIN}/panel/run",
-        vol.Required("routine_id"): str,
-    }
-)
-@websocket_api.async_response
-async def ws_run_routine(
-    hass: HomeAssistant,
-    connection: websocket_api.ActiveConnection,
-    msg: dict[str, Any],
-) -> None:
-    """Run a routine from the dashboard."""
-    coordinator = (hass.data.get(DOMAIN) or {}).get("coordinator")
+    coordinator = _coordinator(hass)
     if coordinator is None:
         connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
         return
+    connection.send_result(msg["id"], _overview(hass, coordinator))
 
-    class _Call:
-        data = {"routine_id": msg["routine_id"]}
 
-    await coordinator.async_run_routine(_Call())  # type: ignore[arg-type]
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/routine/save", vol.Required("routine"): dict}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_save_routine(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    try:
+        routine = await coordinator.async_save_routine(msg["routine"])
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "invalid_routine", str(err))
+        return
+    connection.send_result(msg["id"], {"routine": routine})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/routine/delete", vol.Required("routine_id"): str}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_delete_routine(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    await coordinator.async_delete_routine(msg["routine_id"])
     connection.send_result(msg["id"], {"ok": True})
 
 
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/routine/run", vol.Required("routine_id"): str}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_run_routine(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    try:
+        ran = await coordinator.async_run(msg["routine_id"])
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "not_found", str(err))
+        return
+    connection.send_result(msg["id"], {"ran": ran})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/routine/preview", vol.Required("routine"): dict}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_preview_routine(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    try:
+        routine = normalize_routine(msg["routine"])
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "invalid_routine", str(err))
+        return
+    connection.send_result(msg["id"], coordinator.preview(routine))
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/pause", vol.Required("paused"): bool}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_set_paused(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    await coordinator.async_set_paused(msg["paused"])
+    connection.send_result(msg["id"], {"paused": coordinator.paused})
+
+
 async def async_register_panel(hass: HomeAssistant) -> None:
-    """Register static assets, websocket API, and sidebar panel."""
     async_setup_panel_api(hass)
 
     if not hass.data.get(_STATIC_REGISTERED):
@@ -126,7 +196,6 @@ async def async_register_panel(hass: HomeAssistant) -> None:
 
     if hass.data.get(_PANEL_REGISTERED):
         return
-
     try:
         await panel_custom.async_register_panel(
             hass,
@@ -139,14 +208,11 @@ async def async_register_panel(hass: HomeAssistant) -> None:
             require_admin=False,
         )
         hass.data[_PANEL_REGISTERED] = True
-        _LOGGER.debug("Daily Routine sidebar panel registered")
     except ValueError:
         hass.data[_PANEL_REGISTERED] = True
 
 
 async def async_unregister_panel(hass: HomeAssistant) -> None:
-    """Remove the panel when the last instance is unloaded."""
     if not hass.config_entries.async_entries(DOMAIN):
         frontend.async_remove_panel(hass, PANEL_URL_PATH)
         hass.data[_PANEL_REGISTERED] = False
-        _LOGGER.debug("Daily Routine sidebar panel removed")
