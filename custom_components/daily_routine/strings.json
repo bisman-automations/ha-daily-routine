@@ -1,0 +1,121 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Add routine",
+        "description": "Pick a template to pre-fill the routine. You only need to choose entities (and sometimes a time). Use **Custom** for full control.",
+        "data": {
+          "template": "Template"
+        }
+      },
+      "details": {
+        "title": "Template setup",
+        "description": "Finish setup for this template (`{template}`). You can change everything later with Configure.",
+        "data": {
+          "name": "Name",
+          "covers": "Covers",
+          "lights": "Lights",
+          "locks": "Locks",
+          "scenes": "Scenes",
+          "people": "People",
+          "sensors": "Occupancy / motion sensors",
+          "message": "Notification message",
+          "enabled": "Enabled",
+          "trigger": "Trigger",
+          "time": "Time",
+          "offset_minutes": "Offset minutes (sun)",
+          "days": "Days",
+          "clear_minutes": "Minutes sensors must stay clear",
+          "require_everyone_away": "Require everyone away",
+          "require_sensors_clear": "Require sensors clear",
+          "notify_on_run": "Notify on run",
+          "notify_on_skip": "Notify on skip",
+          "action_1_service": "Action 1 service",
+          "action_1_entities": "Action 1 entities",
+          "action_1_delay": "Delay after action 1 (s)",
+          "action_2_service": "Action 2 service",
+          "action_2_entities": "Action 2 entities",
+          "action_2_delay": "Delay after action 2 (s)",
+          "action_3_service": "Action 3 service",
+          "action_3_entities": "Action 3 entities"
+        }
+      }
+    },
+    "error": {
+      "name_required": "Name is required.",
+      "invalid_service": "Service must look like domain.service (e.g. light.turn_off)."
+    },
+    "abort": {
+      "already_configured": "A routine with this id already exists."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configure routine",
+        "description": "Full settings for this routine (trigger, schedule, safety, actions).",
+        "data": {
+          "name": "Name",
+          "enabled": "Enabled",
+          "trigger": "Trigger",
+          "time": "Time (for time trigger)",
+          "offset_minutes": "Offset minutes (sunrise/sunset)",
+          "days": "Days",
+          "require_everyone_away": "Require everyone away",
+          "require_sensors_clear": "Require sensors clear",
+          "clear_minutes": "Clear minutes",
+          "people": "People",
+          "sensors": "Occupancy / motion sensors",
+          "notify_on_run": "Notify on run",
+          "notify_on_skip": "Notify on skip",
+          "action_1_service": "Action 1 service",
+          "action_1_entities": "Action 1 entities",
+          "action_1_delay": "Delay after action 1 (s)",
+          "action_2_service": "Action 2 service",
+          "action_2_entities": "Action 2 entities",
+          "action_2_delay": "Delay after action 2 (s)",
+          "action_3_service": "Action 3 service",
+          "action_3_entities": "Action 3 entities"
+        }
+      }
+    },
+    "error": {
+      "name_required": "Name is required.",
+      "invalid_service": "Service must look like domain.service (e.g. light.turn_off)."
+    }
+  },
+  "selector": {
+    "template": {
+      "options": {
+        "morning_covers": "Morning covers — open covers at a time or sunrise",
+        "evening_covers": "Evening covers — close covers at sunset or a time",
+        "morning_lights": "Morning lights — turn lights on at a time or sunrise",
+        "bedtime_lights": "Bedtime lights — turn lights off at a fixed time",
+        "away_lights_off": "Away lights off — when everyone leaves",
+        "arrive_lights_on": "Arrive lights on — when someone comes home",
+        "lock_when_away": "Lock when away — lock doors when everyone leaves",
+        "unlock_on_arrive": "Unlock on arrive — unlock when someone arrives",
+        "notify_at_time": "Timed reminder — notification at a set time",
+        "manual_scene": "Manual scene — run a scene only when you trigger it",
+        "custom": "Custom — full control over trigger and actions"
+      }
+    },
+    "trigger": {
+      "options": {
+        "time": "At a fixed time",
+        "sunrise": "At sunrise (plus offset)",
+        "sunset": "At sunset (plus offset)",
+        "manual": "Manual only (Run now / service)",
+        "everyone_leaves": "When everyone leaves",
+        "someone_arrives": "When someone arrives (after all were away)"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": {
+        "name": "Status"
+      }
+    }
+  }
+}

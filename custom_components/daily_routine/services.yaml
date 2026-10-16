@@ -1,0 +1,14 @@
+run_routine:
+  name: Run routine
+  description: Run a configured routine. All safety conditions are still enforced. The daily run limit is ignored for manual runs.
+  fields:
+    routine_id:
+      name: Routine ID
+      description: The stable id of the routine to run (e.g. morning_covers).
+      required: true
+      example: away_lights_off
+      selector:
+        text:
+reload_routines:
+  name: Reload routines
+  description: Validate and reload routine definitions from the integration options without restarting Home Assistant.

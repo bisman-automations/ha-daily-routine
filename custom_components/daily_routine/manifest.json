@@ -1,0 +1,19 @@
+{
+  "domain": "daily_routine",
+  "name": "Daily Routine",
+  "codeowners": [
+    "@bisman-automations"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "http",
+    "frontend",
+    "panel_custom"
+  ],
+  "documentation": "https://github.com/bisman-automations/ha-daily-routine",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/bisman-automations/ha-daily-routine/issues",
+  "requirements": [],
+  "version": "1.0.0"
+}
