@@ -27,6 +27,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_point_in_time, async_track_state_change_event
 from homeassistant.helpers.sun import get_astral_event_next
 from homeassistant.util import dt as dt_util
+from homeassistant.util import slugify
 
 from .const import (
     DOMAIN,
@@ -44,11 +45,14 @@ from .const import (
     TRIGGER_SUNRISE,
     TRIGGER_SUNSET,
     TRIGGER_TIME,
+    TRIGGER_VALUE_ABOVE,
+    TRIGGER_VALUE_BELOW,
     WEEKDAYS,
 )
 from .routines import (
     DESIRED_STATE,
     PRESENCE_TRIGGERS,
+    VALUE_TRIGGERS,
     normalize_routine,
     uses_conditions,
 )
@@ -60,6 +64,7 @@ H_TIME = "time"
 H_PRESENCE = "presence"
 H_WATCH = "watch"
 H_CLEAR = "clear"
+H_VALUE = "value"
 H_EXPIRE = "expire"
 
 # Runtime keys kept in storage. Clear timers and waiting state are not persisted.
@@ -106,6 +111,37 @@ def list_people(
     ]
 
 
+GENERIC_NOTIFY_SERVICES = ("notify", "send_message")
+
+
+def notify_targets(hass: HomeAssistant) -> list[dict[str, str]]:
+    """Places a routine can send notifications, named the way Home Assistant names them."""
+    registry = dr.async_get(hass)
+    phone_names: dict[str, str] = {}
+    for device in registry.devices:
+        is_mobile_app = any(
+            (entry := hass.config_entries.async_get_entry(entry_id)) is not None
+            and entry.domain == "mobile_app"
+            for entry_id in device.config_entries
+        )
+        if is_mobile_app:
+            name = device.name_by_user or device.name or ""
+            if name:
+                phone_names[slugify(name)] = name
+
+    targets = []
+    for service in sorted(hass.services.async_services().get("notify", {})):
+        if service in GENERIC_NOTIFY_SERVICES:
+            continue
+        if service.startswith("mobile_app_"):
+            key = service[len("mobile_app_") :]
+            name = phone_names.get(key) or key.replace("_", " ").title()
+        else:
+            name = service.replace("_", " ").title()
+        targets.append({"entity": f"notify.{service}", "name": name})
+    return sorted(targets, key=lambda t: t["name"].lower())
+
+
 def list_areas(hass: HomeAssistant) -> list[dict[str, Any]]:
     """Every area in Home Assistant, with the entities in it. Nothing is set up by hand."""
     areas = []
@@ -150,7 +186,7 @@ class HomeRoutinesCoordinator:
         self.routines: list[dict[str, Any]] = []
         self.paused = False
         self.migrated = False
-        self.settings: dict[str, Any] = {"hidden_people": [], "notify_service": ""}
+        self.settings: dict[str, Any] = {"hidden_people": [], "notify_services": []}
         self._runtime: dict[str, dict[str, Any]] = {}
         self._listeners: list[Callable[[], None]] = []
         self._handles: dict[tuple[str, str], Callable[[], None]] = {}
@@ -202,8 +238,7 @@ class HomeRoutinesCoordinator:
         self.hass.async_create_task(self._notify(message))
 
     async def _notify(self, message: str) -> None:
-        service = self.settings.get("notify_service") or ""
-        if service:
+        for service in self.settings.get("notify_services") or []:
             try:
                 await self.hass.services.async_call(
                     "notify",
@@ -275,9 +310,12 @@ class HomeRoutinesCoordinator:
         self.paused = bool(data.get("paused", False))
         self.migrated = bool(data.get("migrated", False))
         saved = data.get("settings") or {}
+        services = saved.get("notify_services")
+        if services is None and saved.get("notify_service"):
+            services = [saved["notify_service"]]  # one target before 1.4.0
         self.settings = {
             "hidden_people": [p for p in saved.get("hidden_people", []) if isinstance(p, str)],
-            "notify_service": str(saved.get("notify_service") or ""),
+            "notify_services": [s for s in (services or []) if isinstance(s, str)],
         }
         for raw in data.get("routines", []):
             try:
@@ -336,6 +374,16 @@ class HomeRoutinesCoordinator:
                 f"{names} has no location tracking, so a routine can't check where they are. "
                 "Give them a device tracker or leave them out."
             )
+        companion_raw = _companion_for(routine)
+        if companion_raw is not None:
+            clash = self._find(companion_raw["id"])
+            if clash is not None and clash.get("companion_of") != routine["id"]:
+                raise vol.Invalid(
+                    f"A routine named '{companion_raw['id']}' already exists, so the turn-off routine can't be created."
+                )
+        companion = normalize_routine(companion_raw) if companion_raw else None
+
+        self._drop_companions(routine["id"])
         index = next((i for i, r in enumerate(self.routines) if r["id"] == routine["id"]), None)
         if index is None:
             if len(self.routines) >= MAX_ROUTINES:
@@ -343,10 +391,18 @@ class HomeRoutinesCoordinator:
             self.routines.append(routine)
         else:
             self.routines[index] = routine
+        if companion is not None:
+            self.routines.append(companion)
         await self.async_reload()
         return routine
 
+    def _drop_companions(self, routine_id: str) -> None:
+        for r in [r for r in self.routines if r.get("companion_of") == routine_id]:
+            self._runtime.pop(r["id"], None)
+        self.routines = [r for r in self.routines if r.get("companion_of") != routine_id]
+
     async def async_delete_routine(self, routine_id: str) -> None:
+        self._drop_companions(routine_id)
         self.routines = [r for r in self.routines if r["id"] != routine_id]
         self._runtime.pop(routine_id, None)
         await self.async_reload()
@@ -360,13 +416,18 @@ class HomeRoutinesCoordinator:
             isinstance(p, str) and p.startswith("person.") for p in hidden
         ):
             raise vol.Invalid("Hidden people must be person entities.")
-        notify = str(raw.get("notify_service") or "").strip()
-        if notify:
-            if not NOTIFY_SERVICE_RE.fullmatch(notify):
-                raise vol.Invalid("Choose a notify service, for example notify.mobile_app_phone.")
+        services = raw.get("notify_services", [])
+        if not isinstance(services, list):
+            raise vol.Invalid("Notification targets must be a list.")
+        for notify in services:
+            if not isinstance(notify, str) or not NOTIFY_SERVICE_RE.fullmatch(notify):
+                raise vol.Invalid("Choose notification targets from the list.")
             if not self.hass.services.has_service("notify", notify.split(".", 1)[1]):
-                raise vol.Invalid(f"{notify} is not available in Home Assistant.")
-        self.settings = {"hidden_people": sorted(set(hidden)), "notify_service": notify}
+                raise vol.Invalid("One of those notification targets is no longer available.")
+        self.settings = {
+            "hidden_people": sorted(set(hidden)),
+            "notify_services": sorted(set(services)),
+        }
         await self._async_save()
         self._notify_listeners()
         return self.settings
@@ -391,6 +452,9 @@ class HomeRoutinesCoordinator:
 
     def _check(self, routine: dict[str, Any], now: datetime) -> tuple[bool, str | None]:
         """Return (passes, reason if blocked). Unknown or unavailable fails closed."""
+        if routine["active_from"] and routine["active_to"]:
+            if not _within_hours(now, routine["active_from"], routine["active_to"]):
+                return False, "outside_hours"
         if routine["require_everyone_away"] and not self._all_away(routine["people"]):
             return False, "someone_home"
 
@@ -644,6 +708,31 @@ class HomeRoutinesCoordinator:
         unsub = async_track_state_change_event(self.hass, people, _on_change)
         self._set_handle(rid, H_PRESENCE, unsub)
 
+    def _watch_value(self, routine: dict[str, Any]) -> None:
+        rid = routine["id"]
+        self._drop_handle(rid, H_VALUE)
+        trigger = routine["trigger"]
+        if trigger not in VALUE_TRIGGERS or not routine["enabled"]:
+            return
+        threshold = float(routine["value_threshold"])
+
+        @callback
+        def _changed(event: Event[EventStateChangedData]) -> None:
+            new = _as_float(event.data.get("new_state"))
+            if new is None:
+                return
+            old = _as_float(event.data.get("old_state"))
+            if trigger == TRIGGER_VALUE_ABOVE:
+                crossed = new > threshold and (old is None or old <= threshold)
+            else:
+                crossed = new < threshold and (old is None or old >= threshold)
+            now = dt_util.now()
+            if crossed and self._allowed_day(routine, now):
+                self.hass.async_create_task(self._execute_routine(routine, now, scheduled=True))
+
+        unsub = async_track_state_change_event(self.hass, [routine["value_entity"]], _changed)
+        self._set_handle(rid, H_VALUE, unsub)
+
     # ----- starting everything -----
 
     def _start_all(self, *, catch_up: bool) -> None:
@@ -656,6 +745,7 @@ class HomeRoutinesCoordinator:
             self._rt(routine["id"])
             self._schedule_one(routine, now)
             self._watch_presence(routine)
+            self._watch_value(routine)
             self._watch_conditions(routine)
             if catch_up:
                 self._maybe_catch_up(routine, now)
@@ -858,6 +948,72 @@ class HomeRoutinesCoordinator:
             await self.async_run(call.data["routine_id"])
         except vol.Invalid as err:
             _LOGGER.error("%s", err)
+
+
+# Turning a step off again: the opposite service for each service a routine can use.
+OPPOSITE_SERVICES = {
+    "light.turn_on": "light.turn_off",
+    "light.turn_off": "light.turn_on",
+    "switch.turn_on": "switch.turn_off",
+    "switch.turn_off": "switch.turn_on",
+    "fan.turn_on": "fan.turn_off",
+    "fan.turn_off": "fan.turn_on",
+    "cover.open_cover": "cover.close_cover",
+    "cover.close_cover": "cover.open_cover",
+    "lock.lock": "lock.unlock",
+    "lock.unlock": "lock.lock",
+}
+
+
+def _companion_for(routine: dict[str, Any]) -> dict[str, Any] | None:
+    """A 'turn back off' routine for a value-above routine with a turn-off level."""
+    if routine["trigger"] != TRIGGER_VALUE_ABOVE or routine["off_threshold"] is None:
+        return None
+    actions: list[dict[str, Any]] = []
+    for action in routine["actions"]:
+        if "service" not in action:
+            actions.append(action)
+            continue
+        opposite = OPPOSITE_SERVICES.get(action["service"])
+        if opposite is None:
+            raise vol.Invalid(
+                f"Can't work out how to turn {action['service']} back off. "
+                "Remove the turn-off level, or make the off routine yourself."
+            )
+        actions.append({**action, "service": opposite})
+    return {
+        "id": f"{routine['id']}_off",
+        "name": f"{routine['name']} (off)",
+        "enabled": routine["enabled"],
+        "room": routine["room"],
+        "device_id": routine["device_id"],
+        "trigger": TRIGGER_VALUE_BELOW,
+        "value_entity": routine["value_entity"],
+        "value_threshold": routine["off_threshold"],
+        "days": routine["days"],
+        "actions": actions,
+        "retries": routine["retries"],
+        "notify_on_error": routine["notify_on_error"],
+        "companion_of": routine["id"],
+    }
+
+
+def _as_float(state: State | None) -> float | None:
+    if state is None:
+        return None
+    try:
+        return float(state.state)
+    except (TypeError, ValueError):
+        return None
+
+
+def _within_hours(now: datetime, start: str, end: str) -> bool:
+    """True inside [start, end). A window that crosses midnight (for example 22:00 to 06:00) is allowed."""
+    local = dt_util.as_local(now).time()
+    begin, finish = _parse_time(start), _parse_time(end)
+    if begin <= finish:
+        return begin <= local < finish
+    return local >= begin or local < finish
 
 
 def _parse_time(value: str) -> dt_time:

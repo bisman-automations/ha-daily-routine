@@ -13,7 +13,7 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN
-from .coordinator import HomeRoutinesCoordinator, list_areas, list_people
+from .coordinator import HomeRoutinesCoordinator, list_areas, list_people, notify_targets
 from .routines import normalize_routine
 from .schema import vol
 
@@ -57,6 +57,14 @@ def _devices(hass: HomeAssistant) -> list[dict[str, Any]]:
     return sorted(devices, key=lambda d: str(d["name"]).lower())
 
 
+def _is_number(value: str) -> bool:
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _overview(hass: HomeAssistant, coordinator: HomeRoutinesCoordinator) -> dict[str, Any]:
     sensors = [
         {
@@ -67,16 +75,25 @@ def _overview(hass: HomeAssistant, coordinator: HomeRoutinesCoordinator) -> dict
         }
         for s in sorted(hass.states.async_all("binary_sensor"), key=lambda s: s.entity_id)
     ]
+    numeric = [
+        {
+            "entity_id": s.entity_id,
+            "name": s.attributes.get("friendly_name") or s.entity_id,
+            "device_class": s.attributes.get("device_class"),
+            "unit": s.attributes.get("unit_of_measurement") or "",
+        }
+        for s in sorted(hass.states.async_all("sensor"), key=lambda s: s.entity_id)
+        if s.attributes.get("unit_of_measurement") and _is_number(s.state)
+    ]
     statuses = {r["id"]: coordinator.get_status(r["id"]) or {} for r in coordinator.routines}
     return {
         "areas": list_areas(hass),
         "devices": _devices(hass),
         "people": list_people(hass, frozenset(coordinator.settings["hidden_people"])),
         "settings": coordinator.settings,
-        "notify_services": sorted(
-            f"notify.{name}" for name in hass.services.async_services().get("notify", {})
-        ),
+        "notify_targets": notify_targets(hass),
         "binary_sensors": sensors,
+        "sensors": numeric,
         "routines": coordinator.routines,
         "statuses": statuses,
         "paused": coordinator.paused,

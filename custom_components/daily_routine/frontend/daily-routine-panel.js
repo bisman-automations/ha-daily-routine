@@ -14,9 +14,12 @@ const TRIGGER_LABELS = {
   everyone_leaves: "When everyone leaves",
   someone_arrives: "When someone arrives",
   room_clear: "When the room has been quiet",
+  value_above: "When a sensor goes above a level",
+  value_below: "When a sensor drops below a level",
   manual: "Only when I press Run",
 };
 const PRESENCE_TRIGGERS = ["everyone_leaves", "someone_arrives"];
+const VALUE_TRIGGERS = ["value_above", "value_below"];
 const STATE_LABELS = { idle: "Ready", waiting: "Waiting", running: "Running", skipped: "Skipped", error: "Error" };
 const REASON_LABELS = {
   someone_home: "someone is home",
@@ -25,6 +28,7 @@ const REASON_LABELS = {
   clear_timer_not_started: "waiting for sensors",
   extra_condition_not_met: "an extra condition is not met",
   conditions_not_met: "conditions were not met",
+  outside_hours: "outside its hours",
 };
 const SERVICE_SUGGESTIONS = [
   "light.turn_on", "light.turn_off", "switch.turn_on", "switch.turn_off",
@@ -54,6 +58,41 @@ const TEMPLATES = [
   {
     id: "house_empty", title: "Lights off when everyone is away", hint: "Whole house: once everyone has left and the motion sensors have been quiet.", scope: "house",
     draft: { trigger: "everyone_leaves", clear_minutes: 15, useAllPeople: true, useHouseSensors: true, actions: [{ service: "light.turn_off", targetMode: "all_areas" }] },
+  },
+  {
+    id: "humidity_fan", title: "Bathroom fan on humidity", scope: "room",
+    hint: "Turn this room's fan on when humidity rises above a level, and back off when it drops. Set \u201conly run between\u201d to limit it to daytime.",
+    draft: { trigger: "value_above", valueClass: "humidity", valueThreshold: 60, offThreshold: 50, actions: [{ service: "fan.turn_on", targetMode: "area" }] },
+  },
+  {
+    id: "fan_off_when_empty", title: "Fan off when the room is empty", scope: "room",
+    hint: "Turn this room's fan off once its motion sensors have been quiet.",
+    draft: { trigger: "room_clear", clear_minutes: 10, useRoomSensors: true, actions: [{ service: "fan.turn_off", targetMode: "area" }] },
+  },
+  {
+    id: "night_lights", title: "Night lights at sunset", scope: "room",
+    hint: "Turn this room's lights on at sunset.",
+    draft: { trigger: "sunset", actions: [{ service: "light.turn_on", targetMode: "area" }] },
+  },
+  {
+    id: "morning_curtains", title: "Open all curtains", scope: "house",
+    hint: "Whole house: open every curtain at a set time.",
+    draft: { trigger: "time", time: "07:00:00", actions: [{ service: "cover.open_cover", targetMode: "all_areas" }] },
+  },
+  {
+    id: "bedtime_lock", title: "Lock up at bedtime", scope: "house",
+    hint: "Whole house: lock every lock at a set time.",
+    draft: { trigger: "time", time: "22:30:00", actions: [{ service: "lock.lock", targetMode: "all_areas" }] },
+  },
+  {
+    id: "away_lock", title: "Lock up when everyone leaves", scope: "house",
+    hint: "Whole house: lock every lock once everyone has left.",
+    draft: { trigger: "everyone_leaves", usePeopleList: true, actions: [{ service: "lock.lock", targetMode: "all_areas" }] },
+  },
+  {
+    id: "welcome_home", title: "Welcome home lights", scope: "house",
+    hint: "Whole house: turn the lights on when someone arrives.",
+    draft: { trigger: "someone_arrives", usePeopleList: true, actions: [{ service: "light.turn_on", targetMode: "all_areas" }] },
   },
   { id: "blank", title: "Blank routine", hint: "Start from scratch.", scope: "any", draft: {} },
 ];
@@ -187,18 +226,58 @@ class DailyRoutinePanel extends HTMLElement {
   }
 
   _nameFor(entityId) {
-    const entity = this._allEntities().find((e) => e.entity_id === entityId) || this._data?.people?.find((p) => p.entity_id === entityId);
+    const entity = this._allEntities().find((e) => e.entity_id === entityId)
+      || this._data?.people?.find((p) => p.entity_id === entityId)
+      || this._data?.sensors?.find((x) => x.entity_id === entityId);
     return entity?.name || entityId;
   }
 
   _describeTrigger(routine) {
     const when = TRIGGER_LABELS[routine.trigger] || routine.trigger;
-    if (routine.trigger === "time") return `${when} ${hhmm(routine.time)}`;
+    const windowText = routine.active_from && routine.active_to ? ` · only ${hhmm(routine.active_from)}–${hhmm(routine.active_to)}` : "";
+    if (VALUE_TRIGGERS.includes(routine.trigger)) {
+      const level = `${routine.value_threshold}${this._unitSuffix(routine.value_entity)}`;
+      const word = routine.trigger === "value_above" ? "above" : "below";
+      return `${this._nameFor(routine.value_entity)} ${word} ${level}${windowText}`;
+    }
+    if (routine.trigger === "time") return `${when} ${hhmm(routine.time)}${windowText}`;
     if (routine.trigger === "sunrise" || routine.trigger === "sunset") {
       const offset = routine.offset_minutes ? ` ${routine.offset_minutes > 0 ? "+" : ""}${routine.offset_minutes} min` : "";
-      return `${when}${offset}`;
+      return `${when}${offset}${windowText}`;
     }
-    return when;
+    return `${when}${windowText}`;
+  }
+
+  _unitSuffix(entityId) {
+    const unit = this._data?.sensors?.find((s) => s.entity_id === entityId)?.unit || "";
+    if (!unit) return "";
+    return unit === "%" ? "%" : ` ${unit}`;
+  }
+
+  _trackedPeople() {
+    return this._data.people.filter((p) => p.tracked && !p.hidden).map((p) => p.entity_id);
+  }
+
+  _pickSensor(roomId, deviceClass) {
+    const pool = roomId ? this._roomEntities(roomId) : this._allEntities();
+    return pool.find((e) => e.domain === "sensor" && e.device_class === deviceClass)?.entity_id || "";
+  }
+
+  _valueFields(draft, roomId) {
+    const inRoom = (sensor) => roomId && this._roomEntities(roomId).some((e) => e.entity_id === sensor.entity_id);
+    const sensors = [...(this._data.sensors || [])].sort((a, b) => Number(inRoom(b)) - Number(inRoom(a)) || a.name.localeCompare(b.name));
+    const options = [`<option value="">Choose…</option>`, ...sensors.map((sensor) => {
+      const unit = sensor.unit ? ` (${sensor.unit})` : "";
+      return `<option value="${esc(sensor.entity_id)}" ${sensor.entity_id === draft.value_entity ? "selected" : ""}>${esc(sensor.name)}${esc(unit)}</option>`;
+    })].join("");
+    const above = draft.trigger === "value_above";
+    const unit = this._unitSuffix(draft.value_entity).trim();
+    return `<label>Sensor<select data-f="value_entity">${options}</select></label>
+      <label>${above ? "Turn on when it goes above" : "Run when it drops below"}${unit ? ` (${esc(unit)})` : ""}
+        <input type="number" step="any" data-f="value_threshold" value="${esc(draft.value_threshold)}"></label>
+      ${above ? `<label>Turn back off when it drops below (optional)${unit ? ` (${esc(unit)})` : ""}
+        <input type="number" step="any" data-f="off_threshold" value="${esc(draft.off_threshold)}"></label>
+        <p class="muted small">Leave empty to turn things off yourself. Otherwise a second routine, named “(off)”, turns them back off when the level drops.</p>` : ""}`;
   }
 
   // ----- draft <-> stored routine -----
@@ -206,6 +285,7 @@ class DailyRoutinePanel extends HTMLElement {
   _newDraft(roomId) {
     return {
       id: "", name: "", room: roomId || null, device_id: this._defaultDevice(roomId), enabled: true,
+      value_entity: "", value_threshold: "", off_threshold: "", active_from: "", active_to: "",
       trigger: "time", time: "07:00:00", offset_minutes: 0, days: [...WEEKDAYS],
       people: [], require_everyone_away: false, sensors: [], require_sensors_clear: false, clear_minutes: 0,
       require_states: [], repeat: false, catch_up_minutes: 0, retries: 0, skip_noop: true,
@@ -225,8 +305,12 @@ class DailyRoutinePanel extends HTMLElement {
     if (spec.trigger === "room_clear") draft.require_sensors_clear = true;
     if (spec.useRoomSensors) draft.sensors = this._roomSensors(roomId).map((e) => e.entity_id);
     if (spec.useHouseSensors) draft.sensors = this._data.binary_sensors.filter((s) => SENSOR_CLASSES.includes(s.device_class)).map((s) => s.entity_id);
+    if (spec.valueClass) draft.value_entity = this._pickSensor(roomId, spec.valueClass);
+    if (spec.valueThreshold !== undefined) draft.value_threshold = String(spec.valueThreshold);
+    if (spec.offThreshold !== undefined) draft.off_threshold = String(spec.offThreshold);
+    if (spec.usePeopleList) draft.people = this._trackedPeople();
     if (spec.useAllPeople) {
-      draft.people = this._data.people.filter((p) => p.tracked && !p.hidden).map((p) => p.entity_id);
+      draft.people = this._trackedPeople();
       draft.require_everyone_away = true;
       draft.require_sensors_clear = true;
     }
@@ -241,6 +325,8 @@ class DailyRoutinePanel extends HTMLElement {
     const areaIds = this._areas().map((a) => a.id);
     return {
       id: routine.id, name: routine.name, room: routine.room || null, device_id: routine.device_id || "", enabled: routine.enabled,
+      value_entity: routine.value_entity || "", value_threshold: routine.value_threshold ?? "", off_threshold: routine.off_threshold ?? "",
+      active_from: routine.active_from ? hhmm(routine.active_from) : "", active_to: routine.active_to ? hhmm(routine.active_to) : "",
       trigger: routine.trigger, time: routine.time, offset_minutes: routine.offset_minutes || 0, days: [...routine.days],
       people: [...routine.people], require_everyone_away: routine.require_everyone_away,
       sensors: [...routine.sensors], require_sensors_clear: routine.require_sensors_clear, clear_minutes: routine.clear_minutes,
@@ -291,6 +377,11 @@ class DailyRoutinePanel extends HTMLElement {
       enabled: draft.enabled,
       room: draft.room || null,
       device_id: draft.device_id || null,
+      value_entity: draft.value_entity || null,
+      value_threshold: draft.value_threshold === "" || draft.value_threshold == null ? null : Number(draft.value_threshold),
+      off_threshold: draft.off_threshold === "" || draft.off_threshold == null ? null : Number(draft.off_threshold),
+      active_from: draft.active_from || null,
+      active_to: draft.active_to || null,
       trigger: draft.trigger,
       time: draft.time,
       offset_minutes: Number(draft.offset_minutes) || 0,
@@ -434,11 +525,14 @@ class DailyRoutinePanel extends HTMLElement {
   _onField(event, live = false) {
     const el = event.target;
     if (!el.dataset) return;
-    if (!live && (el.dataset.showPerson !== undefined || el.dataset.notifyService !== undefined)) {
+    if (!live && (el.dataset.showPerson !== undefined || el.dataset.notifyTarget !== undefined)) {
       if (el.dataset.showPerson !== undefined) {
         this._saveSettings({ hidden_people: this._hiddenFromDom() });
       } else {
-        this._saveSettings({ notify_service: el.value });
+        const targets = [...this.shadowRoot.querySelectorAll("[data-notify-target]")]
+          .filter((box) => box.checked)
+          .map((box) => box.dataset.notifyTarget);
+        this._saveSettings({ notify_services: targets });
       }
       return;
     }
@@ -650,7 +744,7 @@ class DailyRoutinePanel extends HTMLElement {
   }
 
   async _saveSettings(patch) {
-    const current = this._data.settings || { hidden_people: [], notify_service: "" };
+    const current = this._data.settings || { hidden_people: [], notify_services: [] };
     try {
       const result = await this._call({ type: `${DOMAIN}/settings/save`, settings: { ...current, ...patch } });
       this._data.settings = result.settings;
@@ -668,25 +762,30 @@ class DailyRoutinePanel extends HTMLElement {
   }
 
   _renderSettings() {
-    const settings = this._data.settings || { hidden_people: [], notify_service: "" };
+    const settings = this._data.settings || { hidden_people: [], notify_services: [] };
     const hidden = new Set(settings.hidden_people || []);
+    const shown = this._data.people.filter((p) => !hidden.has(p.entity_id)).length;
     const people = this._data.people.length
       ? this._data.people
-          .map((p) => `<label class="check"><input type="checkbox" data-show-person="${esc(p.entity_id)}" ${hidden.has(p.entity_id) ? "" : "checked"}> ${esc(p.name)}${p.tracked ? "" : ` <span class="muted small">(no location tracking)</span>`}</label>`)
+          .map((p) => `<label class="check"><input type="checkbox" data-show-person="${esc(p.entity_id)}" ${hidden.has(p.entity_id) ? "" : "checked"}> ${esc(p.name)}${p.tracked ? "" : ` <span class="muted small">· no location tracking</span>`}</label>`)
           .join("")
       : `<p class="muted small">No people in Home Assistant yet.</p>`;
-    const services = (this._data.notify_services || [])
-      .map((svc) => `<option value="${esc(svc)}" ${svc === settings.notify_service ? "selected" : ""}>${esc(svc)}</option>`)
-      .join("");
+    const selected = new Set(settings.notify_services || []);
+    const targets = (this._data.notify_targets || []).length
+      ? this._data.notify_targets
+          .map((t) => `<label class="check"><input type="checkbox" data-notify-target="${esc(t.entity)}" ${selected.has(t.entity) ? "checked" : ""}> ${esc(t.name)}</label>`)
+          .join("")
+      : `<p class="muted small">No phones or notification services found. Install the Home Assistant app on a phone and it will appear here.</p>`;
     return `<section class="card">
         <h3>People in routines</h3>
-        <p class="muted small">Only the people turned on here appear when you build a routine. Turn off profiles that aren't people, such as a shared display. A routine that already uses someone keeps them.</p>
+        <p class="muted small">Choose who appears when you build a routine. Turn off profiles that aren't people, like a shared display. Routines that already use someone keep them.</p>
+        <p class="pill">${shown} of ${this._data.people.length} shown</p>
         <div class="checks">${people}</div>
       </section>
       <section class="card">
         <h3>Notifications</h3>
-        <p class="muted small">Routine runs, skips and failures always appear in Home Assistant's notifications. Choose a phone or other service to send them there too.</p>
-        <label>Also send to<select data-notify-service><option value="">Nothing else</option>${services}</select></label>
+        <p class="muted small">Routine runs, skips and failures always appear in Home Assistant. Pick any phones or devices to send them there too.</p>
+        <div class="checks">${targets}</div>
       </section>`;
   }
 
@@ -753,6 +852,7 @@ class DailyRoutinePanel extends HTMLElement {
     if (!d) return "";
     const roomId = d.room || null;
     const presence = PRESENCE_TRIGGERS.includes(d.trigger);
+    const valueTrigger = VALUE_TRIGGERS.includes(d.trigger);
     const timeBased = ["time", "sunrise", "sunset"].includes(d.trigger);
     const sensorsOn = d.trigger === "room_clear" || d.require_sensors_clear;
     const roomSensors = this._roomSensors(roomId);
@@ -796,9 +896,10 @@ class DailyRoutinePanel extends HTMLElement {
       <section class="card">
         <h3>When</h3>
         <label>Trigger<select data-f="trigger" data-rerender>${triggerOptions}</select></label>
+        ${valueTrigger ? this._valueFields(d, roomId) : ""}
         ${d.trigger === "time" ? `<label>Time<input type="time" data-f="time" value="${esc(hhmm(d.time))}"></label>` : ""}
         ${d.trigger === "sunrise" || d.trigger === "sunset" ? `<label>Offset in minutes (negative is before)<input type="number" min="-720" max="720" data-f="offset_minutes" value="${esc(d.offset_minutes)}"></label>` : ""}
-        ${timeBased ? `<div class="chips">${days}</div>` : ""}
+        ${timeBased || valueTrigger ? `<div class="chips">${days}</div>` : ""}
         ${presence ? `<h4>Who</h4><p class="muted small">Pick the people this routine watches. People without location tracking can't be checked.</p><div class="checks">${peopleList}</div>
         <button class="ghost" data-act="tracked-people">Select everyone with tracking</button>` : ""}
         ${!presence && d.trigger !== "room_clear" ? `<label class="check"><input type="checkbox" data-f="require_everyone_away" data-rerender ${d.require_everyone_away ? "checked" : ""}> Only when everyone is away</label>` : ""}
@@ -808,6 +909,12 @@ class DailyRoutinePanel extends HTMLElement {
           ${roomId && !roomSensors.length ? `<p class="muted small">This room has no motion sensors yet. Assign one in Home Assistant, or pick another.</p>` : ""}
           <div class="checks">${sensorList}</div>
           <label>Quiet for (minutes)<input type="number" min="0" max="1440" data-f="clear_minutes" value="${esc(d.clear_minutes)}"></label>` : ""}
+        <h4>Only run between</h4>
+        <p class="muted small">Optional. Outside these hours the routine does nothing. Leave both empty to run at any hour.</p>
+        <div class="inline">
+          <label>From<input type="time" data-f="active_from" value="${esc(d.active_from)}"></label>
+          <label>To<input type="time" data-f="active_to" value="${esc(d.active_to)}"></label>
+        </div>
         <h4>Extra conditions</h4>
         <p class="muted small">Only run when these are true, for example a guest-mode switch being off.</p>
         ${conditions}

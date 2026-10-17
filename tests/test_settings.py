@@ -27,7 +27,7 @@ async def test_hidden_people_are_flagged_and_saved(
     hass.states.async_set("person.skylight", "unknown", {"friendly_name": "Skylight"})
 
     await coordinator.async_set_settings(
-        {"hidden_people": ["person.skylight"], "notify_service": ""}
+        {"hidden_people": ["person.skylight"], "notify_services": []}
     )
     people = {
         p["entity_id"]: p
@@ -46,10 +46,10 @@ async def test_settings_reject_bad_values(hass: HomeAssistant, enable_custom_int
 
     with pytest.raises(vol.Invalid, match="person entities"):
         await coordinator.async_set_settings({"hidden_people": ["light.hall"]})
-    with pytest.raises(vol.Invalid, match="notify service"):
-        await coordinator.async_set_settings({"notify_service": "light.turn_on"})
-    with pytest.raises(vol.Invalid, match="not available"):
-        await coordinator.async_set_settings({"notify_service": "notify.missing_phone"})
+    with pytest.raises(vol.Invalid, match="notification targets"):
+        await coordinator.async_set_settings({"notify_services": ["light.turn_on"]})
+    with pytest.raises(vol.Invalid, match="no longer available"):
+        await coordinator.async_set_settings({"notify_services": ["notify.missing_phone"]})
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
@@ -61,7 +61,7 @@ async def test_notifications_also_go_to_the_chosen_notify_service(
     entry, coordinator = await _setup(hass)
     calls = async_mock_service(hass, "notify", "mobile_app_phone")
 
-    await coordinator.async_set_settings({"notify_service": "notify.mobile_app_phone"})
+    await coordinator.async_set_settings({"notify_services": ["notify.mobile_app_phone"]})
     await coordinator._notify("Morning covers failed.")  # noqa: SLF001
     await hass.async_block_till_done()
 

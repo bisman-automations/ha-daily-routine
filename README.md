@@ -18,7 +18,9 @@
 - **Rooms from Home Assistant.** The sidebar shows every area (room) automatically, plus a **Whole house** card for routines that span the house. Create or rename rooms in *Settings → Areas & zones*, and they appear here.
 - **Routines per room.** Curtains open at 07:00 in most rooms and at 08:00 in the bedroom: two routines. Lights in a room turn off once its motion sensor has been quiet for 10 minutes.
 - **Whole-house routines.** Lights off when everyone has left and the house has been quiet for 15 minutes.
-- **Triggers:** a set time, sunrise or sunset (with offset), everyone leaves, someone arrives, a room has been quiet, or manual only.
+- **Triggers:** a set time, sunrise or sunset (with offset), everyone leaves, someone arrives, a room has been quiet, a sensor rising above or falling below a level (for example humidity), or manual only.
+- **Daytime windows.** Any routine can be limited to hours, such as 07:00 to 22:00. Windows can cross midnight.
+- **Humidity fan example.** A bathroom fan turns on when humidity goes above 60% and off again below 50%, but only between 07:00 and 22:00. The turn-off level creates a second routine named "(off)" that you can see and edit.
 - **Safety first.** Unknown or unavailable people and sensors block a run. Conditions are checked again before every step.
 - **Waits instead of giving up.** If a run is blocked (someone is still home, or motion is still happening), it waits until the conditions are met and runs once, up to midnight.
 - **Runs as often as needed.** Presence and room triggers run every time they happen (for example, every time everyone leaves), not just once a day.
@@ -78,13 +80,15 @@ Each routine is its own service under the Daily Routine integration. It is linke
 ## Settings
 
 - **People in routines.** Turn off the profiles that aren't people, such as a shared display, so they don't appear when you build a routine. A routine that already uses someone keeps them.
-- **Notifications.** Routine runs, skips and failures always appear in Home Assistant's notifications. Choose a notify service, such as your phone, to send them there too.
+- **Notifications.** Routine runs, skips and failures always appear in Home Assistant's notifications. Tick any phones or devices, shown by name, to send them there too. Any number can be selected.
 
 ## Routine reference
 
 | Field | Meaning |
 |-------|---------|
-| Trigger | `time`, `sunrise`, `sunset`, `everyone_leaves`, `someone_arrives`, `room_clear`, or `manual` |
+| Trigger | `time`, `sunrise`, `sunset`, `everyone_leaves`, `someone_arrives`, `room_clear`, `value_above`, `value_below`, or `manual` |
+| Sensor and level | For value triggers: a numeric sensor, the level it must cross, and for "above" an optional level to turn back off |
+| Only run between | Optional start and end time. Outside these hours the routine does nothing. Windows can cross midnight |
 | Time / offset | For time and sun triggers (offset in minutes, negative is before) |
 | Days | Which days it may run |
 | Who | People for presence triggers (or "only when everyone is away"). Only people with location tracking can be checked |
@@ -101,6 +105,8 @@ Each routine is its own service under the Daily Routine integration. It is linke
 
 - **Room is quiet** runs once each time the room's sensors have been quiet for the chosen minutes. It does not fire just because Home Assistant restarted in a quiet room.
 - **Everyone leaves / someone arrives** fire on the change itself. With sensors selected, they wait until the room is quiet.
+- **Above / below a level** fire when the sensor crosses the level, not on every reading. Staying above it does not run the routine again. The turn-off level for "above" creates a companion routine named "(off)" that runs when the sensor drops below that level.
+- **Outside the window** a crossing is ignored. The routine does not catch up when the window opens. It runs at the next crossing inside the window.
 
 ---
 

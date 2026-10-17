@@ -2,6 +2,18 @@
 
 All notable changes to the **ha-daily-routine** Home Assistant integration will be documented in this file.
 
+## [Unreleased]
+
+### Routines
+* **Sensor triggers:** run when a numeric sensor (for example humidity) rises above or falls below a level. Staying above the level does not re-run the routine.
+* **Turn-off level:** for "above" triggers, an optional level creates a companion "(off)" routine that turns the same devices back off. Lights, fans, covers and locks are supported.
+* **Daytime windows:** any routine can be limited to a start and end time, and windows can cross midnight.
+* **New templates:** bathroom fan on humidity, fan off when the room is empty, night lights at sunset, open all curtains, lock up at bedtime, lock up when everyone leaves, and welcome home lights.
+
+### Settings
+* **Notifications:** choose any number of phones or devices, shown by name rather than by entity id.
+* Clearer wording for the people and notification settings.
+
 ## [1.3.0] - 2026-10-17
 
 ### Sidebar

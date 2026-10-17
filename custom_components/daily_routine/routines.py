@@ -11,6 +11,8 @@ from .const import (
     TRIGGER_ROOM_CLEAR,
     TRIGGER_SOMEONE_ARRIVES,
     TRIGGER_TIME,
+    TRIGGER_VALUE_ABOVE,
+    TRIGGER_VALUE_BELOW,
     TRIGGERS,
     WEEKDAYS,
 )
@@ -40,7 +42,13 @@ DESIRED_STATE: dict[str, str] = {
 
 PRESENCE_TRIGGERS = (TRIGGER_EVERYONE_LEAVES, TRIGGER_SOMEONE_ARRIVES)
 # Triggers that happen as things change, so they run every time (not once a day).
-REPEATING_TRIGGERS = (TRIGGER_EVERYONE_LEAVES, TRIGGER_SOMEONE_ARRIVES, TRIGGER_ROOM_CLEAR)
+VALUE_TRIGGERS = (TRIGGER_VALUE_ABOVE, TRIGGER_VALUE_BELOW)
+REPEATING_TRIGGERS = (
+    TRIGGER_EVERYONE_LEAVES,
+    TRIGGER_SOMEONE_ARRIVES,
+    TRIGGER_ROOM_CLEAR,
+    *VALUE_TRIGGERS,
+)
 
 
 def uses_conditions(routine: dict[str, Any]) -> bool:
@@ -115,6 +123,15 @@ def _entity_list(value: Any, label: str) -> list[str]:
         if entity_id not in result:
             result.append(entity_id)
     return result
+
+
+def _number(value: Any, label: str) -> float:
+    if isinstance(value, bool):
+        raise vol.Invalid(f"{label} must be a number.")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as err:
+        raise vol.Invalid(f"{label} must be a number.") from err
 
 
 def _int(value: Any, low: int, high: int, label: str) -> int:
@@ -222,6 +239,31 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         raise vol.Invalid("The linked device must be a device id.")
     device_id = (device_raw or "").strip() or None
 
+    value_entity = str(raw.get("value_entity") or "").strip() or None
+    value_threshold: float | None = None
+    off_threshold: float | None = None
+    if trigger in VALUE_TRIGGERS:
+        if (
+            not value_entity
+            or not ENTITY_ID_RE.fullmatch(value_entity)
+            or not value_entity.startswith("sensor.")
+        ):
+            raise vol.Invalid("Pick the sensor to watch.")
+        if raw.get("value_threshold") in (None, ""):
+            raise vol.Invalid("Set the level to watch for.")
+        value_threshold = _number(raw.get("value_threshold"), "The level")
+        if trigger == TRIGGER_VALUE_ABOVE and raw.get("off_threshold") not in (None, ""):
+            off_threshold = _number(raw.get("off_threshold"), "The turn-off level")
+            if off_threshold >= value_threshold:
+                raise vol.Invalid("The turn-off level must be below the turn-on level.")
+
+    active_from = normalize_time(raw.get("active_from")) if raw.get("active_from") else None
+    active_to = normalize_time(raw.get("active_to")) if raw.get("active_to") else None
+    if bool(active_from) != bool(active_to):
+        raise vol.Invalid("Set both ends of 'only run between', or neither.")
+
+    companion_of = str(raw.get("companion_of") or "").strip() or None
+
     actions_raw = _as_list(raw.get("actions"))
     if not actions_raw:
         raise vol.Invalid("Add at least one step.")
@@ -238,6 +280,12 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "room": room,
         "device_id": device_id,
         "trigger": trigger,
+        "value_entity": value_entity,
+        "value_threshold": value_threshold,
+        "off_threshold": off_threshold,
+        "active_from": active_from,
+        "active_to": active_to,
+        "companion_of": companion_of,
         "time": normalize_time(raw.get("time") or "07:00:00"),
         "offset_minutes": _int(raw.get("offset_minutes"), -720, 720, "Offset"),
         "days": days,

@@ -32,6 +32,13 @@ const overview = {
       ],
     },
     { id: "bedroom", name: "Bedroom", icon: "mdi:bed", entities: [] },
+    {
+      id: "bathroom", name: "Bathroom", icon: null,
+      entities: [
+        { entity_id: "sensor.bathroom_humidity", name: "Bathroom humidity", domain: "sensor", device_class: "humidity", state: "48" },
+        { entity_id: "fan.bathroom_fan", name: "Bathroom fan", domain: "fan", device_class: null, state: "off" },
+      ],
+    },
   ],
   devices: [
     { id: "lamp_1", name: "Kitchen lamp", area_id: "kitchen", area_name: "Kitchen", model: "Lamp" },
@@ -42,8 +49,12 @@ const overview = {
     { entity_id: "person.kid", name: "Kid", state: "unknown", tracked: false },
     { entity_id: "person.skylight", name: "Skylight", state: "unknown", tracked: false, hidden: true },
   ],
-  settings: { hidden_people: ["person.skylight"], notify_service: "" },
-  notify_services: ["notify.mobile_app_phone"],
+  settings: { hidden_people: ["person.skylight"], notify_services: ["notify.mobile_app_phone"] },
+  notify_targets: [
+    { entity: "notify.mobile_app_phone", name: "Alex's phone" },
+    { entity: "notify.mobile_app_tablet", name: "Kitchen tablet" },
+  ],
+  sensors: [{ entity_id: "sensor.bathroom_humidity", name: "Bathroom humidity", device_class: "humidity", unit: "%" }],
   binary_sensors: [{ entity_id: "binary_sensor.kitchen_motion", name: "Kitchen motion", device_class: "motion", state: "off" }],
   routines: [
     {
@@ -256,8 +267,19 @@ test("settings page lists every person with hidden ones switched off, and the no
   const html = panel.shadowRoot.innerHTML;
   assert.match(html, /data-show-person="person.alex" checked/);
   assert.match(html, /data-show-person="person.skylight" >/);
-  assert.match(html, /<option value="notify.mobile_app_phone"/);
-  assert.match(html, /data-notify-service/);
+});
+
+test("notification targets are checkboxes labelled by name, never by entity id", () => {
+  const panel = makePanel();
+  panel._view = { name: "settings" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /data-notify-target="notify.mobile_app_phone" checked/);
+  assert.match(html, /data-notify-target="notify.mobile_app_tablet"\s+>/);
+  assert.match(html, /Alex(&#39;|')s phone/);
+  assert.match(html, /Kitchen tablet/);
+  assert.doesNotMatch(html, /<option/);
+  assert.doesNotMatch(html, />notify\.mobile_app/);
 });
 
 test("people turned off in settings are left out of the routine picker", () => {
@@ -281,4 +303,44 @@ test("people without location tracking are shown but cannot be picked", () => {
   const html = panel.shadowRoot.innerHTML;
   assert.match(html, /<input type="checkbox" disabled> Kid \(no location tracking\)/);
   assert.match(html, /data-act="tracked-people"/);
+});
+
+test("humidity fan template fills in the bathroom sensor, fan levels and a daytime window", () => {
+  const panel = makePanel();
+  const template = panel._templates ? null : null;
+  const spec = { title: "Bathroom fan on humidity", draft: { trigger: "value_above", valueClass: "humidity", valueThreshold: 60, offThreshold: 50, actions: [{ service: "fan.turn_on", targetMode: "area" }] } };
+  panel._draft = panel._applyTemplate(spec, "bathroom");
+  assert.equal(panel._draft.value_entity, "sensor.bathroom_humidity");
+  assert.equal(panel._draft.value_threshold, "60");
+  assert.equal(panel._draft.off_threshold, "50");
+  panel._draft.active_from = "07:00";
+  panel._draft.active_to = "22:00";
+  const raw = panel._draftToRaw(panel._draft);
+  assert.equal(raw.value_entity, "sensor.bathroom_humidity");
+  assert.equal(raw.value_threshold, 60);
+  assert.equal(raw.off_threshold, 50);
+  assert.equal(raw.active_from, "07:00");
+  assert.equal(raw.active_to, "22:00");
+});
+
+test("value routines show the sensor by name with its unit and the window", () => {
+  const panel = makePanel();
+  const text = panel._describeTrigger({
+    trigger: "value_above", value_entity: "sensor.bathroom_humidity", value_threshold: 60,
+    active_from: "07:00:00", active_to: "22:00:00",
+  });
+  assert.match(text, /Bathroom humidity above 60%/);
+  assert.match(text, /only 07:00–22:00/);
+});
+
+test("editor shows sensor, turn-on and turn-off level fields for value triggers", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "Bathroom fan on humidity", draft: { trigger: "value_above", valueClass: "humidity", valueThreshold: 60, offThreshold: 50 } }, "bathroom");
+  panel._view = { name: "editor", room: "bathroom" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /data-f="value_entity"/);
+  assert.match(html, /Turn on when it goes above/);
+  assert.match(html, /Turn back off when it drops below/);
+  assert.match(html, /Only run between/);
 });
