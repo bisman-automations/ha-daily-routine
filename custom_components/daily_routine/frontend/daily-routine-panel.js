@@ -30,13 +30,38 @@ const REASON_LABELS = {
   conditions_not_met: "conditions were not met",
   outside_hours: "outside its hours",
 };
-const SERVICE_SUGGESTIONS = [
-  "light.turn_on", "light.turn_off", "switch.turn_on", "switch.turn_off",
-  "cover.open_cover", "cover.close_cover", "cover.stop_cover",
-  "fan.turn_on", "fan.turn_off", "lock.lock", "lock.unlock",
-  "scene.turn_on", "script.turn_on", "media_player.media_pause",
-  "notify.persistent_notification",
+// What a step can do, in plain words. The service id is only used under the hood.
+const ACTIONS = [
+  { service: "light.turn_on", label: "Turn on lights" },
+  { service: "light.turn_off", label: "Turn off lights" },
+  { service: "switch.turn_on", label: "Turn on switches" },
+  { service: "switch.turn_off", label: "Turn off switches" },
+  { service: "fan.turn_on", label: "Turn on fans" },
+  { service: "fan.turn_off", label: "Turn off fans" },
+  { service: "cover.open_cover", label: "Open curtains and blinds" },
+  { service: "cover.close_cover", label: "Close curtains and blinds" },
+  { service: "cover.stop_cover", label: "Stop curtains and blinds" },
+  { service: "lock.lock", label: "Lock doors" },
+  { service: "lock.unlock", label: "Unlock doors" },
+  { service: "scene.turn_on", label: "Activate a scene" },
+  { service: "script.turn_on", label: "Run a script" },
+  { service: "media_player.media_pause", label: "Pause media" },
+  { service: "notify.persistent_notification", label: "Show a Home Assistant notification" },
 ];
+const CUSTOM_ACTION = "__custom";
+
+function humanize(text) {
+  const spaced = String(text || "").replace(/_/g, " ").trim();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+function actionLabel(service) {
+  if (!service) return "";
+  const known = ACTIONS.find((a) => a.service === service);
+  if (known) return known.label;
+  const [domain, action = ""] = service.split(".");
+  return `${humanize(action)} (${humanize(domain)})`;
+}
 
 const TEMPLATES = [
   {
@@ -573,6 +598,17 @@ class DailyRoutinePanel extends HTMLElement {
     if (el.dataset.si !== undefined) {
       const step = d.actions[Number(el.dataset.si)];
       if (!step) return;
+      if (el.dataset.sf === "actionChoice") {
+        if (value === CUSTOM_ACTION) {
+          step.custom = true;
+          step.service = "";
+        } else {
+          step.custom = false;
+          step.service = value;
+        }
+        if (!live) this._render();
+        return;
+      }
       step[el.dataset.sf] = el.dataset.sf === "seconds" ? Number(value) || 0 : value;
       if (el.dataset.sf === "entities") return;
       if (el.dataset.rerender !== undefined && !live) this._render();
@@ -941,7 +977,6 @@ class DailyRoutinePanel extends HTMLElement {
 
       ${preview}
       ${this._notice ? `<div class="notice ${this._error ? "error" : ""}">${esc(this._notice)}</div>` : ""}
-      <datalist id="services">${SERVICE_SUGGESTIONS.map((s) => `<option value="${s}">`).join("")}</datalist>
       <div class="footer">
         ${d.isNew ? "" : `<button class="ghost danger" data-act="delete">Delete</button>`}
         <button class="ghost" data-act="cancel">Cancel</button>
@@ -959,7 +994,7 @@ class DailyRoutinePanel extends HTMLElement {
         <button class="ghost" data-act="move-step" data-i="${i}" data-dir="1" ${i === last ? "disabled" : ""}>↓</button>
         <button class="ghost" data-act="remove-step" data-i="${i}">Remove</button></div></div>`;
     const kind = `<label>Type<select data-si="${i}" data-sf="kind" data-rerender>
-      <option value="service" ${step.kind === "service" ? "selected" : ""}>Service</option>
+      <option value="service" ${step.kind === "service" ? "selected" : ""}>Action</option>
       <option value="delay" ${step.kind === "delay" ? "selected" : ""}>Wait (seconds)</option></select></label>`;
     if (step.kind === "delay") {
       return `<div class="step">${head}${kind}<label>Seconds<input type="number" min="0" step="1" data-si="${i}" data-sf="seconds" value="${esc(step.seconds)}"></label></div>`;
@@ -975,11 +1010,22 @@ class DailyRoutinePanel extends HTMLElement {
     const entityChecks = step.targetMode === "entities"
       ? `<div class="checks">${candidates.map((e) => checkbox(`sentity`, e.entity_id, e.name, step.entities.includes(e.entity_id), i)).join("") || `<p class="muted small">No matching devices here.</p>`}</div>`
       : "";
+    const known = ACTIONS.some((a) => a.service === step.service);
+    const custom = !known && (step.custom || step.service !== "");
+    const actionOptions = [
+      `<option value="" ${!step.service && !custom ? "selected" : ""}>Choose an action…</option>`,
+      ...ACTIONS.map((a) => `<option value="${esc(a.service)}" ${a.service === step.service ? "selected" : ""}>${esc(a.label)}</option>`),
+      `<option value="${CUSTOM_ACTION}" ${custom ? "selected" : ""}>Other (advanced)…</option>`,
+    ].join("");
+    const customField = custom
+      ? `<label>Service name<input data-si="${i}" data-sf="service" value="${esc(step.service)}" placeholder="domain.service"></label>`
+      : "";
     return `<div class="step">${head}${kind}
-      <label>Service<input list="services" data-si="${i}" data-sf="service" value="${esc(step.service)}" placeholder="light.turn_off"></label>
+      <label>Action<select data-si="${i}" data-sf="actionChoice" data-rerender>${actionOptions}</select></label>
+      ${customField}
       <label>Applies to<select data-si="${i}" data-sf="targetMode" data-rerender>${targetModes}</select></label>
       ${entityChecks}
-      <label>Extra data (optional JSON)<textarea data-si="${i}" data-sf="data" rows="2" placeholder='{"brightness": 128}'>${esc(step.data)}</textarea></label>
+      <label>Advanced: extra settings (optional JSON)<textarea data-si="${i}" data-sf="data" rows="2" placeholder='{"brightness": 128}'>${esc(step.data)}</textarea></label>
     </div>`;
   }
 
@@ -997,7 +1043,7 @@ class DailyRoutinePanel extends HTMLElement {
     };
     const steps = preview.steps.map((s, i) => s.type === "delay"
       ? `<li>Wait ${esc(s.seconds)} s</li>`
-      : `<li>${esc(s.service)} → ${esc(outcomes[s.outcome] || s.outcome)}${s.entities?.length ? `<br><span class="muted small">${s.entities.map((e) => esc(this._nameFor(e))).join(", ")}</span>` : ""}</li>`).join("");
+      : `<li>${esc(actionLabel(s.service))} → ${esc(outcomes[s.outcome] || s.outcome)}${s.entities?.length ? `<br><span class="muted small">${s.entities.map((e) => esc(this._nameFor(e))).join(", ")}</span>` : ""}</li>`).join("");
     const verdict = preview.conditions_ok
       ? `<span class="pill">Conditions pass right now</span>`
       : `<span class="pill warn">Would wait: ${esc(REASON_LABELS[preview.block_reason] || preview.block_reason)}</span>`;

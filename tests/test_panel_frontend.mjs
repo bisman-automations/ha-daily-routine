@@ -344,3 +344,39 @@ test("editor shows sensor, turn-on and turn-off level fields for value triggers"
   assert.match(html, /Turn back off when it drops below/);
   assert.match(html, /Only run between/);
 });
+
+test("the action dropdown shows plain labels, never service ids", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "Off", draft: { trigger: "time", time: "07:00:00", actions: [{ service: "light.turn_off", targetMode: "area" }] } }, "kitchen");
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /<option value="light.turn_off" selected>Turn off lights<\/option>/);
+  assert.match(html, />Action</);
+  assert.doesNotMatch(html, />light\.turn_off</);
+  assert.doesNotMatch(html, /<datalist/);
+});
+
+test("choosing Other shows a service name box, and picking a labelled action hides it", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "Blank", draft: { trigger: "manual", actions: [{ service: "light.turn_off", targetMode: "area" }] } }, "kitchen");
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._draft.actions[0].custom = true;
+  panel._draft.actions[0].service = "";
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /data-sf="service"/);
+
+  panel._draft.actions[0].custom = false;
+  panel._draft.actions[0].service = "fan.turn_on";
+  panel._render();
+  assert.doesNotMatch(panel.shadowRoot.innerHTML, /data-sf="service"/);
+});
+
+test("unknown services get a readable label in the preview", () => {
+  const panel = makePanel();
+  const html = panel._renderPreview({
+    steps: [{ type: "service", service: "vacuum.start_pause", outcome: "would_run", entities: [] }],
+    conditions_ok: true,
+  });
+  assert.match(html, /Start pause \(Vacuum\)/);
+});

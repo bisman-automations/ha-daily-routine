@@ -98,7 +98,7 @@ Each routine is its own service under the Daily Routine integration. It is linke
 | Skip steps already done | Skip a step whose devices are already in the target state (default on) |
 | Catch up | After a restart, still run a missed time routine within N minutes (up to 180) |
 | Retry | Retry a failed step up to 3 times |
-| Steps | Service calls (with a room, specific devices, or no target) and waits |
+| Steps | Actions chosen by name, such as "Turn off lights" (with a room, specific devices, or no target), or any service under "Other (advanced)", plus waits |
 | Notify | On run, on skip, on failure |
 
 ### Trigger notes

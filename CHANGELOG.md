@@ -2,7 +2,7 @@
 
 All notable changes to the **ha-daily-routine** Home Assistant integration will be documented in this file.
 
-## [Unreleased]
+## [1.4.0] - 2026-10-17
 
 ### Routines
 * **Sensor triggers:** run when a numeric sensor (for example humidity) rises above or falls below a level. Staying above the level does not re-run the routine.
@@ -13,6 +13,10 @@ All notable changes to the **ha-daily-routine** Home Assistant integration will 
 ### Settings
 * **Notifications:** choose any number of phones or devices, shown by name rather than by entity id.
 * Clearer wording for the people and notification settings.
+
+### Editor
+* Actions are picked by name (for example "Turn off lights") instead of typing service ids. "Other (advanced)" still allows any service.
+* Previews and labels show the same plain names.
 
 ## [1.3.0] - 2026-10-17
 
