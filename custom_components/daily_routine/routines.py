@@ -5,8 +5,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-import voluptuous as vol
-
 from .const import (
     MAX_ACTIONS,
     TRIGGER_EVERYONE_LEAVES,
@@ -16,6 +14,7 @@ from .const import (
     TRIGGERS,
     WEEKDAYS,
 )
+from .schema import vol
 
 ROUTINE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 SERVICE_RE = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$")

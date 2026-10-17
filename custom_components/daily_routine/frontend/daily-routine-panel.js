@@ -98,7 +98,7 @@ class DailyRoutinePanel extends HTMLElement {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     this._wire();
     this._timer = setInterval(() => {
-      if (this._view.name === "rooms" || this._view.name === "room") this._load(true);
+      if (["rooms", "room", "all"].includes(this._view.name)) this._load(true);
     }, REFRESH_MS);
   }
 
@@ -226,7 +226,7 @@ class DailyRoutinePanel extends HTMLElement {
     if (spec.useRoomSensors) draft.sensors = this._roomSensors(roomId).map((e) => e.entity_id);
     if (spec.useHouseSensors) draft.sensors = this._data.binary_sensors.filter((s) => SENSOR_CLASSES.includes(s.device_class)).map((s) => s.entity_id);
     if (spec.useAllPeople) {
-      draft.people = this._data.people.map((p) => p.entity_id);
+      draft.people = this._data.people.filter((p) => p.tracked).map((p) => p.entity_id);
       draft.require_everyone_away = true;
       draft.require_sensors_clear = true;
     }
@@ -374,6 +374,13 @@ class DailyRoutinePanel extends HTMLElement {
           this._showNotice("Routine deleted.");
           break;
         }
+        case "all-routines":
+          this._view = { name: "all" };
+          this._notice = null;
+          break;
+        case "tracked-people":
+          this._draft.people = this._data.people.filter((p) => p.tracked).map((p) => p.entity_id);
+          break;
         case "pause":
           await this._call({ type: `${DOMAIN}/pause`, paused: !this._data.paused });
           break;
@@ -422,7 +429,16 @@ class DailyRoutinePanel extends HTMLElement {
 
   _onField(event, live = false) {
     const el = event.target;
-    if (!this._draft || !el.dataset) return;
+    if (!el.dataset) return;
+    if (el.dataset.search !== undefined) {
+      this._query = el.value;
+      const results = this.shadowRoot.querySelector("[data-results]");
+      if (results) results.innerHTML = this._allResults();
+      const count = this.shadowRoot.querySelector("[data-count]");
+      if (count) count.textContent = this._countText();
+      return;
+    }
+    if (!this._draft) return;
     const value = el.type === "checkbox" ? el.checked : el.value;
     const d = this._draft;
 
@@ -492,6 +508,7 @@ class DailyRoutinePanel extends HTMLElement {
     let body;
     if (!this._data) body = `<p class="muted">Loading…</p>`;
     else if (this._view.name === "room") body = this._renderRoom();
+    else if (this._view.name === "all") body = this._renderAll();
     else if (this._view.name === "templates") body = this._renderTemplates();
     else if (this._view.name === "editor") body = this._renderEditor();
     else body = this._renderRooms();
@@ -510,6 +527,7 @@ class DailyRoutinePanel extends HTMLElement {
     return `<header>
       <div class="title">${back}<h1>${esc(this._titleFor())}</h1></div>
       <div class="actions">
+        ${["rooms", "room"].includes(this._view.name) && this._data ? `<button class="ghost" data-act="all-routines">All routines</button>` : ""}
         ${isRoot && this._data ? `<button class="${paused ? "warn" : "ghost"}" data-act="pause">${paused ? "Resume routines" : "Pause all"}</button>` : ""}
         <button class="ghost" data-act="refresh" title="Refresh">⟳</button>
       </div>
@@ -517,6 +535,7 @@ class DailyRoutinePanel extends HTMLElement {
   }
 
   _titleFor() {
+    if (this._view.name === "all") return "All routines";
     if (this._view.name === "rooms") return "Daily Routine";
     if (this._view.name === "editor") return this._draft?.isNew ? "New routine" : "Edit routine";
     if (this._view.name === "templates") return "New routine";
@@ -566,7 +585,7 @@ class DailyRoutinePanel extends HTMLElement {
       <div class="list">${list}</div>`;
   }
 
-  _routineCard(routine) {
+  _routineCard(routine, options = {}) {
     const status = this._data.statuses[routine.id] || {};
     const state = status.waiting ? "waiting" : status.state || "idle";
     const reason = !status.conditions_ok && status.block_reason ? ` · ${REASON_LABELS[status.block_reason] || status.block_reason}` : "";
@@ -575,6 +594,7 @@ class DailyRoutinePanel extends HTMLElement {
       <div class="routine-head">
         <div>
           <h3>${esc(routine.name)}</h3>
+          ${options.showRoom ? `<div class="muted small">${esc(this._roomName(routine.room))}</div>` : ""}
           <div class="muted small">${esc(this._describeTrigger(routine))} · ${routine.days.length === 7 ? "every day" : routine.days.join(", ")}</div>
           <div class="muted small">Next: ${esc(formatTime(status.next_run))}${esc(reason)}${detail}</div>
           <div class="muted small">Linked to: ${esc(this._linkedName(routine.device_id))}</div>
@@ -588,6 +608,56 @@ class DailyRoutinePanel extends HTMLElement {
         <button class="ghost danger" data-act="delete" data-id="${esc(routine.id)}">Delete</button>
       </div>
     </article>`;
+  }
+
+  _roomName(roomId) {
+    return roomId ? this._area(roomId)?.name || roomId : "Whole house";
+  }
+
+  _renderAll() {
+    return `<div class="toolbar"><input type="search" data-search value="${esc(this._query || "")}"
+        placeholder="Search by name, room, device, trigger or day" aria-label="Search routines"></div>
+      <div class="muted small" data-count>${esc(this._countText())}</div>
+      <div class="list" data-results>${this._allResults()}</div>`;
+  }
+
+  _countText() {
+    const total = this._data?.routines?.length || 0;
+    const shown = this._matchingRoutines().length;
+    if (!total) return "No routines yet";
+    return shown === total ? `${total} routine${total === 1 ? "" : "s"}` : `${shown} of ${total} routines`;
+  }
+
+  _matchingRoutines() {
+    const terms = (this._query || "").toLowerCase().split(/\s+/).filter(Boolean);
+    return (this._data?.routines || []).filter((routine) => {
+      const text = this._searchText(routine).toLowerCase();
+      return terms.every((term) => text.includes(term));
+    });
+  }
+
+  _searchText(routine) {
+    const status = this._data.statuses[routine.id] || {};
+    return [
+      routine.name,
+      this._roomName(routine.room),
+      this._describeTrigger(routine),
+      this._linkedName(routine.device_id),
+      routine.enabled ? "enabled" : "disabled",
+      STATE_LABELS[status.state] || status.state || "",
+      routine.days.join(" "),
+    ].join(" ");
+  }
+
+  _allResults() {
+    if (!(this._data?.routines || []).length) {
+      return `<section class="empty"><h2>No routines yet</h2><p>Open a room and add your first routine.</p></section>`;
+    }
+    const matches = this._matchingRoutines();
+    if (!matches.length) {
+      return `<section class="empty"><h2>No matches</h2><p>Nothing matches “${esc(this._query)}”. Try fewer words.</p></section>`;
+    }
+    return matches.map((routine) => this._routineCard(routine, { showRoom: true })).join("");
   }
 
   _renderTemplates() {
@@ -616,7 +686,7 @@ class DailyRoutinePanel extends HTMLElement {
     const days = WEEKDAYS.map((day) => `<label class="chip"><input type="checkbox" data-day="${day}" ${d.days.includes(day) ? "checked" : ""}> ${day}</label>`).join("");
 
     const peopleList = this._data.people.length
-      ? this._data.people.map((p) => checkbox("people", p.entity_id, p.name, d.people.includes(p.entity_id))).join("")
+      ? this._data.people.map((p) => personCheckbox(p, d.people.includes(p.entity_id))).join("")
       : `<p class="muted small">No people in Home Assistant yet.</p>`;
 
     const sensorList = sensorOptions.length
@@ -648,7 +718,8 @@ class DailyRoutinePanel extends HTMLElement {
         ${d.trigger === "time" ? `<label>Time<input type="time" data-f="time" value="${esc(hhmm(d.time))}"></label>` : ""}
         ${d.trigger === "sunrise" || d.trigger === "sunset" ? `<label>Offset in minutes (negative is before)<input type="number" min="-720" max="720" data-f="offset_minutes" value="${esc(d.offset_minutes)}"></label>` : ""}
         ${timeBased ? `<div class="chips">${days}</div>` : ""}
-        ${presence ? `<h4>Who</h4><p class="muted small">Pick the people this routine watches.</p><div class="checks">${peopleList}</div>` : ""}
+        ${presence ? `<h4>Who</h4><p class="muted small">Pick the people this routine watches. People without location tracking can't be checked.</p><div class="checks">${peopleList}</div>
+        <button class="ghost" data-act="tracked-people">Select everyone with tracking</button>` : ""}
         ${!presence && d.trigger !== "room_clear" ? `<label class="check"><input type="checkbox" data-f="require_everyone_away" data-rerender ${d.require_everyone_away ? "checked" : ""}> Only when everyone is away</label>` : ""}
         ${!presence && d.require_everyone_away && d.trigger !== "room_clear" ? `<div class="checks">${peopleList}</div>` : ""}
         ${d.trigger !== "room_clear" && !presence ? `<label class="check"><input type="checkbox" data-f="require_sensors_clear" data-rerender ${d.require_sensors_clear ? "checked" : ""}> Only when the sensors have been quiet</label>` : ""}
@@ -746,6 +817,14 @@ class DailyRoutinePanel extends HTMLElement {
   }
 }
 
+function personCheckbox(person, checked) {
+  if (!person.tracked && !checked) {
+    return `<label class="check muted"><input type="checkbox" disabled> ${esc(person.name)} (no location tracking)</label>`;
+  }
+  const note = person.tracked ? "" : " (no location tracking)";
+  return checkbox("people", person.entity_id, person.name + note, checked);
+}
+
 function checkbox(list, value, label, checked, stepIndex) {
   const attrs = stepIndex !== undefined
     ? `data-sentity="${stepIndex}" data-val="${esc(value)}"`
@@ -767,6 +846,7 @@ const STYLES = `<style>
   button.primary { background: var(--primary-color, #03a9f4); color: #fff; border-color: transparent; }
   button.warn { background: var(--warning-color, #ffa600); color: #000; border-color: transparent; }
   button.danger { color: var(--error-color, #b3261e); }
+  .toolbar input[type="search"] { width: 100%; max-width: 32rem; }
   button.ghost { background: transparent; }
   button:disabled { opacity: .4; cursor: default; }
   input, select, textarea { font: inherit; width: 100%; box-sizing: border-box; padding: 8px; border-radius: 8px;

@@ -36,6 +36,22 @@ AWAY_ROUTINE = dict(
 )
 
 
+@pytest.fixture(autouse=True)
+def _stop_coordinators(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch):
+    """Cancel every timer and listener a test's coordinators started, before the harness checks for leftovers."""
+    created: list[HomeRoutinesCoordinator] = []
+    original_init = HomeRoutinesCoordinator.__init__
+
+    def recording_init(self: HomeRoutinesCoordinator, *args, **kwargs) -> None:
+        original_init(self, *args, **kwargs)
+        created.append(self)
+
+    monkeypatch.setattr(HomeRoutinesCoordinator, "__init__", recording_init)
+    yield
+    for coord in created:
+        coord._drop_all_handles()  # noqa: SLF001
+
+
 def _at(local: str) -> datetime:
     """Aware datetime in the harness's local zone (where time triggers are evaluated)."""
     return datetime.fromisoformat(local).replace(tzinfo=dt_util.get_default_time_zone())

@@ -62,6 +62,12 @@ class RoutineStatusSensor(SensorEntity):
         return f"{routine['name']} status" if routine else f"{self.routine_id} status"
 
     @property
+    def suggested_object_id(self) -> str:
+        routine = self.coordinator._find(self.routine_id)  # noqa: SLF001
+        name = routine["name"] if routine else self.routine_id
+        return f"{name} status"
+
+    @property
     def device_info(self) -> DeviceInfo:
         return DeviceInfo(identifiers={routine_identifier(self.routine_id)})
 

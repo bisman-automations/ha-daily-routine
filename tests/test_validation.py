@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import pytest
-import voluptuous as vol
 
 from custom_components.daily_routine.routines import normalize_routine, parse_delay
+from custom_components.daily_routine.schema import vol
 
 from .conftest import make_routine
 

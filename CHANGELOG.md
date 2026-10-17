@@ -2,6 +2,23 @@
 
 All notable changes to the **ha-daily-routine** Home Assistant integration will be documented in this file.
 
+## [1.2.0] - 2026-10-17
+
+### People
+* Only people with location tracking (a device tracker) can be checked by a routine. Other people are listed but disabled.
+* Saving a routine that includes a person without tracking is refused with a clear message.
+* "Select everyone with tracking" shortcut in the editor. The "everyone is away" template uses only tracked people.
+
+### Sidebar
+* **All routines** view with search. Matches name, room, linked device, trigger, days, and status, and each word narrows the list.
+
+### Compatibility
+* Works with Home Assistant 2026.10, which validates with probatio. Earlier versions still use voluptuous.
+* Routine sensors on Home Assistant 2026.10 or later include the device name in their entity id. Upgraded routines keep their existing id.
+
+### Project
+* Fixes for hassfest (config schema), mypy, and the test harness on current Home Assistant (frontend dependency, timer cleanup, registry lookups).
+
 ## [1.1.1] - 2026-10-16
 
 ### Routines as devices

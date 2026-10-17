@@ -37,7 +37,10 @@ const overview = {
     { id: "lamp_1", name: "Kitchen lamp", area_id: "kitchen", area_name: "Kitchen", model: "Lamp" },
     { id: "tv_1", name: "Living room TV", area_id: null, area_name: null, model: "TV" },
   ],
-  people: [{ entity_id: "person.alex", name: "Alex", state: "home" }],
+  people: [
+    { entity_id: "person.alex", name: "Alex", state: "home", tracked: true },
+    { entity_id: "person.kid", name: "Kid", state: "unknown", tracked: false },
+  ],
   binary_sensors: [{ entity_id: "binary_sensor.kitchen_motion", name: "Kitchen motion", device_class: "motion", state: "off" }],
   routines: [
     {
@@ -188,4 +191,60 @@ test("new room routine defaults to a device in that room; payload carries the ch
   assert.equal(panel._draftToRaw(panel._draft).device_id, "lamp_1");
   panel._draft.device_id = "";
   assert.equal(panel._draftToRaw(panel._draft).device_id, null);
+});
+
+test("all routines view lists every routine and searches name, room, device and trigger together", () => {
+  const panel = makePanel();
+  panel._data.routines.push({ ...panel._data.routines[0], id: "night_lamp", name: "Night lamp off", room: null, device_id: "lamp_1", trigger: "time", time: "22:30:00" });
+  panel._query = "";
+  assert.deepEqual(panel._matchingRoutines().map((r) => r.id), ["kitchen_lights", "night_lamp"]);
+  panel._query = "lamp";
+  assert.deepEqual(panel._matchingRoutines().map((r) => r.id), ["night_lamp"]);
+  // "kitchen" matches the kitchen room and also the linked "Kitchen lamp" device.
+  panel._query = "kitchen";
+  assert.deepEqual(panel._matchingRoutines().map((r) => r.id), ["kitchen_lights", "night_lamp"]);
+  panel._query = "kitchen lamp";
+  assert.deepEqual(panel._matchingRoutines().map((r) => r.id), ["night_lamp"]);
+  panel._query = "bedroom lamp";
+  assert.deepEqual(panel._matchingRoutines().map((r) => r.id), []);
+  panel._query = "whole house 22:30";
+  assert.deepEqual(panel._matchingRoutines().map((r) => r.id), ["night_lamp"]);
+});
+
+test("all routines view renders a search box, a count and room names on each card", () => {
+  const panel = makePanel();
+  panel._data.routines.push({ ...panel._data.routines[0], id: "night_lamp", name: "Night lamp off", room: null, device_id: "lamp_1" });
+  panel._view = { name: "all" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /data-search/);
+  assert.match(html, /2 routines/);
+  assert.match(html, /Whole house/);
+  assert.match(html, /Kitchen/);
+});
+
+test("typing in the search box filters without rebuilding the page", () => {
+  const panel = makePanel();
+  panel._view = { name: "all" };
+  panel._onField({ target: { dataset: { search: "" }, value: "bedroom" } });
+  assert.equal(panel._query, "bedroom");
+  assert.deepEqual(panel._matchingRoutines(), []);
+});
+
+test("rooms header has a button to the all routines view", () => {
+  const panel = makePanel();
+  panel._view = { name: "rooms" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /data-act="all-routines"/);
+});
+
+test("people without location tracking are shown but cannot be picked", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "Lights off when everyone is away", draft: { trigger: "everyone_leaves", useAllPeople: true } }, null);
+  assert.deepEqual(panel._draft.people, ["person.alex"]);
+  panel._view = { name: "editor", room: null };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /<input type="checkbox" disabled> Kid \(no location tracking\)/);
+  assert.match(html, /data-act="tracked-people"/);
 });

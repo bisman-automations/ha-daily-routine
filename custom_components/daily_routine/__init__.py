@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import logging
 
-import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN
 from .coordinator import HomeRoutinesCoordinator
 from .devices import async_ensure_hub
 from .legacy import is_legacy, legacy_routines
+from .schema import vol
 
 _LOGGER = logging.getLogger(__name__)
+
+# Set up from config entries only (the sidebar and devices are created from the entry).
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 PLATFORMS = [Platform.SENSOR, Platform.SWITCH]
 SERVICES = ("run_routine", "reload_routines")

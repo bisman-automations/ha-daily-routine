@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.daily_routine.const import (
@@ -120,5 +121,11 @@ async def test_setup_migrates_and_removes_extra_entries(
     assert hass.config_entries.async_get_entry(first.entry_id).data == {}
     leftover = hass.config_entries.async_get_entry(second.entry_id)
     assert leftover is not None and leftover.data == {} and leftover.options == {}
-    assert hass.states.get("sensor.morning_covers_status") is not None
-    assert hass.states.get("sensor.bedroom_covers_status") is not None
+    sensor_id = er.async_get(hass).async_get_entity_id(
+        "sensor", DOMAIN, f"{DOMAIN}_morning_covers_status"
+    )
+    assert sensor_id is not None and hass.states.get(sensor_id) is not None
+    sensor_id = er.async_get(hass).async_get_entity_id(
+        "sensor", DOMAIN, f"{DOMAIN}_bedroom_covers_status"
+    )
+    assert sensor_id is not None and hass.states.get(sensor_id) is not None

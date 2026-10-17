@@ -6,7 +6,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import voluptuous as vol
 from homeassistant.components import frontend, panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant
@@ -14,8 +13,9 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN
-from .coordinator import HomeRoutinesCoordinator, list_areas
+from .coordinator import HomeRoutinesCoordinator, list_areas, list_people
 from .routines import normalize_routine
+from .schema import vol
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ def _devices(hass: HomeAssistant) -> list[dict[str, Any]]:
     registry = dr.async_get(hass)
     areas = ar.async_get(hass)
     devices = []
-    for device in registry.devices.values():
+    for device in registry.devices:
         if device.disabled or any(domain == DOMAIN for domain, _ in device.identifiers):
             continue
         area = areas.async_get_area(device.area_id) if device.area_id else None
@@ -58,14 +58,6 @@ def _devices(hass: HomeAssistant) -> list[dict[str, Any]]:
 
 
 def _overview(hass: HomeAssistant, coordinator: HomeRoutinesCoordinator) -> dict[str, Any]:
-    people = [
-        {
-            "entity_id": s.entity_id,
-            "name": s.attributes.get("friendly_name") or s.entity_id,
-            "state": s.state,
-        }
-        for s in sorted(hass.states.async_all("person"), key=lambda s: s.entity_id)
-    ]
     sensors = [
         {
             "entity_id": s.entity_id,
@@ -79,7 +71,7 @@ def _overview(hass: HomeAssistant, coordinator: HomeRoutinesCoordinator) -> dict
     return {
         "areas": list_areas(hass),
         "devices": _devices(hass),
-        "people": people,
+        "people": list_people(hass),
         "binary_sensors": sensors,
         "routines": coordinator.routines,
         "statuses": statuses,

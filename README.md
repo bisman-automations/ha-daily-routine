@@ -61,6 +61,8 @@ Your routines are moved into the new storage automatically on the first start. O
 
 Room routines target the room itself, so lights or covers you add to that room later are included without editing the routine.
 
+Use **All routines** in the header to search every routine by name, room, device, trigger, or day.
+
 Each routine card has **Run now**, **Edit**, **Enable/Disable**, and **Delete**. In the editor, **Linked device** picks the device the routine belongs to.
 
 ## Routines as devices
@@ -76,7 +78,7 @@ Each routine is its own service under the Daily Routine integration. It is linke
 | Trigger | `time`, `sunrise`, `sunset`, `everyone_leaves`, `someone_arrives`, `room_clear`, or `manual` |
 | Time / offset | For time and sun triggers (offset in minutes, negative is before) |
 | Days | Which days it may run |
-| Who | People for presence triggers (or "only when everyone is away") |
+| Who | People for presence triggers (or "only when everyone is away"). Only people with location tracking can be checked |
 | Sensors + quiet for | Motion/occupancy sensors that must stay off for N minutes. Motion restarts the count |
 | Extra conditions | Entity + state that must match, for example `input_boolean.guest_mode` = `off` |
 | Run every time | Run on every trigger, not once a day (default on for presence and room triggers) |
@@ -109,7 +111,7 @@ data:
 Entities:
 
 - `switch.pause_all_routines`: on = all automatic routines paused.
-- `sensor.<routine>_status`: one per routine. State is `idle`, `waiting`, `running`, `skipped`, or `error`. Attributes include `last_run`, `last_result`, `next_run`, `block_reason`, `waiting`, and `repeat`.
+- Routine status sensors: one per routine, on that routine's service device. The entity id is set by Home Assistant. Routines created on Home Assistant 2026.10 or later include the device name in it (for example `sensor.daily_routine_<routine>_status`). Upgraded routines keep their existing id. The state is `idle`, `waiting`, `running`, `skipped`, or `error`. Attributes include `last_run`, `last_result`, `next_run`, `block_reason`, `waiting`, and `repeat`.
 
 ## Events
 

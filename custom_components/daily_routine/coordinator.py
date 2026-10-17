@@ -9,9 +9,15 @@ from datetime import datetime, timedelta
 from datetime import time as dt_time
 from typing import Any
 
-import voluptuous as vol
 from homeassistant.const import SUN_EVENT_SUNRISE, SUN_EVENT_SUNSET
-from homeassistant.core import Event, EventStateChangedData, HomeAssistant, ServiceCall, callback
+from homeassistant.core import (
+    Event,
+    EventStateChangedData,
+    HomeAssistant,
+    ServiceCall,
+    State,
+    callback,
+)
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -45,6 +51,7 @@ from .routines import (
     normalize_routine,
     uses_conditions,
 )
+from .schema import vol
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -72,6 +79,24 @@ def area_entity_ids(hass: HomeAssistant, area_id: str) -> list[str]:
             if entry.area_id is None and entry.disabled_by is None:
                 found.add(entry.entity_id)
     return sorted(found)
+
+
+def person_is_tracked(state: State) -> bool:
+    """A person can be checked only when Home Assistant has a location for them (a device tracker)."""
+    return bool(state.attributes.get("source") or state.attributes.get("device_trackers"))
+
+
+def list_people(hass: HomeAssistant) -> list[dict[str, Any]]:
+    """All person profiles, flagged by whether a routine can check their location."""
+    return [
+        {
+            "entity_id": s.entity_id,
+            "name": s.attributes.get("friendly_name") or s.entity_id,
+            "state": s.state,
+            "tracked": person_is_tracked(s),
+        }
+        for s in sorted(hass.states.async_all("person"), key=lambda s: s.entity_id)
+    ]
 
 
 def list_areas(hass: HomeAssistant) -> list[dict[str, Any]]:
@@ -273,6 +298,19 @@ class HomeRoutinesCoordinator:
 
     async def async_save_routine(self, raw: Any) -> dict[str, Any]:
         routine = normalize_routine(raw)
+        untracked = []
+        for person_id in routine["people"]:
+            state = self.hass.states.get(person_id)
+            if state is None:
+                untracked.append(person_id)
+            elif not person_is_tracked(state):
+                untracked.append(str(state.attributes.get("friendly_name") or person_id))
+        if untracked:
+            names = ", ".join(untracked)
+            raise vol.Invalid(
+                f"{names} has no location tracking, so a routine can't check where they are. "
+                "Give them a device tracker or leave them out."
+            )
         index = next((i for i, r in enumerate(self.routines) if r["id"] == routine["id"]), None)
         if index is None:
             if len(self.routines) >= MAX_ROUTINES:
