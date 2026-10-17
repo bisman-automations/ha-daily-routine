@@ -40,7 +40,10 @@ const overview = {
   people: [
     { entity_id: "person.alex", name: "Alex", state: "home", tracked: true },
     { entity_id: "person.kid", name: "Kid", state: "unknown", tracked: false },
+    { entity_id: "person.skylight", name: "Skylight", state: "unknown", tracked: false, hidden: true },
   ],
+  settings: { hidden_people: ["person.skylight"], notify_service: "" },
+  notify_services: ["notify.mobile_app_phone"],
   binary_sensors: [{ entity_id: "binary_sensor.kitchen_motion", name: "Kitchen motion", device_class: "motion", state: "off" }],
   routines: [
     {
@@ -231,11 +234,42 @@ test("typing in the search box filters without rebuilding the page", () => {
   assert.deepEqual(panel._matchingRoutines(), []);
 });
 
-test("rooms header has a button to the all routines view", () => {
+test("tabs show Rooms and Routines to everyone, and Settings only to admins", () => {
   const panel = makePanel();
   panel._view = { name: "rooms" };
   panel._render();
-  assert.match(panel.shadowRoot.innerHTML, /data-act="all-routines"/);
+  let html = panel.shadowRoot.innerHTML;
+  assert.match(html, /data-tab="routines"/);
+  assert.doesNotMatch(html, /data-tab="settings"/);
+
+  panel._hass = { user: { is_admin: true } };
+  panel._render();
+  html = panel.shadowRoot.innerHTML;
+  assert.match(html, /data-tab="settings"/);
+  assert.match(html, /aria-selected="true" ?>Rooms|data-tab="rooms" aria-selected="true"/);
+});
+
+test("settings page lists every person with hidden ones switched off, and the notify choice", () => {
+  const panel = makePanel();
+  panel._view = { name: "settings" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /data-show-person="person.alex" checked/);
+  assert.match(html, /data-show-person="person.skylight" >/);
+  assert.match(html, /<option value="notify.mobile_app_phone"/);
+  assert.match(html, /data-notify-service/);
+});
+
+test("people turned off in settings are left out of the routine picker", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "Blank routine", draft: { trigger: "everyone_leaves" } }, null);
+  panel._view = { name: "editor", room: null };
+  panel._render();
+  assert.doesNotMatch(panel.shadowRoot.innerHTML, /Skylight/);
+
+  panel._draft.people = ["person.skylight"];
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /Skylight/);
 });
 
 test("people without location tracking are shown but cannot be picked", () => {

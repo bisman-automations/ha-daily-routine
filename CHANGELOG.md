@@ -2,6 +2,15 @@
 
 All notable changes to the **ha-daily-routine** Home Assistant integration will be documented in this file.
 
+## [1.3.0] - 2026-10-17
+
+### Sidebar
+* Tabs: **Rooms**, **Routines** (search), and **Settings** (administrators only).
+
+### Settings
+* **People in routines:** choose which person profiles appear when building a routine. Turned-off profiles (for example a shared display) are hidden from the picker. Routines that already use them keep them.
+* **Notifications:** optionally send routine runs, skips and failures to a notify service, such as a phone, in addition to Home Assistant notifications.
+
 ## [1.2.0] - 2026-10-17
 
 ### People

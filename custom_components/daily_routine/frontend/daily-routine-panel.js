@@ -226,7 +226,7 @@ class DailyRoutinePanel extends HTMLElement {
     if (spec.useRoomSensors) draft.sensors = this._roomSensors(roomId).map((e) => e.entity_id);
     if (spec.useHouseSensors) draft.sensors = this._data.binary_sensors.filter((s) => SENSOR_CLASSES.includes(s.device_class)).map((s) => s.entity_id);
     if (spec.useAllPeople) {
-      draft.people = this._data.people.filter((p) => p.tracked).map((p) => p.entity_id);
+      draft.people = this._data.people.filter((p) => p.tracked && !p.hidden).map((p) => p.entity_id);
       draft.require_everyone_away = true;
       draft.require_sensors_clear = true;
     }
@@ -374,12 +374,16 @@ class DailyRoutinePanel extends HTMLElement {
           this._showNotice("Routine deleted.");
           break;
         }
-        case "all-routines":
-          this._view = { name: "all" };
+        case "tab": {
+          const tab = el.dataset.tab;
+          this._view = { name: tab === "routines" ? "all" : tab === "settings" ? "settings" : "rooms" };
+          this._draft = null;
+          this._preview = null;
           this._notice = null;
           break;
+        }
         case "tracked-people":
-          this._draft.people = this._data.people.filter((p) => p.tracked).map((p) => p.entity_id);
+          this._draft.people = this._data.people.filter((p) => p.tracked && !p.hidden).map((p) => p.entity_id);
           break;
         case "pause":
           await this._call({ type: `${DOMAIN}/pause`, paused: !this._data.paused });
@@ -430,6 +434,14 @@ class DailyRoutinePanel extends HTMLElement {
   _onField(event, live = false) {
     const el = event.target;
     if (!el.dataset) return;
+    if (!live && (el.dataset.showPerson !== undefined || el.dataset.notifyService !== undefined)) {
+      if (el.dataset.showPerson !== undefined) {
+        this._saveSettings({ hidden_people: this._hiddenFromDom() });
+      } else {
+        this._saveSettings({ notify_service: el.value });
+      }
+      return;
+    }
     if (el.dataset.search !== undefined) {
       this._query = el.value;
       const results = this.shadowRoot.querySelector("[data-results]");
@@ -509,6 +521,7 @@ class DailyRoutinePanel extends HTMLElement {
     if (!this._data) body = `<p class="muted">Loading…</p>`;
     else if (this._view.name === "room") body = this._renderRoom();
     else if (this._view.name === "all") body = this._renderAll();
+    else if (this._view.name === "settings") body = this._renderSettings();
     else if (this._view.name === "templates") body = this._renderTemplates();
     else if (this._view.name === "editor") body = this._renderEditor();
     else body = this._renderRooms();
@@ -520,22 +533,42 @@ class DailyRoutinePanel extends HTMLElement {
     this.shadowRoot.innerHTML = `${STYLES}<main>${this._renderHeader()}${banner}${notice}${body}</main>`;
   }
 
+  _tabs() {
+    const tabs = [
+      { id: "rooms", label: "Rooms" },
+      { id: "routines", label: "Routines" },
+    ];
+    if (this._hass?.user?.is_admin) tabs.push({ id: "settings", label: "Settings" });
+    return tabs;
+  }
+
+  _activeTab() {
+    if (this._view.name === "all") return "routines";
+    if (this._view.name === "settings") return "settings";
+    return "rooms";
+  }
+
   _renderHeader() {
-    const isRoot = this._view.name === "rooms";
-    const back = isRoot ? "" : `<button class="ghost" data-act="back">← Rooms</button>`;
+    const inRoom = ["room", "templates", "editor"].includes(this._view.name);
+    const back = inRoom ? `<button class="ghost" data-act="back">← Rooms</button>` : "";
     const paused = this._data?.paused;
+    const active = this._activeTab();
+    const tabs = this._tabs()
+      .map((t) => `<button role="tab" data-act="tab" data-tab="${t.id}" aria-selected="${t.id === active}">${t.label}</button>`)
+      .join("");
     return `<header>
       <div class="title">${back}<h1>${esc(this._titleFor())}</h1></div>
+      <nav role="tablist" aria-label="Daily Routine sections">${tabs}</nav>
       <div class="actions">
-        ${["rooms", "room"].includes(this._view.name) && this._data ? `<button class="ghost" data-act="all-routines">All routines</button>` : ""}
-        ${isRoot && this._data ? `<button class="${paused ? "warn" : "ghost"}" data-act="pause">${paused ? "Resume routines" : "Pause all"}</button>` : ""}
+        ${this._data ? `<button class="${paused ? "warn" : "ghost"}" data-act="pause">${paused ? "Resume routines" : "Pause all"}</button>` : ""}
         <button class="ghost" data-act="refresh" title="Refresh">⟳</button>
       </div>
     </header>`;
   }
 
   _titleFor() {
-    if (this._view.name === "all") return "All routines";
+    if (this._view.name === "all") return "Routines";
+    if (this._view.name === "settings") return "Settings";
     if (this._view.name === "rooms") return "Daily Routine";
     if (this._view.name === "editor") return this._draft?.isNew ? "New routine" : "Edit routine";
     if (this._view.name === "templates") return "New routine";
@@ -608,6 +641,53 @@ class DailyRoutinePanel extends HTMLElement {
         <button class="ghost danger" data-act="delete" data-id="${esc(routine.id)}">Delete</button>
       </div>
     </article>`;
+  }
+
+  _hiddenFromDom() {
+    return [...this.shadowRoot.querySelectorAll("[data-show-person]")]
+      .filter((box) => !box.checked)
+      .map((box) => box.dataset.showPerson);
+  }
+
+  async _saveSettings(patch) {
+    const current = this._data.settings || { hidden_people: [], notify_service: "" };
+    try {
+      const result = await this._call({ type: `${DOMAIN}/settings/save`, settings: { ...current, ...patch } });
+      this._data.settings = result.settings;
+      const hidden = new Set(result.settings.hidden_people);
+      this._data.people = this._data.people.map((p) => ({ ...p, hidden: hidden.has(p.entity_id) }));
+      this._showNotice("Settings saved.");
+    } catch (err) {
+      this._showNotice(err.message || String(err), true);
+    }
+    this._render();
+  }
+
+  _pickerPeople(draft) {
+    return this._data.people.filter((p) => !p.hidden || draft.people.includes(p.entity_id));
+  }
+
+  _renderSettings() {
+    const settings = this._data.settings || { hidden_people: [], notify_service: "" };
+    const hidden = new Set(settings.hidden_people || []);
+    const people = this._data.people.length
+      ? this._data.people
+          .map((p) => `<label class="check"><input type="checkbox" data-show-person="${esc(p.entity_id)}" ${hidden.has(p.entity_id) ? "" : "checked"}> ${esc(p.name)}${p.tracked ? "" : ` <span class="muted small">(no location tracking)</span>`}</label>`)
+          .join("")
+      : `<p class="muted small">No people in Home Assistant yet.</p>`;
+    const services = (this._data.notify_services || [])
+      .map((svc) => `<option value="${esc(svc)}" ${svc === settings.notify_service ? "selected" : ""}>${esc(svc)}</option>`)
+      .join("");
+    return `<section class="card">
+        <h3>People in routines</h3>
+        <p class="muted small">Only the people turned on here appear when you build a routine. Turn off profiles that aren't people, such as a shared display. A routine that already uses someone keeps them.</p>
+        <div class="checks">${people}</div>
+      </section>
+      <section class="card">
+        <h3>Notifications</h3>
+        <p class="muted small">Routine runs, skips and failures always appear in Home Assistant's notifications. Choose a phone or other service to send them there too.</p>
+        <label>Also send to<select data-notify-service><option value="">Nothing else</option>${services}</select></label>
+      </section>`;
   }
 
   _roomName(roomId) {
@@ -685,9 +765,10 @@ class DailyRoutinePanel extends HTMLElement {
 
     const days = WEEKDAYS.map((day) => `<label class="chip"><input type="checkbox" data-day="${day}" ${d.days.includes(day) ? "checked" : ""}> ${day}</label>`).join("");
 
-    const peopleList = this._data.people.length
-      ? this._data.people.map((p) => personCheckbox(p, d.people.includes(p.entity_id))).join("")
-      : `<p class="muted small">No people in Home Assistant yet.</p>`;
+    const pickerPeople = this._pickerPeople(d);
+    const peopleList = pickerPeople.length
+      ? pickerPeople.map((p) => personCheckbox(p, d.people.includes(p.entity_id))).join("")
+      : `<p class="muted small">No people are turned on for routines. Turn them on under Settings.</p>`;
 
     const sensorList = sensorOptions.length
       ? sensorOptions.map((s) => checkbox("sensors", s.entity_id, s.name + (s.inRoom ? " (this room)" : ""), d.sensors.includes(s.entity_id))).join("")
@@ -847,6 +928,9 @@ const STYLES = `<style>
   button.warn { background: var(--warning-color, #ffa600); color: #000; border-color: transparent; }
   button.danger { color: var(--error-color, #b3261e); }
   .toolbar input[type="search"] { width: 100%; max-width: 32rem; }
+  header nav { display: flex; gap: 4px; flex-wrap: wrap; }
+  header nav button { border-radius: 999px; }
+  header nav button[aria-selected="true"] { font-weight: 600; border-color: currentColor; }
   button.ghost { background: transparent; }
   button:disabled { opacity: .4; cursor: default; }
   input, select, textarea { font: inherit; width: 100%; box-sizing: border-box; padding: 8px; border-radius: 8px;

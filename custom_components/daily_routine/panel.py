@@ -71,7 +71,11 @@ def _overview(hass: HomeAssistant, coordinator: HomeRoutinesCoordinator) -> dict
     return {
         "areas": list_areas(hass),
         "devices": _devices(hass),
-        "people": list_people(hass),
+        "people": list_people(hass, frozenset(coordinator.settings["hidden_people"])),
+        "settings": coordinator.settings,
+        "notify_services": sorted(
+            f"notify.{name}" for name in hass.services.async_services().get("notify", {})
+        ),
         "binary_sensors": sensors,
         "routines": coordinator.routines,
         "statuses": statuses,
@@ -89,6 +93,7 @@ def async_setup_panel_api(hass: HomeAssistant) -> None:
         ws_run_routine,
         ws_preview_routine,
         ws_set_paused,
+        ws_save_settings,
     ):
         websocket_api.async_register_command(hass, command)
     hass.data[_API_REGISTERED] = True
@@ -196,6 +201,26 @@ async def ws_set_paused(
         return
     await coordinator.async_set_paused(msg["paused"])
     connection.send_result(msg["id"], {"paused": coordinator.paused})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/settings/save", vol.Required("settings"): dict}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_save_settings(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    try:
+        settings = await coordinator.async_set_settings(msg["settings"])
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "invalid_settings", str(err))
+        return
+    connection.send_result(msg["id"], {"settings": settings})
 
 
 async def async_register_panel(hass: HomeAssistant) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from datetime import time as dt_time
@@ -81,19 +82,25 @@ def area_entity_ids(hass: HomeAssistant, area_id: str) -> list[str]:
     return sorted(found)
 
 
+NOTIFY_SERVICE_RE = re.compile(r"notify\.[a-z0-9_]+")
+
+
 def person_is_tracked(state: State) -> bool:
     """A person can be checked only when Home Assistant has a location for them (a device tracker)."""
     return bool(state.attributes.get("source") or state.attributes.get("device_trackers"))
 
 
-def list_people(hass: HomeAssistant) -> list[dict[str, Any]]:
-    """All person profiles, flagged by whether a routine can check their location."""
+def list_people(
+    hass: HomeAssistant, hidden: set[str] | frozenset[str] = frozenset()
+) -> list[dict[str, Any]]:
+    """All person profiles. Flags whether a routine can check their location, and whether they are hidden."""
     return [
         {
             "entity_id": s.entity_id,
             "name": s.attributes.get("friendly_name") or s.entity_id,
             "state": s.state,
             "tracked": person_is_tracked(s),
+            "hidden": s.entity_id in hidden,
         }
         for s in sorted(hass.states.async_all("person"), key=lambda s: s.entity_id)
     ]
@@ -143,6 +150,7 @@ class HomeRoutinesCoordinator:
         self.routines: list[dict[str, Any]] = []
         self.paused = False
         self.migrated = False
+        self.settings: dict[str, Any] = {"hidden_people": [], "notify_service": ""}
         self._runtime: dict[str, dict[str, Any]] = {}
         self._listeners: list[Callable[[], None]] = []
         self._handles: dict[tuple[str, str], Callable[[], None]] = {}
@@ -194,6 +202,17 @@ class HomeRoutinesCoordinator:
         self.hass.async_create_task(self._notify(message))
 
     async def _notify(self, message: str) -> None:
+        service = self.settings.get("notify_service") or ""
+        if service:
+            try:
+                await self.hass.services.async_call(
+                    "notify",
+                    service.split(".", 1)[1],
+                    {"title": "Daily Routine", "message": message},
+                    blocking=False,
+                )
+            except Exception:  # noqa: BLE001
+                _LOGGER.debug("Could not call notify service %s", service)
         try:
             await self.hass.services.async_call(
                 "persistent_notification",
@@ -255,6 +274,11 @@ class HomeRoutinesCoordinator:
         data = await self._store.async_load() or {}
         self.paused = bool(data.get("paused", False))
         self.migrated = bool(data.get("migrated", False))
+        saved = data.get("settings") or {}
+        self.settings = {
+            "hidden_people": [p for p in saved.get("hidden_people", []) if isinstance(p, str)],
+            "notify_service": str(saved.get("notify_service") or ""),
+        }
         for raw in data.get("routines", []):
             try:
                 self.routines.append(normalize_routine(raw))
@@ -278,6 +302,7 @@ class HomeRoutinesCoordinator:
                 "routines": self.routines,
                 "paused": self.paused,
                 "migrated": self.migrated,
+                "settings": self.settings,
                 "runtime": runtime,
             }
         )
@@ -325,6 +350,26 @@ class HomeRoutinesCoordinator:
         self.routines = [r for r in self.routines if r["id"] != routine_id]
         self._runtime.pop(routine_id, None)
         await self.async_reload()
+
+    async def async_set_settings(self, raw: Any) -> dict[str, Any]:
+        """Save the settings tab: which people routines can use, and an optional notify service."""
+        if not isinstance(raw, dict):
+            raise vol.Invalid("Settings must be an object.")
+        hidden = raw.get("hidden_people", [])
+        if not isinstance(hidden, list) or not all(
+            isinstance(p, str) and p.startswith("person.") for p in hidden
+        ):
+            raise vol.Invalid("Hidden people must be person entities.")
+        notify = str(raw.get("notify_service") or "").strip()
+        if notify:
+            if not NOTIFY_SERVICE_RE.fullmatch(notify):
+                raise vol.Invalid("Choose a notify service, for example notify.mobile_app_phone.")
+            if not self.hass.services.has_service("notify", notify.split(".", 1)[1]):
+                raise vol.Invalid(f"{notify} is not available in Home Assistant.")
+        self.settings = {"hidden_people": sorted(set(hidden)), "notify_service": notify}
+        await self._async_save()
+        self._notify_listeners()
+        return self.settings
 
     async def async_set_paused(self, paused: bool) -> None:
         self.paused = paused

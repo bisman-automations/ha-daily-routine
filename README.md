@@ -61,7 +61,11 @@ Your routines are moved into the new storage automatically on the first start. O
 
 Room routines target the room itself, so lights or covers you add to that room later are included without editing the routine.
 
-Use **All routines** in the header to search every routine by name, room, device, trigger, or day.
+The sidebar has three tabs:
+
+- **Rooms**: pick a room to see and add its routines.
+- **Routines**: search every routine by name, room, device, trigger, or day.
+- **Settings** (administrators only): which people routines can use, and where notifications also go.
 
 Each routine card has **Run now**, **Edit**, **Enable/Disable**, and **Delete**. In the editor, **Linked device** picks the device the routine belongs to.
 
@@ -70,6 +74,11 @@ Each routine card has **Run now**, **Edit**, **Enable/Disable**, and **Delete**.
 Each routine is its own service under the Daily Routine integration. It is linked to the device you picked (shown as *Connected via* on the routine's page). Routines without a device link to the **Daily Routine** device. Deleting a routine removes its service.
 
 ---
+
+## Settings
+
+- **People in routines.** Turn off the profiles that aren't people, such as a shared display, so they don't appear when you build a routine. A routine that already uses someone keeps them.
+- **Notifications.** Routine runs, skips and failures always appear in Home Assistant's notifications. Choose a notify service, such as your phone, to send them there too.
 
 ## Routine reference
 
