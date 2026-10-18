@@ -22,7 +22,7 @@ const PRESENCE_TRIGGERS = ["everyone_leaves", "someone_arrives"];
 const VALUE_TRIGGERS = ["value_above", "value_below"];
 const STATE_LABELS = { idle: "Ready", waiting: "Waiting", running: "Running", skipped: "Skipped", error: "Error" };
 const REASON_LABELS = {
-  someone_home: "someone is home",
+  someone_home: "someone is still in that place",
   sensors_active: "motion right now",
   clear_timer_running: "waiting for the room to be quiet",
   clear_timer_not_started: "waiting for sensors",
@@ -265,12 +265,28 @@ class DailyRoutinePanel extends HTMLElement {
       const word = routine.trigger === "value_above" ? "above" : "below";
       return `${this._nameFor(routine.value_entity)} ${word} ${level}${windowText}`;
     }
+    if (PRESENCE_TRIGGERS.includes(routine.trigger)) {
+      return `${when} (${this._zoneName(routine.zone)})${windowText}`;
+    }
     if (routine.trigger === "time") return `${when} ${hhmm(routine.time)}${windowText}`;
     if (routine.trigger === "sunrise" || routine.trigger === "sunset") {
       const offset = routine.offset_minutes ? ` ${routine.offset_minutes > 0 ? "+" : ""}${routine.offset_minutes} min` : "";
       return `${when}${offset}${windowText}`;
     }
     return `${when}${windowText}`;
+  }
+
+  _zoneName(zoneId) {
+    const zones = this._data?.zones || [{ entity_id: "zone.home", name: "Home" }];
+    return zones.find((z) => z.entity_id === (zoneId || "zone.home"))?.name || zoneId || "Home";
+  }
+
+  _zoneField(draft) {
+    const zones = this._data?.zones || [{ entity_id: "zone.home", name: "Home" }];
+    const current = draft.zone || "zone.home";
+    const options = zones.map((z) => `<option value="${esc(z.entity_id)}" ${z.entity_id === current ? "selected" : ""}>${esc(z.name)}</option>`).join("");
+    return `<label>Place<select data-f="zone">${options}</select></label>
+      <p class="muted small">The Home Assistant zone that counts as leaving or arriving, for example Home or Work.</p>`;
   }
 
   _unitSuffix(entityId) {
@@ -309,7 +325,7 @@ class DailyRoutinePanel extends HTMLElement {
 
   _newDraft(roomId) {
     return {
-      id: "", name: "", room: roomId || null, device_id: this._defaultDevice(roomId), enabled: true,
+      id: "", name: "", room: roomId || null, device_id: this._defaultDevice(roomId), enabled: true, zone: "zone.home",
       value_entity: "", value_threshold: "", off_threshold: "", active_from: "", active_to: "",
       trigger: "time", time: "07:00:00", offset_minutes: 0, days: [...WEEKDAYS],
       people: [], require_everyone_away: false, sensors: [], require_sensors_clear: false, clear_minutes: 0,
@@ -349,7 +365,7 @@ class DailyRoutinePanel extends HTMLElement {
   _draftFromRoutine(routine) {
     const areaIds = this._areas().map((a) => a.id);
     return {
-      id: routine.id, name: routine.name, room: routine.room || null, device_id: routine.device_id || "", enabled: routine.enabled,
+      id: routine.id, name: routine.name, room: routine.room || null, device_id: routine.device_id || "", enabled: routine.enabled, zone: routine.zone || "zone.home",
       value_entity: routine.value_entity || "", value_threshold: routine.value_threshold ?? "", off_threshold: routine.off_threshold ?? "",
       active_from: routine.active_from ? hhmm(routine.active_from) : "", active_to: routine.active_to ? hhmm(routine.active_to) : "",
       trigger: routine.trigger, time: routine.time, offset_minutes: routine.offset_minutes || 0, days: [...routine.days],
@@ -402,6 +418,7 @@ class DailyRoutinePanel extends HTMLElement {
       enabled: draft.enabled,
       room: draft.room || null,
       device_id: draft.device_id || null,
+      zone: draft.zone || "zone.home",
       value_entity: draft.value_entity || null,
       value_threshold: draft.value_threshold === "" || draft.value_threshold == null ? null : Number(draft.value_threshold),
       off_threshold: draft.off_threshold === "" || draft.off_threshold == null ? null : Number(draft.off_threshold),
@@ -936,6 +953,7 @@ class DailyRoutinePanel extends HTMLElement {
         ${d.trigger === "time" ? `<label>Time<input type="time" data-f="time" value="${esc(hhmm(d.time))}"></label>` : ""}
         ${d.trigger === "sunrise" || d.trigger === "sunset" ? `<label>Offset in minutes (negative is before)<input type="number" min="-720" max="720" data-f="offset_minutes" value="${esc(d.offset_minutes)}"></label>` : ""}
         ${timeBased || valueTrigger ? `<div class="chips">${days}</div>` : ""}
+        ${presence || d.require_everyone_away ? this._zoneField(d) : ""}
         ${presence ? `<h4>Who</h4><p class="muted small">Pick the people this routine watches. People without location tracking can't be checked.</p><div class="checks">${peopleList}</div>
         <button class="ghost" data-act="tracked-people">Select everyone with tracking</button>` : ""}
         ${!presence && d.trigger !== "room_clear" ? `<label class="check"><input type="checkbox" data-f="require_everyone_away" data-rerender ${d.require_everyone_away ? "checked" : ""}> Only when everyone is away</label>` : ""}

@@ -211,6 +211,10 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
     require_sensors_clear = bool(raw.get("require_sensors_clear", False))
     clear_minutes = _int(raw.get("clear_minutes"), 0, 1440, "Clear minutes")
 
+    zone = raw.get("zone") or "zone.home"
+    if not isinstance(zone, str) or not zone.startswith("zone."):
+        raise vol.Invalid("Pick a place (zone) for this routine.")
+
     if trigger == TRIGGER_EVERYONE_LEAVES:
         require_everyone_away = True
     if trigger == TRIGGER_ROOM_CLEAR:
@@ -291,6 +295,7 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "days": days,
         "people": people,
         "require_everyone_away": require_everyone_away,
+        "zone": zone,
         "sensors": sensors,
         "require_sensors_clear": require_sensors_clear,
         "clear_minutes": clear_minutes,

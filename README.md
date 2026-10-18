@@ -18,7 +18,7 @@
 - **Rooms from Home Assistant.** The sidebar shows every area (room) automatically, plus a **Whole house** card for routines that span the house. Create or rename rooms in *Settings → Areas & zones*, and they appear here.
 - **Routines per room.** Curtains open at 07:00 in most rooms and at 08:00 in the bedroom: two routines. Lights in a room turn off once its motion sensor has been quiet for 10 minutes.
 - **Whole-house routines.** Lights off when everyone has left and the house has been quiet for 15 minutes.
-- **Triggers:** a set time, sunrise or sunset (with offset), everyone leaves, someone arrives, a room has been quiet, a sensor rising above or falling below a level (for example humidity), or manual only.
+- **Triggers:** a set time, sunrise or sunset (with offset), everyone leaves or someone arrives at a place (Home, Work, or any other zone you've set up in Home Assistant), a room has been quiet, a sensor rising above or falling below a level (for example humidity), or manual only.
 - **Daytime windows.** Any routine can be limited to hours, such as 07:00 to 22:00. Windows can cross midnight.
 - **Humidity fan example.** A bathroom fan turns on when humidity goes above 60% and off again below 50%, but only between 07:00 and 22:00. The turn-off level creates a second routine named "(off)" that you can see and edit.
 - **Safety first.** Unknown or unavailable people and sensors block a run. Conditions are checked again before every step.
@@ -87,6 +87,7 @@ Each routine is its own service under the Daily Routine integration. It is linke
 | Field | Meaning |
 |-------|---------|
 | Trigger | `time`, `sunrise`, `sunset`, `everyone_leaves`, `someone_arrives`, `room_clear`, `value_above`, `value_below`, or `manual` |
+| Place | For leave and arrive triggers, and "only when everyone is away": the zone that counts, such as Home or Work. Defaults to Home |
 | Sensor and level | For value triggers: a numeric sensor, the level it must cross, and for "above" an optional level to turn back off |
 | Only run between | Optional start and end time. Outside these hours the routine does nothing. Windows can cross midnight |
 | Time / offset | For time and sun triggers (offset in minutes, negative is before) |
@@ -104,7 +105,7 @@ Each routine is its own service under the Daily Routine integration. It is linke
 ### Trigger notes
 
 - **Room is quiet** runs once each time the room's sensors have been quiet for the chosen minutes. It does not fire just because Home Assistant restarted in a quiet room.
-- **Everyone leaves / someone arrives** fire on the change itself. With sensors selected, they wait until the room is quiet.
+- **Everyone leaves / someone arrives** fire on the change itself. With sensors selected, they wait until the room is quiet. "Everyone leaves Work" means every person has left that zone, and "someone arrives at Work" means the first person to reach it after everyone had left. A person who is at another place counts as away from Home.
 - **Above / below a level** fire when the sensor crosses the level, not on every reading. Staying above it does not run the routine again. The turn-off level for "above" creates a companion routine named "(off)" that runs when the sensor drops below that level.
 - **Outside the window** a crossing is ignored. The routine does not catch up when the window opens. It runs at the next crossing inside the window.
 

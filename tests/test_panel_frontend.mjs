@@ -54,6 +54,7 @@ const overview = {
     { entity: "notify.mobile_app_phone", name: "Alex's phone" },
     { entity: "notify.mobile_app_tablet", name: "Kitchen tablet" },
   ],
+  zones: [{ entity_id: "zone.home", name: "Home" }, { entity_id: "zone.work", name: "Work" }],
   sensors: [{ entity_id: "sensor.bathroom_humidity", name: "Bathroom humidity", device_class: "humidity", unit: "%" }],
   binary_sensors: [{ entity_id: "binary_sensor.kitchen_motion", name: "Kitchen motion", device_class: "motion", state: "off" }],
   routines: [
@@ -379,4 +380,27 @@ test("unknown services get a readable label in the preview", () => {
     conditions_ok: true,
   });
   assert.match(html, /Start pause \(Vacuum\)/);
+});
+
+test("presence routines pick a place, defaulting to Home", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "Leave", draft: { trigger: "everyone_leaves", usePeopleList: true, actions: [{ service: "lock.lock", targetMode: "all_areas" }] } }, null);
+  assert.equal(panel._draft.zone, "zone.home");
+  panel._view = { name: "editor", room: null };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /data-f="zone"/);
+  assert.match(html, /<option value="zone.work"\s*>Work<\/option>/);
+});
+
+test("a presence routine saves the place it watches and names it in summaries", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "Leave work", draft: { trigger: "everyone_leaves", usePeopleList: true, actions: [{ service: "lock.lock", targetMode: "all_areas" }] } }, null);
+  panel._draft.zone = "zone.work";
+  panel._draft.name = "Leave work";
+  panel._draft.people = ["person.alex"];
+  const raw = panel._draftToRaw(panel._draft);
+  assert.equal(raw.zone, "zone.work");
+  assert.equal(panel._describeTrigger({ trigger: "everyone_leaves", zone: "zone.work" }), "When everyone leaves (Work)");
+  assert.equal(panel._describeTrigger({ trigger: "someone_arrives", zone: "zone.home" }), "When someone arrives (Home)");
 });

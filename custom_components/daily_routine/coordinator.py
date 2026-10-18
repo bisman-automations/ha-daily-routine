@@ -220,8 +220,23 @@ class HomeRoutinesCoordinator:
         state = self.hass.states.get(entity_id)
         return state is not None and state.state == expected
 
-    def _all_away(self, people: list[str]) -> bool:
-        return all(self._state_is(pid, "not_home") for pid in people)
+    def _zone_key(self, zone: str) -> str | None:
+        """The state a person reports while inside this zone (home is reported as 'home')."""
+        if zone == "zone.home":
+            return "home"
+        state = self.hass.states.get(zone)
+        return state.name if state is not None else None
+
+    def _all_away(self, people: list[str], zone: str = "zone.home") -> bool:
+        """True when every person has left the zone. Unknown or unavailable people block it."""
+        key = self._zone_key(zone)
+        if key is None:
+            return False
+        for pid in people:
+            state = self.hass.states.get(pid)
+            if state is None or state.state in (key, "unknown", "unavailable"):
+                return False
+        return True
 
     def _allowed_day(self, routine: dict[str, Any], when: datetime) -> bool:
         return WEEKDAYS[when.weekday()] in routine["days"]
@@ -455,7 +470,9 @@ class HomeRoutinesCoordinator:
         if routine["active_from"] and routine["active_to"]:
             if not _within_hours(now, routine["active_from"], routine["active_to"]):
                 return False, "outside_hours"
-        if routine["require_everyone_away"] and not self._all_away(routine["people"]):
+        if routine["require_everyone_away"] and not self._all_away(
+            routine["people"], routine["zone"]
+        ):
             return False, "someone_home"
 
         for item in routine["require_states"]:
@@ -688,7 +705,8 @@ class HomeRoutinesCoordinator:
             return
         people = list(routine["people"])
         rt = self._rt(rid)
-        rt["all_away"] = self._all_away(people)
+        zone = routine["zone"]
+        rt["all_away"] = self._all_away(people, zone)
 
         @callback
         def _on_change(_event: Event[EventStateChangedData]) -> None:
@@ -696,7 +714,7 @@ class HomeRoutinesCoordinator:
                 return
             now = dt_util.now()
             was_away = bool(rt["all_away"])
-            is_away = self._all_away(people)
+            is_away = self._all_away(people, zone)
             rt["all_away"] = is_away
             if not self._allowed_day(routine, now):
                 return

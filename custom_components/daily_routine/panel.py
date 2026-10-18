@@ -65,6 +65,19 @@ def _is_number(value: str) -> bool:
     return True
 
 
+def _zones(hass: HomeAssistant) -> list[dict[str, str]]:
+    zones = [{"entity_id": "zone.home", "name": "Home"}]
+    for state in sorted(hass.states.async_all("zone"), key=lambda s: s.entity_id):
+        if state.entity_id != "zone.home":
+            zones.append(
+                {
+                    "entity_id": state.entity_id,
+                    "name": str(state.attributes.get("friendly_name") or state.name),
+                }
+            )
+    return zones
+
+
 def _overview(hass: HomeAssistant, coordinator: HomeRoutinesCoordinator) -> dict[str, Any]:
     sensors = [
         {
@@ -92,6 +105,7 @@ def _overview(hass: HomeAssistant, coordinator: HomeRoutinesCoordinator) -> dict
         "people": list_people(hass, frozenset(coordinator.settings["hidden_people"])),
         "settings": coordinator.settings,
         "notify_targets": notify_targets(hass),
+        "zones": _zones(hass),
         "binary_sensors": sensors,
         "sensors": numeric,
         "routines": coordinator.routines,
