@@ -51,5 +51,4 @@ Never put account-specific details in the README, CHANGELOG, code, or tests: no 
 
 ## Open decisions (ask before acting)
 
-- The repo has no LICENSE file, so the HACS action fails. The user has to choose the license.
-- Open decisions: none. The license is still open. Ask the user before adding a LICENSE file.
+- None. The license is MIT (chosen by the user on 2026-10-18).

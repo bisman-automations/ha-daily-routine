@@ -167,4 +167,4 @@ Every event includes `routine_id` and `name`.
 
 ## Licence and feedback
 
-Open source. Issues and pull requests welcome: https://github.com/bisman-automations/ha-daily-routine/issues
+MIT licensed (see [LICENSE](LICENSE)). Issues and pull requests welcome: https://github.com/bisman-automations/ha-daily-routine/issues

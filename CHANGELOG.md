@@ -8,6 +8,9 @@ All notable changes to the **ha-daily-routine** Home Assistant integration will 
 * **Places:** leave and arrive triggers, and "only when everyone is away," now work with any Home Assistant zone, such as Work. Pick a place in the editor. Home stays the default, so existing routines behave the same.
 * Someone at another place now counts as away from Home for leave-home routines.
 
+### Other
+* Added the MIT license, which HACS needs before the integration can be listed in its catalog.
+
 ## [1.4.0] - 2026-10-17
 
 ### Routines
