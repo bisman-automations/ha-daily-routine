@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from custom_components.daily_routine.routines import normalize_routine, parse_delay
+from custom_components.daily_routine.routines import normalize_routine, parse_delay, uses_conditions
 from custom_components.daily_routine.schema import vol
 
 from .conftest import make_routine
@@ -29,12 +29,15 @@ def test_repeat_defaults_on_for_presence_and_room_triggers() -> None:
 
 def test_room_trigger_forces_sensor_clear() -> None:
     routine = make_routine(trigger="room_clear", sensors=["binary_sensor.m"], clear_minutes=5)
-    assert routine["require_sensors_clear"] is True
+    assert routine["clear_minutes"] == 5
+    assert routine["sensors"] == ["binary_sensor.m"]
+    assert uses_conditions(routine)
 
 
 def test_everyone_leaves_forces_everyone_away() -> None:
     routine = make_routine(trigger="everyone_leaves", people=["person.a"])
-    assert routine["require_everyone_away"] is True
+    assert routine["people"] == ["person.a"]
+    assert uses_conditions(routine)
 
 
 def test_time_accepts_hh_mm() -> None:

@@ -24,7 +24,7 @@
         },
         "reconfigure": {
           "title": "Edit {name}",
-          "description": "Everything here is also in the Daily Routine sidebar, and changes show in both. Steps: one per line, for example light.turn_off | light.hall, or wait 30 for a pause. Extra conditions: one per line, for example lock.front_door = unlocked.",
+          "description": "Everything here is also in the Daily Routine sidebar, and changes show in both. Steps: one per line, for example light.turn_off | light.hall, or wait 30. Extra conditions: one per line, for example lock.front_door = unlocked, presence everyone away | person.a, person.b | zone.home, or sensors quiet 10 | binary_sensor.hall_motion.",
           "data": {
             "name": "Name",
             "enabled": "Turned on",
@@ -35,18 +35,15 @@
             "zone": "Place (for leave and arrive triggers)",
             "room": "Room (leave empty for the whole house)",
             "device_id": "Linked device",
-            "people": "People",
-            "require_everyone_away": "Only when everyone is away",
-            "sensors": "Motion or occupancy sensors",
-            "require_sensors_clear": "Only when the sensors have been quiet",
-            "clear_minutes": "Quiet for (minutes)",
+            "people": "People (for leave and arrive triggers)",
+            "sensors": "Motion or occupancy sensors (for a room-is-quiet trigger)",
+            "clear_minutes": "Quiet for (minutes, for a room-is-quiet trigger)",
             "active_from": "Only run from (HH:MM)",
             "active_to": "Only run until (HH:MM)",
             "value_entity": "Sensor to watch",
             "value_threshold": "Level to watch for",
             "off_threshold": "Turn back off below this level (optional)",
             "conditions_match": "Extra conditions",
-            "require_states": "Extra conditions (entity = state, one per line)",
             "catch_up_minutes": "If missed after a restart, still run within (minutes, 0 = never)",
             "retries": "Retry a failed step (times)",
             "repeat": "Run every time (not just once a day)",
@@ -54,7 +51,8 @@
             "notify_on_run": "Notify me when it runs",
             "notify_on_skip": "Notify me when it is skipped",
             "notify_on_error": "Notify me when it fails",
-            "actions": "Steps (one per line)"
+            "actions": "Steps (one per line)",
+            "conditions": "Extra conditions (one per line)"
           }
         }
       },

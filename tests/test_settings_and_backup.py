@@ -71,8 +71,33 @@ def test_step_extra_settings_must_be_a_json_object() -> None:
 
 def test_conditions_round_trip_through_text() -> None:
     conditions = [
-        {"entity_id": "lock.front_door", "state": "unlocked"},
-        {"entity_id": "input_boolean.guest", "state": "off"},
+        {
+            "kind": "presence",
+            "who": "everyone",
+            "where": "away",
+            "people": ["person.sam"],
+            "zone": "zone.home",
+        },
+        {
+            "kind": "presence",
+            "who": "anyone",
+            "where": "in",
+            "people": ["person.sam", "person.riley"],
+            "zone": "zone.work",
+        },
+        {
+            "kind": "sensors",
+            "mode": "quiet",
+            "minutes": 10,
+            "sensors": ["binary_sensor.hall_motion"],
+        },
+        {
+            "kind": "sensors",
+            "mode": "active",
+            "minutes": 5,
+            "sensors": ["binary_sensor.hall_motion"],
+        },
+        {"kind": "state", "entity_id": "lock.front_door", "state": "unlocked"},
     ]
     assert parse_conditions_text(conditions_to_text(conditions)) == conditions
 
@@ -124,14 +149,12 @@ async def test_settings_editor_saves_people_sensors_conditions_and_options(
             "zone": "zone.home",
             "days": ["mon", "tue"],
             "people": ["person.sam"],
-            "require_everyone_away": True,
             "sensors": ["binary_sensor.hall_motion"],
-            "require_sensors_clear": True,
             "clear_minutes": 10,
             "active_from": "18:00",
             "active_to": "23:00",
             "conditions_match": "any",
-            "require_states": "input_boolean.guest = off\nlock.front_door = locked",
+            "conditions": "presence everyone away | person.sam | zone.home\nsensors active 5 | binary_sensor.hall_motion\ninput_boolean.guest = off\nlock.front_door = locked",
             "catch_up_minutes": 30,
             "retries": 2,
             "repeat": True,
@@ -149,15 +172,27 @@ async def test_settings_editor_saves_people_sensors_conditions_and_options(
     routine = coordinator.get_routine("kitchen")
     assert routine is not None
     assert routine["days"] == ["mon", "tue"]
-    assert routine["people"] == ["person.sam"]
     assert routine["sensors"] == ["binary_sensor.hall_motion"]
     assert routine["clear_minutes"] == 10
     assert routine["active_from"] == "18:00:00"
     assert routine["active_to"] == "23:00:00"
     assert routine["conditions_match"] == "any"
-    assert routine["require_states"] == [
-        {"entity_id": "input_boolean.guest", "state": "off"},
-        {"entity_id": "lock.front_door", "state": "locked"},
+    assert routine["conditions"] == [
+        {
+            "kind": "presence",
+            "who": "everyone",
+            "where": "away",
+            "people": ["person.sam"],
+            "zone": "zone.home",
+        },
+        {
+            "kind": "sensors",
+            "mode": "active",
+            "minutes": 5,
+            "sensors": ["binary_sensor.hall_motion"],
+        },
+        {"kind": "state", "entity_id": "input_boolean.guest", "state": "off"},
+        {"kind": "state", "entity_id": "lock.front_door", "state": "locked"},
     ]
     assert routine["catch_up_minutes"] == 30
     assert routine["retries"] == 2
@@ -186,12 +221,12 @@ async def test_settings_editor_reports_a_bad_condition_line(
             "trigger": "time",
             "time": "06:30",
             "zone": "zone.home",
-            "require_states": "lock.front_door unlocked",
+            "conditions": "lock.front_door unlocked",
             "actions": "light.turn_off | light.hall",
         },
     )
     assert result["type"] == "form"
-    assert result["errors"] == {"require_states": "invalid_conditions"}
+    assert result["errors"] == {"conditions": "invalid_conditions"}
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
 

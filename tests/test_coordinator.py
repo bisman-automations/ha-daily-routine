@@ -26,6 +26,12 @@ from custom_components.daily_routine.coordinator import (
 
 from .conftest import make_routine
 
+ROOM_QUIET = dict(
+    trigger="room_clear",
+    clear_minutes=15,
+    sensors=["binary_sensor.hall_motion"],
+)
+
 AWAY_ROUTINE = dict(
     trigger="everyone_leaves",
     require_everyone_away=True,
@@ -427,7 +433,7 @@ async def test_preview_describes_a_dry_run(hass: HomeAssistant) -> None:
 
 async def test_clear_timer_is_not_persisted(hass: HomeAssistant, hass_storage) -> None:
     hass.states.async_set("binary_sensor.hall_motion", "off")
-    coord = await _started(hass, make_routine(id="away", **AWAY_ROUTINE))
+    coord = await _started(hass, make_routine(id="away", **ROOM_QUIET))
     assert coord._rt("away")["clear_since"] is not None  # noqa: SLF001
 
     await coord._async_save()  # noqa: SLF001
@@ -438,7 +444,7 @@ async def test_clear_timer_is_not_persisted(hass: HomeAssistant, hass_storage) -
 
 async def test_clear_timer_starts_from_observed_state_after_restart(hass: HomeAssistant) -> None:
     hass.states.async_set("binary_sensor.hall_motion", "on")
-    coord = await _started(hass, make_routine(id="away", **AWAY_ROUTINE))
+    coord = await _started(hass, make_routine(id="away", **ROOM_QUIET))
     assert coord._rt("away")["clear_since"] is None  # noqa: SLF001
 
     hass.states.async_set("binary_sensor.hall_motion", "off")

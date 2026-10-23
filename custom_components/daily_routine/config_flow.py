@@ -78,9 +78,7 @@ def _form_from_routine(routine: dict[str, Any]) -> dict[str, Any]:
         "room": routine["room"],
         "device_id": routine["device_id"],
         "people": list(routine["people"]),
-        "require_everyone_away": routine["require_everyone_away"],
         "sensors": list(routine["sensors"]),
-        "require_sensors_clear": routine["require_sensors_clear"],
         "clear_minutes": routine["clear_minutes"],
         "active_from": routine["active_from"][:5] if routine["active_from"] else None,
         "active_to": routine["active_to"][:5] if routine["active_to"] else None,
@@ -88,7 +86,7 @@ def _form_from_routine(routine: dict[str, Any]) -> dict[str, Any]:
         "value_threshold": routine["value_threshold"],
         "off_threshold": routine["off_threshold"],
         "conditions_match": routine["conditions_match"],
-        "require_states": conditions_to_text(routine["require_states"]),
+        "conditions": conditions_to_text(routine["conditions"]),
         "catch_up_minutes": routine["catch_up_minutes"],
         "retries": routine["retries"],
         "repeat": routine["repeat"],
@@ -104,7 +102,7 @@ def _routine_from_form(
     routine: dict[str, Any],
     values: dict[str, Any],
     actions: list[dict[str, Any]],
-    conditions: list[dict[str, str]],
+    conditions: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Merge the submitted form into the routine. Validation happens when it is saved."""
     return {
@@ -119,9 +117,7 @@ def _routine_from_form(
         "room": values.get("room") or None,
         "device_id": values.get("device_id") or None,
         "people": list(values.get("people") or []),
-        "require_everyone_away": bool(values.get("require_everyone_away")),
         "sensors": list(values.get("sensors") or []),
-        "require_sensors_clear": bool(values.get("require_sensors_clear")),
         "clear_minutes": int(values.get("clear_minutes") or 0),
         "active_from": _hhmmss(values["active_from"]) if values.get("active_from") else None,
         "active_to": _hhmmss(values["active_to"]) if values.get("active_to") else None,
@@ -129,7 +125,7 @@ def _routine_from_form(
         "value_threshold": values.get("value_threshold"),
         "off_threshold": values.get("off_threshold"),
         "conditions_match": values.get("conditions_match") or "all",
-        "require_states": conditions,
+        "conditions": conditions,
         "catch_up_minutes": int(values.get("catch_up_minutes") or 0),
         "retries": int(values.get("retries") or 0),
         "repeat": bool(values.get("repeat")),
@@ -210,13 +206,7 @@ def _form_schema(hass: Any, values: dict[str, Any]) -> vol.Schema:
                 )
             ),
             optional("people"): entity("person", multiple=True),
-            vol.Required(
-                "require_everyone_away", default=bool(values.get("require_everyone_away"))
-            ): bool,
             optional("sensors"): entity("binary_sensor", multiple=True),
-            vol.Required(
-                "require_sensors_clear", default=bool(values.get("require_sensors_clear"))
-            ): bool,
             vol.Required("clear_minutes", default=values.get("clear_minutes") or 0): number(
                 0, 1440
             ),
@@ -232,9 +222,9 @@ def _form_schema(hass: Any, values: dict[str, Any]) -> vol.Schema:
                     options=CONDITION_MATCH_OPTIONS, mode=selector.SelectSelectorMode.DROPDOWN
                 )
             ),
-            vol.Required(
-                "require_states", default=values.get("require_states", "")
-            ): selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
+            vol.Required("conditions", default=values.get("conditions", "")): selector.TextSelector(
+                selector.TextSelectorConfig(multiline=True)
+            ),
             vol.Required("catch_up_minutes", default=values.get("catch_up_minutes") or 0): number(
                 0, 180
             ),
@@ -279,9 +269,9 @@ class RoutineSubentryFlow(ConfigSubentryFlow):
                 errors["actions"] = "invalid_steps"
                 placeholders["reason"] = str(err)
             try:
-                conditions = parse_conditions_text(user_input.get("require_states") or "")
+                conditions = parse_conditions_text(user_input.get("conditions") or "")
             except vol.Invalid as err:
-                errors["require_states"] = "invalid_conditions"
+                errors["conditions"] = "invalid_conditions"
                 placeholders["reason"] = str(err)
             if not errors:
                 raw = _routine_from_form(routine, user_input, actions, conditions)

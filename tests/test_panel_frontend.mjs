@@ -64,8 +64,8 @@ const overview = {
     {
       id: "kitchen_lights", name: "Kitchen lights off", enabled: true, room: "kitchen", trigger: "room_clear",
       time: "07:00:00", offset_minutes: 0, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
-      people: [], require_everyone_away: false, sensors: ["binary_sensor.kitchen_motion"], require_sensors_clear: true,
-      clear_minutes: 10, require_states: [], repeat: true, catch_up_minutes: 0, retries: 0, skip_noop: true,
+      people: [], sensors: ["binary_sensor.kitchen_motion"],
+      clear_minutes: 10, conditions: [], conditions_match: "all", repeat: true, catch_up_minutes: 0, retries: 0, skip_noop: true,
       notify_on_run: false, notify_on_skip: false, notify_on_error: true,
       actions: [{ service: "light.turn_off", target: { area_id: ["kitchen"] }, data: {} }],
     },
@@ -443,63 +443,114 @@ test("a background refresh that brings nothing new leaves the page alone", async
   assert.equal(renders, 1, "a real change still redraws");
 });
 
-test("extra conditions offer all-or-any once there is more than one, and save the choice", () => {
+const BLANK = { title: "Blank", draft: { trigger: "time", time: "07:00:00", actions: [{ service: "light.turn_off", targetMode: "area" }] } };
+
+function editorWith(conditions) {
   const panel = makePanel();
-  panel._draft = panel._applyTemplate({ title: "Blank", draft: { trigger: "time", time: "07:00:00", actions: [{ service: "light.turn_off", targetMode: "area" }] } }, "kitchen");
+  panel._draft = panel._applyTemplate(BLANK, "kitchen");
+  panel._draft.conditions = conditions;
   panel._view = { name: "editor", room: "kitchen" };
-  panel._draft.require_states = [{ entity_id: "light.kitchen", state: "on" }];
   panel._render();
-  assert.doesNotMatch(panel.shadowRoot.innerHTML, /data-f="conditions_match"/);
+  return panel;
+}
 
-  panel._draft.require_states.push({ entity_id: "light.kitchen", state: "off" });
-  panel._render();
-  assert.match(panel.shadowRoot.innerHTML, /data-f="conditions_match"/);
+test("the When section has no separate checkboxes for away or quiet; they are conditions now", () => {
+  const panel = editorWith([]);
+  const html = panel.shadowRoot.innerHTML;
+  assert.doesNotMatch(html, /Only when everyone is away/);
+  assert.doesNotMatch(html, /Only when the sensors have been quiet/);
+  assert.match(html, /data-act="add-condition" data-kind="presence"/);
+  assert.match(html, /data-act="add-condition" data-kind="sensors"/);
+  assert.match(html, /data-act="add-condition" data-kind="state"/);
+});
 
-  panel._draft.conditions_match = "any";
+test("adding a condition of each kind creates the right shape", () => {
+  const panel = editorWith([]);
+  panel._onClick({ target: { closest: () => ({ dataset: { act: "add-condition", kind: "presence" } }) } });
+  panel._onClick({ target: { closest: () => ({ dataset: { act: "add-condition", kind: "sensors" } }) } });
+  panel._onClick({ target: { closest: () => ({ dataset: { act: "add-condition", kind: "state" } }) } });
+  assert.deepEqual(panel._draft.conditions.map((c) => c.kind), ["presence", "sensors", "state"]);
+  assert.equal(panel._draft.conditions[0].who, "everyone");
+  assert.equal(panel._draft.conditions[0].where, "away");
+  assert.equal(panel._draft.conditions[1].mode, "quiet");
+});
+
+test("a presence condition renders who, away or at, a place, and tracked people", () => {
+  const panel = editorWith([{ kind: "presence", who: "anyone", where: "in", people: ["person.alex"], zone: "zone.work" }]);
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /<option value="anyone" selected>Anyone<\/option>/);
+  assert.match(html, /<option value="in" selected>is at<\/option>/);
+  assert.match(html, /<option value="zone.work" selected>Work<\/option>/);
+  assert.match(html, /data-cpeople="person.alex" checked/);
+});
+
+test("the all-or-any choice appears once there is more than one condition, and is saved", () => {
+  const one = editorWith([{ kind: "state", entity_id: "light.kitchen", state: "on" }]);
+  assert.doesNotMatch(one.shadowRoot.innerHTML, /data-f="conditions_match"/);
+
+  const two = editorWith([
+    { kind: "state", entity_id: "light.kitchen", state: "on" },
+    { kind: "state", entity_id: "light.hall", state: "off" },
+  ]);
+  assert.match(two.shadowRoot.innerHTML, /data-f="conditions_match"/);
+  two._draft.conditions_match = "any";
+  assert.equal(two._draftToRaw(two._draft).conditions_match, "any");
+  two._draft.conditions_match = undefined;
+  assert.equal(two._draftToRaw(two._draft).conditions_match, "all");
+});
+
+test("a sensors condition sends its mode, minutes and sensors", () => {
+  const panel = editorWith([{ kind: "sensors", mode: "quiet", minutes: 10, sensors: ["binary_sensor.kitchen_motion"] }]);
+  let html = panel.shadowRoot.innerHTML;
+  assert.match(html, /<option value="quiet" selected>Quiet for<\/option>/);
+  assert.match(html, /data-csensor="binary_sensor.kitchen_motion" checked/);
+
+  panel._onField({ target: { dataset: { ci: "0", cf: "mode" }, value: "active" } });
+  panel._onField({ target: { dataset: { ci: "0", cf: "minutes" }, value: "5" } });
   const raw = panel._draftToRaw(panel._draft);
-  assert.equal(raw.conditions_match, "any");
-  panel._draft.conditions_match = undefined;
-  assert.equal(panel._draftToRaw(panel._draft).conditions_match, "all");
+  assert.deepEqual(raw.conditions, [{ kind: "sensors", mode: "active", minutes: 5, sensors: ["binary_sensor.kitchen_motion"] }]);
+  assert.equal("require_states" in raw, false);
+  assert.equal("require_everyone_away" in raw, false);
+  assert.equal("require_sensors_clear" in raw, false);
 });
 
 test("condition states are picked by name, with Other for anything else", () => {
-  const panel = makePanel();
-  panel._draft = panel._applyTemplate({ title: "Blank", draft: { trigger: "time", time: "07:00:00", actions: [{ service: "light.turn_off", targetMode: "area" }] } }, "kitchen");
-  panel._view = { name: "editor", room: "kitchen" };
-  panel._draft.require_states = [{ entity_id: "lock.front_door", state: "unlocked" }];
-  panel._render();
+  const panel = editorWith([{ kind: "state", entity_id: "lock.front_door", state: "unlocked" }]);
   let html = panel.shadowRoot.innerHTML;
   assert.match(html, /<option value="unlocked" selected>Unlocked<\/option>/);
   assert.doesNotMatch(html, /placeholder="state"/, "a known state needs no text box");
-  assert.doesNotMatch(html, />unlocked</, "no raw state text in the labels");
 
-  panel._draft.require_states = [{ entity_id: "light.kitchen", state: "dimmed", custom: true }];
+  panel._draft.conditions = [{ kind: "state", entity_id: "light.kitchen", state: "dimmed", custom: true }];
   panel._render();
   html = panel.shadowRoot.innerHTML;
   assert.match(html, /data-cf="state" value="dimmed"/);
 });
 
-test("choosing Other in a condition clears the state, shows a text box, and keeps what is typed", () => {
-  const panel = makePanel();
-  panel._draft = panel._applyTemplate({ title: "Blank", draft: { trigger: "time", time: "07:00:00", actions: [{ service: "light.turn_off", targetMode: "area" }] } }, "kitchen");
-  panel._draft.require_states = [{ entity_id: "lock.front_door", state: "locked" }];
-  panel._view = { name: "editor", room: "kitchen" };
-  panel._render();
-
+test("choosing Other in a state condition clears the state, shows a text box, and keeps what is typed", () => {
+  const panel = editorWith([{ kind: "state", entity_id: "lock.front_door", state: "locked" }]);
   panel._onField({ target: { dataset: { ci: "0", cf: "stateChoice" }, value: "__custom" } });
-  let html = panel.shadowRoot.innerHTML;
-  assert.match(html, /data-cf="state"/, "the text box appears under Other");
-  assert.equal(panel._draft.require_states[0].state, "");
+  assert.match(panel.shadowRoot.innerHTML, /data-cf="state"/, "the text box appears under Other");
+  assert.equal(panel._draft.conditions[0].state, "");
 
   panel._onField({ target: { dataset: { ci: "0", cf: "state" }, value: "jammed", type: "text" } }, true);
-  assert.deepEqual(panel._draftToRaw(panel._draft).require_states, [{ entity_id: "lock.front_door", state: "jammed" }]);
+  assert.deepEqual(panel._draftToRaw(panel._draft).conditions, [{ kind: "state", entity_id: "lock.front_door", state: "jammed" }]);
 });
 
-test("a condition left on Choose a state is not saved", () => {
+test("a state condition left on Choose a state is not saved", () => {
+  const panel = editorWith([{ kind: "state", entity_id: "lock.front_door", state: "" }]);
+  assert.deepEqual(panel._draftToRaw(panel._draft).conditions, []);
+});
+
+test("the house-empty template starts with a quiet-sensors condition, not old flags", () => {
   const panel = makePanel();
-  panel._draft = panel._applyTemplate({ title: "Blank", draft: { trigger: "time", time: "07:00:00", actions: [{ service: "light.turn_off", targetMode: "area" }] } }, "kitchen");
-  panel._draft.require_states = [{ entity_id: "lock.front_door", state: "" }];
-  assert.deepEqual(panel._draftToRaw(panel._draft).require_states, []);
+  const template = panel._templates().find((t) => t.id === "house_empty");
+  const draft = panel._applyTemplate(template, null);
+  const sensorCond = draft.conditions.find((c) => c.kind === "sensors");
+  assert.ok(sensorCond, "a sensors condition is added");
+  assert.equal(sensorCond.mode, "quiet");
+  assert.equal(sensorCond.minutes, 15);
+  const raw = panel._draftToRaw(draft);
+  assert.equal("require_sensors_clear" in raw, false);
 });
 
 test("per-person triggers are offered in the editor with a people picker and a place", () => {
@@ -622,4 +673,31 @@ test("importing a backup sends its routines and reports anything skipped", async
   assert.equal(sent[0].type, "daily_routine/import");
   assert.deepEqual(sent[0].routines, [{ id: "morning", name: "Morning" }]);
   assert.match(panel._notice, /Imported 1 routine\.\s+Skipped: broken: Add at least one step\./);
+});
+
+test("a routine card lists its recent runs, closed, in plain words", () => {
+  const panel = makePanel();
+  const routine = panel._data.routines[0];
+  const status = {
+    history: [
+      { at: "2026-10-23T07:00:00", outcome: "ran", detail: "" },
+      { at: "2026-10-22T07:00:00", outcome: "skipped", detail: "extra_condition_not_met" },
+      { at: "2026-10-21T07:00:00", outcome: "failed", detail: "error:light.turn_off" },
+    ],
+  };
+  const html = panel._historyHtml(status);
+  assert.match(html, /<details class="history"><summary[^>]*>Recent runs<\/summary>/);
+  assert.match(html, /· ran</);
+  assert.match(html, /skipped: an extra condition is not met/);
+  assert.match(html, /failed: error:light\.turn_off/);
+  assert.doesNotMatch(html, /extra_condition_not_met</, "no raw reason codes in the labels");
+  assert.equal(panel._historyHtml({ history: [] }), "");
+  assert.ok(panel._routineCard(routine, {}) !== undefined);
+});
+
+test("only the five newest runs are listed on a card", () => {
+  const panel = makePanel();
+  const history = Array.from({ length: 8 }, (_, i) => ({ at: `2026-10-${10 + i}T07:00:00`, outcome: "ran", detail: "" }));
+  const html = panel._historyHtml({ history });
+  assert.equal((html.match(/<li>/g) || []).length, 5);
 });

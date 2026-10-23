@@ -41,7 +41,10 @@ def test_per_routine_entry_converts() -> None:
     routine = normalize_routine(raws[0])
     assert routine["id"] == "away_lights_off"
     assert routine["trigger"] == "everyone_leaves"
-    assert routine["require_everyone_away"] is True
+    # Leaving triggers already check that everyone is away, so no extra condition is added.
+    assert routine["conditions"] == [
+        {"kind": "sensors", "sensors": ["binary_sensor.hall"], "mode": "quiet", "minutes": 15}
+    ]
     assert routine["actions"][0] == {
         "service": "light.turn_off",
         "data": {},

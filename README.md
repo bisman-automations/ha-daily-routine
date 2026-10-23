@@ -28,7 +28,7 @@
 - **Pause switch.** *Pause all routines* stops every automatic run. Manual runs still work.
 - **Skips no-op steps.** A "lights off" step does nothing if the lights are already off.
 - **Retries and catch-up.** Retry a failed step, and run a missed time-based routine if Home Assistant restarted a few minutes late.
-- **Extra conditions.** Run only when an entity is in a given state, for example guest mode is off.
+- **Extra conditions.** Run only when the conditions hold: who is home or away, sensors quiet or active for a while, or an entity in a given state (for example guest mode is off).
 - **Notifications** on run, skip, or failure (failures are on by default).
 - **Status sensors** per routine (`idle`, `waiting`, `running`, `skipped`, `error`) for dashboards and automations.
 
@@ -69,7 +69,7 @@ The sidebar has three tabs:
 - **Routines**: search every routine by name, room, device, trigger, or day.
 - **Settings** (administrators only): which people routines can use, and where notifications also go.
 
-Each routine card has **Run now**, **Edit**, **Duplicate**, **Enable/Disable**, and **Delete**. Duplicate opens a copy you can change before saving. In the editor, **Linked device** picks the device the routine belongs to.
+Each routine card has **Run now**, **Edit**, **Duplicate**, **Enable/Disable**, and **Delete**. Under the routine's details, **Recent runs** lists its last five runs, including skips and failures and why they happened. Duplicate opens a copy you can change before saving. In the editor, **Linked device** picks the device the routine belongs to.
 
 ## Routines as devices
 
@@ -91,7 +91,12 @@ wait 30
 ```
 
 - A step is `action | targets | extra settings`. Targets are entity ids separated by commas, or `area:` followed by an area id. Extra settings are optional JSON. `wait` takes seconds, or `00:00:30`.
-- An extra condition is `entity = state`, one per line, for example `lock.front_door = unlocked`.
+- Conditions are one per line, in the **Extra conditions** list. There are three kinds:
+  - `presence everyone away | person.sam, person.alex | zone.home`: everyone listed is away from the place. Use `presence anyone in | person.sam | zone.work` for "at least one person is at Work". `everyone` or `anyone`, then `in` or `away`, then the people and the place.
+  - `sensors quiet 10 | binary_sensor.hall_motion`: the sensors have been off for 10 minutes. Use `sensors active 5 | ...` for "one of these has been on within the last 5 minutes".
+  - `input_boolean.guest_mode = off`: an entity is in a given state, for example `lock.front_door = unlocked`.
+- Every condition in the list has to hold for the routine to run. With more than one, choose **all** or **any one** above the list.
+- Routines saved before this change convert on load. "Only when everyone is away" becomes a who-is-away condition, and "Only when the sensors have been quiet" becomes a quiet-sensors condition. Check any routine that set "any one" with those checkboxes, because the converted conditions now count toward that choice.
 
 Deleting an entry deletes its routine.
 
@@ -113,14 +118,14 @@ On **Settings → Devices & services → Daily Routine**, choose *Download diagn
 | Field | Meaning |
 |-------|---------|
 | Trigger | `time`, `sunrise`, `sunset`, `everyone_leaves`, `someone_arrives`, `person_leaves`, `person_arrives`, `room_clear`, `value_above`, `value_below`, or `manual` |
-| Place | For leave and arrive triggers, and "only when everyone is away": the zone that counts, such as Home or Work. Defaults to Home |
+| Place | For leave and arrive triggers: the zone that counts, such as Home or Work. Defaults to Home |
 | Sensor and level | For value triggers: a numeric sensor, the level it must cross, and for "above" an optional level to turn back off |
 | Only run between | Optional start and end time. Outside these hours the routine does nothing. Windows can cross midnight |
 | Time / offset | For time and sun triggers (offset in minutes, negative is before) |
 | Days | Which days it may run |
-| Who | People for presence triggers (or "only when everyone is away"). Only people with location tracking can be checked |
-| Sensors + quiet for | Motion/occupancy sensors that must stay off for N minutes. Motion restarts the count |
-| Extra conditions | Entities and states to check, for example `input_boolean.guest_mode` = `off`. With more than one, choose whether **all** of them must match or **any one** is enough |
+| People | For presence triggers. Only people with location tracking can be checked |
+| Sensors and quiet for | For the room is quiet trigger: the motion or occupancy sensors that must stay off for N minutes. Motion restarts the count |
+| Extra conditions | A list of conditions that must hold. Each one is **who is home or away** (everyone or anyone, at or away from a place), **sensors quiet or active** for N minutes, or **a device's state**. With more than one, choose whether **all** of them must hold or **any one** is enough. Each line is described under Editing routines in Home Assistant |
 | Run every time | Run on every trigger, not once a day (default on for presence and room triggers) |
 | Skip steps already done | Skip a step whose devices are already in the target state (default on) |
 | Catch up | If Home Assistant was restarting when a time routine was due, still run it once it is back, within a window of up to 3 hours ("Don't run it late" turns this off). Home Assistant gets about 30 seconds to load, then the routine runs as soon as it can. If a condition blocks it, it is retried each minute until the window closes |

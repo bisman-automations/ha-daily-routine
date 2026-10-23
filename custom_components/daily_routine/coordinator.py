@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections import deque
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from datetime import time as dt_time
@@ -71,11 +72,46 @@ from .schema import vol
 _LOGGER = logging.getLogger(__name__)
 
 UNKNOWN_STATES = ("unknown", "unavailable")
+# Recent runs kept per routine, newest last. Kept in memory, so they start again after a restart.
+HISTORY_LENGTH = 20
 
 H_TIME = "time"
 H_PRESENCE = "presence"
 H_WATCH = "watch"
 H_CLEAR = "clear"
+H_COND = "conditions_timer"
+_CONDITION_REASON = {
+    "presence": "presence_not_met",
+    "sensors": "sensors_not_met",
+    "state": "extra_condition_not_met",
+}
+
+
+def _watched_entities(routine: dict[str, Any]) -> list[str]:
+    """Every entity whose change can make this routine's conditions pass or fail."""
+    entities: list[str] = []
+    if routine["trigger"] == TRIGGER_EVERYONE_LEAVES:
+        entities.extend(routine["people"])
+    if routine["trigger"] == TRIGGER_ROOM_CLEAR:
+        entities.extend(routine["sensors"])
+    for cond in routine["conditions"]:
+        if cond["kind"] == "presence":
+            entities.extend(cond["people"])
+        elif cond["kind"] == "sensors":
+            entities.extend(cond["sensors"])
+        else:
+            entities.append(cond["entity_id"])
+    return entities
+
+
+def _all_people(routine: dict[str, Any]) -> list[str]:
+    people = list(routine["people"])
+    for cond in routine["conditions"]:
+        if cond["kind"] == "presence":
+            people.extend(cond["people"])
+    return list(dict.fromkeys(people))
+
+
 H_VALUE = "value"
 H_EXPIRE = "expire"
 H_CATCH_UP = "catch_up"
@@ -215,6 +251,9 @@ class HomeRoutinesCoordinator:
         self.routines: list[dict[str, Any]] = []
         # Bumped whenever routines change, so the panel knows when to reload them.
         self.revision = 0
+        self._history: dict[str, deque[dict[str, str]]] = {}
+        # When each sensor was last seen on (in memory). Needed for 'active within N minutes'.
+        self._last_on: dict[str, datetime] = {}
         self.paused = False
         self.migrated = False
         self.settings: dict[str, Any] = {"hidden_people": [], "notify_services": []}
@@ -327,6 +366,14 @@ class HomeRoutinesCoordinator:
 
     # ----- status for sensors and the panel -----
 
+    def _record(self, routine_id: str, outcome: str, detail: str = "") -> None:
+        runs = self._history.setdefault(routine_id, deque(maxlen=HISTORY_LENGTH))
+        runs.append({"at": dt_util.now().isoformat(), "outcome": outcome, "detail": detail})
+
+    def get_history(self, routine_id: str) -> list[dict[str, str]]:
+        """Recent runs for a routine, newest first."""
+        return list(reversed(self._history.get(routine_id, ())))
+
     def get_status(self, routine_id: str) -> dict[str, Any] | None:
         routine = self._find(routine_id)
         if routine is None:
@@ -341,6 +388,7 @@ class HomeRoutinesCoordinator:
             "state": rt["state"],
             "last_run": rt["last_run"],
             "last_result": rt["last_result"],
+            "history": self.get_history(routine_id),
             "next_run": rt["next_run"],
             "clear_since": rt["clear_since"].isoformat() if rt["clear_since"] else None,
             "conditions_ok": ok,
@@ -438,7 +486,7 @@ class HomeRoutinesCoordinator:
     async def _save_routine_locked(self, raw: Any) -> dict[str, Any]:
         routine = normalize_routine(raw)
         untracked = []
-        for person_id in routine["people"]:
+        for person_id in _all_people(routine):
             state = self.hass.states.get(person_id)
             if state is None:
                 untracked.append(person_id)
@@ -482,6 +530,7 @@ class HomeRoutinesCoordinator:
             self._drop_companions(routine_id)
             self.routines = [r for r in self.routines if r["id"] != routine_id]
             self._runtime.pop(routine_id, None)
+            self._history.pop(routine_id, None)
             await self.async_reload()
             self._sync_subentries_locked()
 
@@ -636,20 +685,11 @@ class HomeRoutinesCoordinator:
         if routine["active_from"] and routine["active_to"]:
             if not _within_hours(now, routine["active_from"], routine["active_to"]):
                 return False, "outside_hours"
-        if routine["require_everyone_away"] and not self._all_away(
+        if routine["trigger"] == TRIGGER_EVERYONE_LEAVES and not self._all_away(
             routine["people"], routine["zone"]
         ):
             return False, "someone_home"
-
-        if routine["require_states"]:
-            results = [
-                self._state_is(i["entity_id"], i["state"]) for i in routine["require_states"]
-            ]
-            passes = any(results) if routine.get("conditions_match") == "any" else all(results)
-            if not passes:
-                return False, "extra_condition_not_met"
-
-        if routine["require_sensors_clear"]:
+        if routine["trigger"] == TRIGGER_ROOM_CLEAR:
             if not all(self._state_is(eid, "off") for eid in routine["sensors"]):
                 return False, "sensors_active"
             minutes = routine["clear_minutes"]
@@ -659,7 +699,59 @@ class HomeRoutinesCoordinator:
                     return False, "clear_timer_not_started"
                 if (now - since).total_seconds() < minutes * 60:
                     return False, "clear_timer_running"
+
+        if routine["conditions"]:
+            results: list[tuple[bool, str]] = []
+            for cond in routine["conditions"]:
+                ok = self._condition_ok(cond, now)
+                results.append((ok, _CONDITION_REASON[cond["kind"]]))
+            if routine["conditions_match"] == "any":
+                if not any(ok for ok, _ in results):
+                    return False, "extra_condition_not_met"
+            else:
+                for ok, reason in results:
+                    if not ok:
+                        return False, reason
         return True, None
+
+    def _condition_ok(self, cond: dict[str, Any], now: datetime) -> bool:
+        if cond["kind"] == "presence":
+            return self._presence_ok(cond)
+        if cond["kind"] == "sensors":
+            return self._sensors_ok(cond, now)
+        return self._state_is(cond["entity_id"], cond["state"])
+
+    def _presence_ok(self, cond: dict[str, Any]) -> bool:
+        """Who is in or away from the place. Unknown or unavailable people fail closed."""
+        key = self._zone_key(cond["zone"])
+        if key is None:
+            return False
+        inside: list[bool] = []
+        for pid in cond["people"]:
+            state = self.hass.states.get(pid)
+            if state is None or state.state in UNKNOWN_STATES:
+                return False
+            inside.append(state.state == key)
+        if cond["who"] == "everyone":
+            return all(inside) if cond["where"] == "in" else not any(inside)
+        return any(inside) if cond["where"] == "in" else not all(inside)
+
+    def _sensors_ok(self, cond: dict[str, Any], now: datetime) -> bool:
+        """Quiet: all off for N minutes. Active: any on, or one went off within N minutes."""
+        states: list[State] = []
+        for eid in cond["sensors"]:
+            state = self.hass.states.get(eid)
+            if state is None or state.state in UNKNOWN_STATES:
+                return False
+            states.append(state)
+        any_on = any(state.state == "on" for state in states)
+        window = cond["minutes"] * 60
+        if cond["mode"] == "quiet":
+            since_change = (now - max(state.last_changed for state in states)).total_seconds()
+            return not any_on and since_change >= window
+        seen = [self._last_on[eid] for eid in cond["sensors"] if eid in self._last_on]
+        recent = bool(seen) and (now - max(seen)).total_seconds() < window
+        return any_on or recent
 
     # ----- watching sensors and people -----
 
@@ -667,11 +759,12 @@ class HomeRoutinesCoordinator:
         rid = routine["id"]
         self._drop_handle(rid, H_WATCH)
         self._drop_handle(rid, H_CLEAR)
+        self._drop_handle(rid, H_COND)
         if not uses_conditions(routine):
             return
 
         rt = self._rt(rid)
-        if routine["require_sensors_clear"]:
+        if routine["trigger"] == TRIGGER_ROOM_CLEAR:
             all_off = all(self._state_is(eid, "off") for eid in routine["sensors"])
             if not all_off:
                 rt["clear_since"] = None
@@ -681,24 +774,31 @@ class HomeRoutinesCoordinator:
                 rt["clear_since"] = dt_util.now()
                 rt["armed"] = False
 
-        entities: set[str] = set()
-        if routine["require_everyone_away"]:
-            entities.update(routine["people"])
-        if routine["require_sensors_clear"]:
-            entities.update(routine["sensors"])
-        entities.update(item["entity_id"] for item in routine["require_states"])
+        entities: set[str] = set(_watched_entities(routine))
+
+        now = dt_util.now()
+        for cond in routine["conditions"]:
+            if cond["kind"] == "sensors":
+                for eid in cond["sensors"]:
+                    state = self.hass.states.get(eid)
+                    if state is not None and state.state == "on":
+                        self._last_on[eid] = now
 
         @callback
         def _changed(event: Event[EventStateChangedData]) -> None:
+            new = event.data.get("new_state")
+            if new is not None and new.state == "on":
+                self._last_on[new.entity_id] = dt_util.now()
             self._on_condition_entity_changed(routine, event.data.get("entity_id"))
 
         unsub = async_track_state_change_event(self.hass, sorted(entities), _changed)
         self._set_handle(rid, H_WATCH, unsub)
         self._arm_clear_timer(routine)
+        self._arm_condition_timers(routine)
 
     def _on_condition_entity_changed(self, routine: dict[str, Any], entity_id: str | None) -> None:
         rid = routine["id"]
-        if routine["require_sensors_clear"] and entity_id in routine["sensors"]:
+        if routine["trigger"] == TRIGGER_ROOM_CLEAR and entity_id in routine["sensors"]:
             rt = self._rt(rid)
             if all(self._state_is(eid, "off") for eid in routine["sensors"]):
                 if rt["clear_since"] is None:
@@ -709,19 +809,18 @@ class HomeRoutinesCoordinator:
                 rt["clear_since"] = None
                 self._drop_handle(rid, H_CLEAR)
             self._arm_clear_timer(routine)
+        self._arm_condition_timers(routine)
         self._evaluate_pending(routine)
         self._notify_listeners()
 
     def _arm_clear_timer(self, routine: dict[str, Any]) -> None:
-        """Wake up when the quiet period finishes."""
+        """Wake up when a room's quiet period finishes."""
         rid = routine["id"]
         rt = self._rt(rid)
         self._drop_handle(rid, H_CLEAR)
-        if not routine["require_sensors_clear"] or routine["clear_minutes"] <= 0:
+        if routine["trigger"] != TRIGGER_ROOM_CLEAR or routine["clear_minutes"] <= 0:
             return
-        if rt["clear_since"] is None or not routine["enabled"]:
-            return
-        if routine["trigger"] == TRIGGER_ROOM_CLEAR and not rt["armed"]:
+        if rt["clear_since"] is None or not routine["enabled"] or not rt["armed"]:
             return
         end = rt["clear_since"] + timedelta(minutes=routine["clear_minutes"])
 
@@ -732,6 +831,44 @@ class HomeRoutinesCoordinator:
             self._notify_listeners()
 
         self._set_handle(rid, H_CLEAR, async_track_point_in_time(self.hass, _fire, end))
+
+    def _arm_condition_timers(self, routine: dict[str, Any]) -> None:
+        """Wake a waiting routine at the moment a quiet or active period from its sensor conditions changes."""
+        rid = routine["id"]
+        self._drop_handle(rid, H_COND)
+        if not routine["enabled"]:
+            return
+        now = dt_util.now()
+        due: list[datetime] = []
+        for cond in routine["conditions"]:
+            if cond["kind"] != "sensors":
+                continue
+            states = [self.hass.states.get(eid) for eid in cond["sensors"]]
+            if any(state is None or state.state in UNKNOWN_STATES for state in states):
+                continue
+            typed = [state for state in states if state is not None]
+            if any(state.state == "on" for state in typed):
+                continue  # still on: the period starts when it goes off
+            if cond["mode"] == "quiet":
+                start: datetime | None = max(state.last_changed for state in typed)
+            else:
+                seen = [self._last_on[eid] for eid in cond["sensors"] if eid in self._last_on]
+                start = max(seen) if seen else None
+            if start is None:
+                continue
+            flip = start + timedelta(minutes=cond["minutes"])
+            if flip > now:
+                due.append(flip)
+        if not due:
+            return
+
+        @callback
+        def _fire(_fired: datetime) -> None:
+            self._drop_handle(rid, H_COND)
+            self._evaluate_pending(routine)
+            self._notify_listeners()
+
+        self._set_handle(rid, H_COND, async_track_point_in_time(self.hass, _fire, min(due)))
 
     def _on_clear_elapsed(self, routine: dict[str, Any]) -> None:
         if routine["trigger"] == TRIGGER_ROOM_CLEAR:
@@ -775,6 +912,7 @@ class HomeRoutinesCoordinator:
         rt = self._rt(rid)
         rt["last_result"] = "conditions_not_met"
         rt["state"] = "skipped"
+        self._record(rid, "skipped", "conditions_not_met")
         _LOGGER.info("Routine '%s' skipped: conditions not met before end of day.", routine["name"])
         self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "conditions_not_met")
         if routine["notify_on_skip"]:
@@ -1061,6 +1199,7 @@ class HomeRoutinesCoordinator:
             self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "disabled")
             return False
         if scheduled and self.paused:
+            self._record(rid, "skipped", "paused")
             self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "paused")
             return False
         if scheduled and not routine["repeat"] and rt["last_run_date"] == today:
@@ -1077,6 +1216,7 @@ class HomeRoutinesCoordinator:
                 return False
             rt["last_result"] = reason
             rt["state"] = "skipped"
+            self._record(rid, "skipped", reason or "")
             self._fire_event(EVENT_ROUTINE_SKIPPED, routine, reason)
             if scheduled and routine["notify_on_skip"]:
                 self._send_notification(
@@ -1133,6 +1273,9 @@ class HomeRoutinesCoordinator:
                 break
 
         rt["last_result"] = result
+        self._record(
+            rid, "ran" if result == "success" else "failed", "" if result == "success" else result
+        )
         if result == "success":
             rt["state"] = "idle"
             _LOGGER.info("Routine '%s' completed.", routine["name"])

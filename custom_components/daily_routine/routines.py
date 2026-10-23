@@ -60,11 +60,17 @@ REPEATING_TRIGGERS = (
 
 
 def uses_conditions(routine: dict[str, Any]) -> bool:
-    return bool(
-        routine["require_everyone_away"]
-        or routine["require_sensors_clear"]
-        or routine["require_states"]
+    """True when a run can be blocked and has to wait for things to line up."""
+    return bool(routine["conditions"]) or routine["trigger"] in (
+        TRIGGER_EVERYONE_LEAVES,
+        TRIGGER_ROOM_CLEAR,
     )
+
+
+CONDITION_KINDS = ("presence", "sensors", "state")
+PRESENCE_WHO = ("everyone", "anyone")
+PRESENCE_WHERE = ("in", "away")
+SENSOR_MODES = ("quiet", "active")
 
 
 def normalize_time(value: Any) -> str:
@@ -185,6 +191,82 @@ def _normalize_action(raw: Any, index: int) -> dict[str, Any]:
     return action
 
 
+def _presence_condition(people: list[str], zone: str, who: str, where: str) -> dict[str, Any]:
+    return {"kind": "presence", "people": people, "zone": zone, "who": who, "where": where}
+
+
+def _sensor_condition(sensors: list[str], mode: str, minutes: int) -> dict[str, Any]:
+    return {"kind": "sensors", "sensors": sensors, "mode": mode, "minutes": minutes}
+
+
+def _normalize_condition(raw: Any, index: int) -> dict[str, Any]:
+    """One extra condition: someone or everyone in or away from a place, sensors quiet or active, or a state."""
+    if not isinstance(raw, dict):
+        raise vol.Invalid(f"Condition {index} must be an object.")
+    kind = str(raw.get("kind") or "")
+    if kind == "presence":
+        people = _entity_list(raw.get("people"), f"Condition {index}")
+        if not people:
+            raise vol.Invalid("Pick the people for this condition.")
+        zone = str(raw.get("zone") or "zone.home")
+        if not zone.startswith("zone."):
+            raise vol.Invalid("Pick a place (zone) for this condition.")
+        who = str(raw.get("who") or "everyone")
+        where = str(raw.get("where") or "away")
+        if who not in PRESENCE_WHO or where not in PRESENCE_WHERE:
+            raise vol.Invalid("A presence condition is everyone or anyone, in or away.")
+        return _presence_condition(people, zone, who, where)
+    if kind == "sensors":
+        sensors = _entity_list(raw.get("sensors"), f"Condition {index}")
+        if not sensors:
+            raise vol.Invalid("Pick the motion or occupancy sensors for this condition.")
+        mode = str(raw.get("mode") or "quiet")
+        if mode not in SENSOR_MODES:
+            raise vol.Invalid("A sensor condition is quiet or active.")
+        minutes = _int(raw.get("minutes"), 0, 1440, "Sensor minutes")
+        if mode == "active" and minutes < 1:
+            raise vol.Invalid("'Active within' needs at least 1 minute.")
+        return _sensor_condition(sensors, mode, minutes)
+    if kind == "state":
+        entity_id = str(raw.get("entity_id") or "").strip()
+        state = str(raw.get("state") or "").strip()
+        if not ENTITY_ID_RE.fullmatch(entity_id) or not state:
+            raise vol.Invalid("Each extra condition needs an entity and a state.")
+        return {"kind": "state", "entity_id": entity_id, "state": state}
+    raise vol.Invalid(f"Condition {index}: pick what to check.")
+
+
+def _conditions_from(
+    raw: dict[str, Any],
+    trigger: str,
+    people: list[str],
+    zone: str,
+    sensors: list[str],
+    clear_minutes: int,
+) -> list[dict[str, Any]]:
+    """The extra conditions. Routines saved before 1.8 used three flags; they become conditions here."""
+    if raw.get("conditions") is not None:
+        return [
+            _normalize_condition(item, i + 1)
+            for i, item in enumerate(_as_list(raw.get("conditions")))
+        ]
+
+    conditions: list[dict[str, Any]] = []
+    if raw.get("require_everyone_away") and trigger != TRIGGER_EVERYONE_LEAVES:
+        if not people:
+            raise vol.Invalid("Pick the people who must be away.")
+        conditions.append(_presence_condition(people, zone, "everyone", "away"))
+    if raw.get("require_sensors_clear") and trigger != TRIGGER_ROOM_CLEAR:
+        if not sensors:
+            raise vol.Invalid("Pick the motion or occupancy sensors to watch.")
+        conditions.append(_sensor_condition(sensors, "quiet", clear_minutes))
+    for item in _as_list(raw.get("require_states")):
+        if not isinstance(item, dict):
+            raise vol.Invalid("Extra conditions must be objects.")
+        conditions.append(_normalize_condition({"kind": "state", **item}, len(conditions) + 1))
+    return conditions
+
+
 def normalize_routine(raw: Any) -> dict[str, Any]:
     """Validate a routine from the UI or storage and fill in defaults."""
     if not isinstance(raw, dict):
@@ -215,40 +297,24 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
 
     people = _entity_list(raw.get("people"), "People")
     sensors = _entity_list(raw.get("sensors"), "Sensors")
-    require_everyone_away = bool(raw.get("require_everyone_away", False))
-    require_sensors_clear = bool(raw.get("require_sensors_clear", False))
     clear_minutes = _int(raw.get("clear_minutes"), 0, 1440, "Clear minutes")
 
     zone = raw.get("zone") or "zone.home"
     if not isinstance(zone, str) or not zone.startswith("zone."):
         raise vol.Invalid("Pick a place (zone) for this routine.")
 
-    if trigger == TRIGGER_EVERYONE_LEAVES:
-        require_everyone_away = True
     if trigger == TRIGGER_ROOM_CLEAR:
-        require_sensors_clear = True
         if clear_minutes < 1:
             raise vol.Invalid("'Room is clear' needs at least 1 minute of quiet.")
+        if not sensors:
+            raise vol.Invalid("Pick the motion or occupancy sensors to watch.")
     if trigger in PRESENCE_TRIGGERS and not people:
         raise vol.Invalid("Pick at least one person for this trigger.")
-    if require_everyone_away and not people:
-        raise vol.Invalid("Pick the people who must be away.")
-    if require_sensors_clear and not sensors:
-        raise vol.Invalid("Pick the motion or occupancy sensors to watch.")
 
+    conditions = _conditions_from(raw, trigger, people, zone, sensors, clear_minutes)
     conditions_match = str(raw.get("conditions_match") or "all")
     if conditions_match not in ("all", "any"):
         raise vol.Invalid("Extra conditions must match 'all' or 'any'.")
-
-    require_states: list[dict[str, str]] = []
-    for item in _as_list(raw.get("require_states")):
-        if not isinstance(item, dict):
-            raise vol.Invalid("Extra conditions must be objects.")
-        entity_id = str(item.get("entity_id") or "").strip()
-        state = str(item.get("state") or "").strip()
-        if not ENTITY_ID_RE.fullmatch(entity_id) or not state:
-            raise vol.Invalid("Each extra condition needs an entity and a state.")
-        require_states.append({"entity_id": entity_id, "state": state})
 
     device_raw = raw.get("device_id")
     if device_raw is not None and not isinstance(device_raw, str):
@@ -305,13 +371,12 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "time": normalize_time(raw.get("time") or "07:00:00"),
         "offset_minutes": _int(raw.get("offset_minutes"), -720, 720, "Offset"),
         "days": days,
-        "people": people,
-        "require_everyone_away": require_everyone_away,
+        # Trigger settings: only the trigger that uses them keeps them.
+        "people": people if trigger in PRESENCE_TRIGGERS else [],
         "zone": zone,
-        "sensors": sensors,
-        "require_sensors_clear": require_sensors_clear,
-        "clear_minutes": clear_minutes,
-        "require_states": require_states,
+        "sensors": sensors if trigger == TRIGGER_ROOM_CLEAR else [],
+        "clear_minutes": clear_minutes if trigger == TRIGGER_ROOM_CLEAR else 0,
+        "conditions": conditions,
         "conditions_match": conditions_match,
         "repeat": bool(raw.get("repeat", trigger in REPEATING_TRIGGERS)),
         "catch_up_minutes": _int(raw.get("catch_up_minutes"), 0, MAX_CATCH_UP_MINUTES, "Catch-up"),

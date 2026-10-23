@@ -99,17 +99,72 @@ def parse_steps_text(text: str) -> list[dict[str, Any]]:
     return actions
 
 
-def conditions_to_text(conditions: list[dict[str, str]]) -> str:
-    return "\n".join(f"{c['entity_id']} = {c['state']}" for c in conditions)
-
-
-def parse_conditions_text(text: str) -> list[dict[str, str]]:
-    conditions: list[dict[str, str]] = []
-    for number, line in _meaningful_lines(text):
-        if "=" not in line:
-            raise vol.Invalid(
-                f"Line {number}: write the condition as entity = state, for example lock.front_door = unlocked."
+def conditions_to_text(conditions: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for cond in conditions:
+        if cond["kind"] == "presence":
+            lines.append(
+                f"presence {cond['who']} {cond['where']} | {', '.join(cond['people'])} | {cond['zone']}"
             )
-        entity_id, _, state = line.partition("=")
-        conditions.append({"entity_id": entity_id.strip(), "state": state.strip()})
+        elif cond["kind"] == "sensors":
+            lines.append(f"sensors {cond['mode']} {cond['minutes']} | {', '.join(cond['sensors'])}")
+        else:
+            lines.append(f"{cond['entity_id']} = {cond['state']}")
+    return "\n".join(lines)
+
+
+def _split_names(text: str) -> list[str]:
+    return [name.strip() for name in text.split(",") if name.strip()]
+
+
+def parse_conditions_text(text: str) -> list[dict[str, Any]]:
+    """One condition per line:
+
+    presence everyone away | person.a, person.b | zone.home
+    presence anyone in | person.a | zone.work
+    sensors quiet 10 | binary_sensor.hall_motion
+    sensors active 5 | binary_sensor.hall_motion
+    lock.front_door = unlocked
+    """
+    conditions: list[dict[str, Any]] = []
+    for number, line in _meaningful_lines(text):
+        head, sep, rest = line.partition("|")
+        words = head.split()
+        if sep and words and words[0] == "presence":
+            if len(words) != 3:
+                raise vol.Invalid(
+                    f"Line {number}: write it as presence everyone|anyone in|away | people | place."
+                )
+            names_text, _, zone = rest.partition("|")
+            conditions.append(
+                {
+                    "kind": "presence",
+                    "who": words[1],
+                    "where": words[2],
+                    "people": _split_names(names_text),
+                    "zone": zone.strip() or "zone.home",
+                }
+            )
+        elif sep and words and words[0] == "sensors":
+            if len(words) != 3 or not words[2].isdigit():
+                raise vol.Invalid(
+                    f"Line {number}: write it as sensors quiet|active MINUTES | sensors."
+                )
+            conditions.append(
+                {
+                    "kind": "sensors",
+                    "mode": words[1],
+                    "minutes": int(words[2]),
+                    "sensors": _split_names(rest),
+                }
+            )
+        elif "=" in line and not sep:
+            entity_id, _, state = line.partition("=")
+            conditions.append(
+                {"kind": "state", "entity_id": entity_id.strip(), "state": state.strip()}
+            )
+        else:
+            raise vol.Invalid(
+                f"Line {number}: write a condition as entity = state, or as presence or sensors (see the help)."
+            )
     return conditions

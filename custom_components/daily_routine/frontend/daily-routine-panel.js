@@ -28,6 +28,8 @@ const REASON_LABELS = {
   someone_home: "someone is still in that place",
   sensors_active: "motion right now",
   clear_timer_running: "waiting for the room to be quiet",
+  presence_not_met: "people are not where this routine needs them",
+  sensors_not_met: "sensors are not in the state this routine needs",
   clear_timer_not_started: "waiting for sensors",
   extra_condition_not_met: "an extra condition is not met",
   conditions_not_met: "conditions were not met",
@@ -102,7 +104,7 @@ const TEMPLATES = [
   },
   {
     id: "house_empty", title: "Lights off when everyone is away", hint: "Whole house: once everyone has left and the motion sensors have been quiet.", scope: "house",
-    draft: { trigger: "everyone_leaves", clear_minutes: 15, useAllPeople: true, useHouseSensors: true, actions: [{ service: "light.turn_off", targetMode: "all_areas" }] },
+    draft: { trigger: "everyone_leaves", quietMinutes: 15, useAllPeople: true, actions: [{ service: "light.turn_off", targetMode: "all_areas" }] },
   },
   {
     id: "humidity_fan", title: "Bathroom fan on humidity", scope: "room",
@@ -468,8 +470,8 @@ class DailyRoutinePanel extends HTMLElement {
       id: "", name: "", room: roomId || null, device_id: this._defaultDevice(roomId), enabled: true, zone: "zone.home",
       value_entity: "", value_threshold: "", off_threshold: "", active_from: "", active_to: "",
       trigger: "time", time: "07:00:00", offset_minutes: 0, days: [...WEEKDAYS],
-      people: [], require_everyone_away: false, sensors: [], require_sensors_clear: false, clear_minutes: 0,
-      require_states: [], conditions_match: "all", repeat: false, catch_up_minutes: 0, retries: 0, skip_noop: true,
+      people: [], sensors: [], clear_minutes: 0,
+      conditions: [], conditions_match: "all", repeat: false, catch_up_minutes: 0, retries: 0, skip_noop: true,
       notify_on_run: false, notify_on_skip: false, notify_on_error: true,
       actions: [{ kind: "service", service: "", targetMode: roomId ? "area" : "entities", area: roomId || "", entities: [], data: "" }],
       isNew: true,
@@ -483,19 +485,16 @@ class DailyRoutinePanel extends HTMLElement {
     if (spec.trigger) draft.trigger = spec.trigger;
     if (spec.time) draft.time = spec.time;
     if (spec.clear_minutes) draft.clear_minutes = spec.clear_minutes;
-    if (spec.trigger === "room_clear") draft.require_sensors_clear = true;
     if (spec.useRoomSensors) draft.sensors = this._roomSensors(roomId).map((e) => e.entity_id);
-    if (spec.useHouseSensors) draft.sensors = this._data.binary_sensors.filter((s) => SENSOR_CLASSES.includes(s.device_class)).map((s) => s.entity_id);
     if (spec.valueClass) draft.value_entity = this._pickSensor(roomId, spec.valueClass);
     if (spec.valueThreshold !== undefined) draft.value_threshold = String(spec.valueThreshold);
     if (spec.offThreshold !== undefined) draft.off_threshold = String(spec.offThreshold);
     if (spec.usePeopleList) draft.people = this._trackedPeople();
-    if (spec.useAllPeople) {
-      draft.people = this._trackedPeople();
-      draft.require_everyone_away = true;
-      draft.require_sensors_clear = true;
+    if (spec.useAllPeople) draft.people = this._trackedPeople();
+    if (spec.quietMinutes) {
+      const houseSensors = this._data.binary_sensors.filter((s) => SENSOR_CLASSES.includes(s.device_class)).map((s) => s.entity_id);
+      draft.conditions.push({ kind: "sensors", mode: "quiet", minutes: spec.quietMinutes, sensors: houseSensors });
     }
-    if (spec.trigger === "everyone_leaves") draft.require_everyone_away = true;
     if (spec.actions) {
       draft.actions = spec.actions.map((a) => ({ kind: "service", service: a.service, targetMode: a.targetMode, area: roomId || "", entities: [], data: "" }));
     }
@@ -509,9 +508,9 @@ class DailyRoutinePanel extends HTMLElement {
       value_entity: routine.value_entity || "", value_threshold: routine.value_threshold ?? "", off_threshold: routine.off_threshold ?? "",
       active_from: routine.active_from ? hhmm(routine.active_from) : "", active_to: routine.active_to ? hhmm(routine.active_to) : "",
       trigger: routine.trigger, time: routine.time, offset_minutes: routine.offset_minutes || 0, days: [...routine.days],
-      people: [...routine.people], require_everyone_away: routine.require_everyone_away,
-      sensors: [...routine.sensors], require_sensors_clear: routine.require_sensors_clear, clear_minutes: routine.clear_minutes,
-      require_states: routine.require_states.map((x) => ({ ...x })), conditions_match: routine.conditions_match || "all", repeat: routine.repeat,
+      people: [...routine.people], sensors: [...routine.sensors], clear_minutes: routine.clear_minutes,
+      conditions: (routine.conditions || []).map((c) => ({ ...c, people: [...(c.people || [])], sensors: [...(c.sensors || [])] })),
+      conditions_match: routine.conditions_match || "all", repeat: routine.repeat,
       catch_up_minutes: routine.catch_up_minutes, retries: routine.retries, skip_noop: routine.skip_noop,
       notify_on_run: routine.notify_on_run, notify_on_skip: routine.notify_on_skip, notify_on_error: routine.notify_on_error,
       actions: routine.actions.map((a) => {
@@ -569,13 +568,15 @@ class DailyRoutinePanel extends HTMLElement {
       offset_minutes: Number(draft.offset_minutes) || 0,
       days: draft.days,
       people: draft.people,
-      require_everyone_away: draft.require_everyone_away,
       sensors: draft.sensors,
-      require_sensors_clear: draft.require_sensors_clear,
       clear_minutes: Number(draft.clear_minutes) || 0,
-      require_states: draft.require_states
-        .filter((x) => x.entity_id && x.state)
-        .map((x) => ({ entity_id: x.entity_id, state: x.state })),
+      conditions: draft.conditions
+        .map((c) => {
+          if (c.kind === "presence") return { kind: "presence", who: c.who, where: c.where, people: [...c.people], zone: c.zone || "zone.home" };
+          if (c.kind === "sensors") return { kind: "sensors", mode: c.mode, minutes: Number(c.minutes) || 0, sensors: [...c.sensors] };
+          return { kind: "state", entity_id: c.entity_id, state: c.state };
+        })
+        .filter((c) => c.kind !== "state" || (c.entity_id && c.state)),
       conditions_match: draft.conditions_match === "any" ? "any" : "all",
       repeat: draft.repeat,
       catch_up_minutes: Number(draft.catch_up_minutes) || 0,
@@ -696,11 +697,16 @@ class DailyRoutinePanel extends HTMLElement {
           [this._draft.actions[i], this._draft.actions[j]] = [this._draft.actions[j], this._draft.actions[i]];
           break;
         }
-        case "add-condition":
-          this._draft.require_states.push({ entity_id: "", state: "on" });
+        case "add-condition": {
+          const kind = el.dataset.kind || "state";
+          const zone = this._draft.zone || "zone.home";
+          if (kind === "presence") this._draft.conditions.push({ kind, who: "everyone", where: "away", people: [], zone });
+          else if (kind === "sensors") this._draft.conditions.push({ kind, mode: "quiet", minutes: 10, sensors: [] });
+          else this._draft.conditions.push({ kind: "state", entity_id: "", state: "on" });
           break;
+        }
         case "remove-condition":
-          this._draft.require_states.splice(Number(el.dataset.i), 1);
+          this._draft.conditions.splice(Number(el.dataset.i), 1);
           break;
         case "test":
           await this._testDraft();
@@ -772,7 +778,7 @@ class DailyRoutinePanel extends HTMLElement {
     if (el.dataset.f) {
       const field = el.dataset.f;
       if (field === "time") d.time = value.length === 5 ? `${value}:00` : value;
-      else if (field === "require_everyone_away" || field === "require_sensors_clear" || field === "enabled" || field === "repeat" || field === "skip_noop" || field === "notify_on_run" || field === "notify_on_skip" || field === "notify_on_error") d[field] = Boolean(value);
+      else if (field === "enabled" || field === "repeat" || field === "skip_noop" || field === "notify_on_run" || field === "notify_on_skip" || field === "notify_on_error") d[field] = Boolean(value);
       else d[field] = value;
       if (el.dataset.rerender !== undefined && !live) this._render();
       return;
@@ -804,13 +810,31 @@ class DailyRoutinePanel extends HTMLElement {
       return;
     }
     if (el.dataset.ci !== undefined) {
-      const row = d.require_states[Number(el.dataset.ci)];
-      if (row && el.dataset.cf === "stateChoice") {
-        row.custom = value === CUSTOM_ACTION;
-        row.state = row.custom ? "" : value;
+      const cond = d.conditions[Number(el.dataset.ci)];
+      if (!cond) return;
+      if (el.dataset.cpeople !== undefined) {
+        const i = cond.people.indexOf(el.dataset.cpeople);
+        if (el.checked && i < 0) cond.people.push(el.dataset.cpeople);
+        if (!el.checked && i >= 0) cond.people.splice(i, 1);
+        return;
+      }
+      if (el.dataset.csensor !== undefined) {
+        const i = cond.sensors.indexOf(el.dataset.csensor);
+        if (el.checked && i < 0) cond.sensors.push(el.dataset.csensor);
+        if (!el.checked && i >= 0) cond.sensors.splice(i, 1);
+        return;
+      }
+      if (cond.kind !== "state") {
+        cond[el.dataset.cf] = el.dataset.cf === "minutes" ? Number(value) || 0 : value;
+        if (el.dataset.rerender !== undefined && !live) this._render();
+        return;
+      }
+      if (el.dataset.cf === "stateChoice") {
+        cond.custom = value === CUSTOM_ACTION;
+        cond.state = cond.custom ? "" : value;
         if (!live) this._render();
-      } else if (row) {
-        row[el.dataset.cf] = value;
+      } else {
+        cond[el.dataset.cf] = value;
       }
     }
   }
@@ -950,6 +974,7 @@ class DailyRoutinePanel extends HTMLElement {
           <div class="muted small">${esc(this._describeTrigger(routine))} · ${routine.days.length === 7 ? "every day" : routine.days.join(", ")}</div>
           <div class="muted small">Next: ${esc(formatTime(status.next_run))}${esc(reason)}${detail}</div>
           <div class="muted small">Linked to: ${esc(this._linkedName(routine.device_id))}</div>
+          ${this._historyHtml(status)}
         </div>
         <span class="pill ${state === "error" ? "error" : state === "waiting" ? "warn" : ""}">${esc(STATE_LABELS[state] || state)}</span>
       </div>
@@ -961,6 +986,20 @@ class DailyRoutinePanel extends HTMLElement {
         <button class="ghost danger" data-act="delete" data-id="${esc(routine.id)}">Delete</button>
       </div>
     </article>`;
+  }
+
+  // The last few runs, newest first. Shown closed so the card stays short.
+  _historyHtml(status) {
+    const runs = (status.history || []).slice(0, 5);
+    if (!runs.length) return "";
+    const items = runs.map((run) => `<li>${esc(formatTime(run.at))} · ${esc(this._runText(run))}</li>`).join("");
+    return `<details class="history"><summary class="muted small">Recent runs</summary><ul class="small">${items}</ul></details>`;
+  }
+
+  _runText(run) {
+    if (run.outcome === "ran") return "ran";
+    if (run.outcome === "skipped") return `skipped: ${REASON_LABELS[run.detail] || humanize(run.detail) || "not run"}`;
+    return `failed: ${run.detail}`;
   }
 
   _hiddenFromDom() {
@@ -1089,7 +1128,7 @@ class DailyRoutinePanel extends HTMLElement {
     const presence = PRESENCE_TRIGGERS.includes(d.trigger);
     const valueTrigger = VALUE_TRIGGERS.includes(d.trigger);
     const timeBased = ["time", "sunrise", "sunset"].includes(d.trigger);
-    const sensorsOn = d.trigger === "room_clear" || d.require_sensors_clear;
+    const sensorsOn = d.trigger === "room_clear";
     const roomSensors = this._roomSensors(roomId);
     const sensorOptions = this._data.binary_sensors.map((s) => ({
       entity_id: s.entity_id, name: s.name, inRoom: (roomId ? this._area(roomId)?.entities || [] : []).some((e) => e.entity_id === s.entity_id),
@@ -1111,29 +1150,7 @@ class DailyRoutinePanel extends HTMLElement {
 
     const steps = d.actions.map((step, i) => this._stepEditor(step, i, roomId)).join("");
 
-    const conditions = d.require_states.map((row, i) => {
-      const domain = (row.entity_id || "").split(".")[0];
-      const kind = domain === "lock" || domain === "cover" || domain === "person" || domain === "device_tracker" || domain === "media_player" || domain === "climate"
-        ? domain
-        : (["light", "switch", "fan", "input_boolean", "binary_sensor", "automation", "siren"].includes(domain) ? "on_off" : null);
-      const states = kind ? CONDITION_STATES[kind] : null;
-      const known = states ? states.includes(row.state) : false;
-      const custom = row.custom || (!known && row.state !== "" && row.state !== undefined);
-      const stateOptions = states
-        ? [
-            `<option value="" ${!row.state && !custom ? "selected" : ""}>Choose a state…</option>`,
-            ...states.map((st) => `<option value="${esc(st)}" ${st === row.state && !custom ? "selected" : ""}>${esc(STATE_NAMES[st] || st)}</option>`),
-            `<option value="${CUSTOM_ACTION}" ${custom ? "selected" : ""}>Other…</option>`,
-          ].join("")
-        : null;
-      const stateField = stateOptions
-        ? `<select data-ci="${i}" data-cf="stateChoice" data-rerender>${stateOptions}</select>${custom ? `<input data-ci="${i}" data-cf="state" value="${esc(row.state)}" placeholder="state">` : ""}`
-        : `<input data-ci="${i}" data-cf="state" value="${esc(row.state)}" placeholder="state, e.g. on">`;
-      return `<div class="inline">
-      <select data-ci="${i}" data-cf="entity_id" data-rerender>${this._entityOptions(row.entity_id)}</select>
-      ${stateField}
-      <button class="ghost" data-act="remove-condition" data-i="${i}">Remove</button></div>`;
-    }).join("");
+    const conditions = this._conditionRows(d);
 
     const preview = this._preview ? this._renderPreview(this._preview) : "";
 
@@ -1154,12 +1171,9 @@ class DailyRoutinePanel extends HTMLElement {
         ${d.trigger === "time" ? `<label>Time<input type="time" data-f="time" value="${esc(hhmm(d.time))}"></label>` : ""}
         ${d.trigger === "sunrise" || d.trigger === "sunset" ? `<label>Offset in minutes (negative is before)<input type="number" min="-720" max="720" data-f="offset_minutes" value="${esc(d.offset_minutes)}"></label>` : ""}
         ${timeBased || valueTrigger ? `<div class="chips">${days}</div>` : ""}
-        ${presence || d.require_everyone_away ? this._zoneField(d) : ""}
+        ${presence ? this._zoneField(d) : ""}
         ${presence ? `<h4>Who</h4><p class="muted small">Pick the people this routine watches. People without location tracking can't be checked.</p><div class="checks">${peopleList}</div>
         <button class="ghost" data-act="tracked-people">Select everyone with tracking</button>` : ""}
-        ${!presence && d.trigger !== "room_clear" ? `<label class="check"><input type="checkbox" data-f="require_everyone_away" data-rerender ${d.require_everyone_away ? "checked" : ""}> Only when everyone is away</label>` : ""}
-        ${!presence && d.require_everyone_away && d.trigger !== "room_clear" ? `<div class="checks">${peopleList}</div>` : ""}
-        ${d.trigger !== "room_clear" && !presence ? `<label class="check"><input type="checkbox" data-f="require_sensors_clear" data-rerender ${d.require_sensors_clear ? "checked" : ""}> Only when the sensors have been quiet</label>` : ""}
         ${sensorsOn ? `<h4>Sensors</h4><p class="muted small">${d.trigger === "room_clear" ? "The routine runs once these have been quiet for the time below." : "Motion or occupancy sensors that must stay quiet."}</p>
           ${roomId && !roomSensors.length ? `<p class="muted small">This room has no motion sensors yet. Assign one in Home Assistant, or pick another.</p>` : ""}
           <div class="checks">${sensorList}</div>
@@ -1171,12 +1185,16 @@ class DailyRoutinePanel extends HTMLElement {
           <label>To<input type="time" data-f="active_to" value="${esc(d.active_to)}"></label>
         </div>
         <h4>Extra conditions</h4>
-        ${d.require_states.length > 1 ? `<label>Run when<select data-f="conditions_match">
+        <p class="muted small">Only run when these hold. Add as many as you need: who is home or away, sensors that have been quiet or active, or a device's state.</p>
+        ${d.conditions.length > 1 ? `<label>Run when<select data-f="conditions_match">
           <option value="all" ${d.conditions_match !== "any" ? "selected" : ""}>All of these are true</option>
           <option value="any" ${d.conditions_match === "any" ? "selected" : ""}>Any one of these is true</option></select></label>` : ""}
-        <p class="muted small">Only run when these are true, for example a guest-mode switch being off.</p>
         ${conditions}
-        <button class="ghost" data-act="add-condition">+ Add condition</button>
+        <div class="row-actions">
+          <button class="ghost" data-act="add-condition" data-kind="presence">+ Who is home or away</button>
+          <button class="ghost" data-act="add-condition" data-kind="sensors">+ Sensors quiet or active</button>
+          <button class="ghost" data-act="add-condition" data-kind="state">+ A device's state</button>
+        </div>
       </section>
 
       <section class="card">
@@ -1206,6 +1224,80 @@ class DailyRoutinePanel extends HTMLElement {
         <button class="primary" data-act="save">Save</button>
       </div>
     </form>`;
+  }
+
+  _conditionRows(d) {
+    return d.conditions.map((cond, i) => {
+      const remove = `<button class="ghost" data-act="remove-condition" data-i="${i}">Remove</button>`;
+      if (cond.kind === "presence") return this._presenceRow(d, cond, i, remove);
+      if (cond.kind === "sensors") return this._sensorRow(cond, i, remove);
+      return this._stateRow(cond, i, remove);
+    }).join("");
+  }
+
+  _presenceRow(d, cond, i, remove) {
+    const zones = this._data?.zones || [{ entity_id: "zone.home", name: "Home" }];
+    const zoneOptions = zones.map((z) => `<option value="${esc(z.entity_id)}" ${z.entity_id === cond.zone ? "selected" : ""}>${esc(z.name)}</option>`).join("");
+    const who = `<select data-ci="${i}" data-cf="who">
+      <option value="everyone" ${cond.who !== "anyone" ? "selected" : ""}>Everyone</option>
+      <option value="anyone" ${cond.who === "anyone" ? "selected" : ""}>Anyone</option></select>`;
+    const where = `<select data-ci="${i}" data-cf="where">
+      <option value="away" ${cond.where !== "in" ? "selected" : ""}>is away from</option>
+      <option value="in" ${cond.where === "in" ? "selected" : ""}>is at</option></select>`;
+    const people = this._pickerPeople(d).map((p) => {
+      const checked = cond.people.includes(p.entity_id);
+      const disabled = !p.tracked && !checked ? "disabled" : "";
+      return `<label class="check ${disabled ? "muted" : ""}"><input type="checkbox" data-ci="${i}" data-cpeople="${esc(p.entity_id)}" ${checked ? "checked" : ""} ${disabled}> ${esc(p.name)}${p.tracked ? "" : " (no location tracking)"}</label>`;
+    }).join("");
+    return `<div class="condition">
+      <div class="step-head"><strong>Who is home or away</strong>${remove}</div>
+      <div class="inline2">${who} ${where}<select data-ci="${i}" data-cf="zone">${zoneOptions}</select></div>
+      <div class="checks">${people || `<p class="muted small">No people are turned on for routines. Turn them on under Settings.</p>`}</div>
+    </div>`;
+  }
+
+  _sensorRow(cond, i, remove) {
+    const sensors = this._data.binary_sensors.map((s) => {
+      const checked = cond.sensors.includes(s.entity_id);
+      return `<label class="check"><input type="checkbox" data-ci="${i}" data-csensor="${esc(s.entity_id)}" ${checked ? "checked" : ""}> ${esc(s.name)}</label>`;
+    }).join("");
+    return `<div class="condition">
+      <div class="step-head"><strong>Sensors</strong>${remove}</div>
+      <div class="inline2">
+        <select data-ci="${i}" data-cf="mode">
+          <option value="quiet" ${cond.mode !== "active" ? "selected" : ""}>Quiet for</option>
+          <option value="active" ${cond.mode === "active" ? "selected" : ""}>Active within the last</option></select>
+        <input type="number" min="0" max="1440" data-ci="${i}" data-cf="minutes" value="${esc(cond.minutes)}" aria-label="minutes">
+      </div>
+      <p class="muted small">${cond.mode === "active" ? "True when any of these has seen motion within those minutes." : "True when none of these has seen motion for those minutes."}</p>
+      <div class="checks">${sensors || `<p class="muted small">No binary sensors found.</p>`}</div>
+    </div>`;
+  }
+
+  _stateRow(row, i, remove) {
+    const domain = (row.entity_id || "").split(".")[0];
+    const kind = domain === "lock" || domain === "cover" || domain === "person" || domain === "device_tracker" || domain === "media_player" || domain === "climate"
+      ? domain
+      : (["light", "switch", "fan", "input_boolean", "binary_sensor", "automation", "siren"].includes(domain) ? "on_off" : null);
+    const states = kind ? CONDITION_STATES[kind] : null;
+    const known = states ? states.includes(row.state) : false;
+    const custom = row.custom || (!known && row.state !== "" && row.state !== undefined);
+    const stateOptions = states
+      ? [
+          `<option value="" ${!row.state && !custom ? "selected" : ""}>Choose a state…</option>`,
+          ...states.map((st) => `<option value="${esc(st)}" ${st === row.state && !custom ? "selected" : ""}>${esc(STATE_NAMES[st] || st)}</option>`),
+          `<option value="${CUSTOM_ACTION}" ${custom ? "selected" : ""}>Other…</option>`,
+        ].join("")
+      : null;
+    const stateField = stateOptions
+      ? `<select data-ci="${i}" data-cf="stateChoice" data-rerender>${stateOptions}</select>${custom ? `<input data-ci="${i}" data-cf="state" value="${esc(row.state)}" placeholder="state">` : ""}`
+      : `<input data-ci="${i}" data-cf="state" value="${esc(row.state)}" placeholder="state, e.g. on">`;
+    return `<div class="condition">
+      <div class="step-head"><strong>A device's state</strong>${remove}</div>
+      <div class="inline">
+      <select data-ci="${i}" data-cf="entity_id" data-rerender>${this._entityOptions(row.entity_id)}</select>
+      ${stateField}</div>
+    </div>`;
   }
 
   _stepEditor(step, i, roomId) {
@@ -1339,11 +1431,17 @@ const STYLES = `<style>
   .chip { display: inline-flex; align-items: center; gap: 4px; background: var(--secondary-background-color, #eee); border-radius: 999px; padding: 4px 10px; margin: 0; }
   .checks { display: grid; gap: 2px; max-height: 220px; overflow: auto; padding: 4px 0; }
   .inline { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px; align-items: center; }
+  .inline2 { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .inline2 select, .inline2 input { width: auto; flex: 1 1 auto; }
+  .condition { border-top: 1px solid var(--divider-color, #e0e0e0); padding-top: 8px; margin-top: 8px; }
   .step { border-top: 1px solid var(--divider-color, #e0e0e0); padding-top: 8px; margin-top: 8px; }
   .step-head { display: flex; justify-content: space-between; align-items: center; }
   .preview ol { padding-left: 20px; }
   .footer { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin: 12px 0 24px; }
   .template { cursor: pointer; }
+  .history { margin-top: 6px; }
+  .history summary { cursor: pointer; }
+  .history ul { margin: 4px 0 0; padding-left: 18px; }
   @media (max-width: 600px) { main { padding: 12px; } }
   :host(.busy)::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 10;
     background: linear-gradient(90deg, transparent, var(--primary-color, #03a9f4), transparent);
