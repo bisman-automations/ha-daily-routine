@@ -25,6 +25,7 @@ await import("../custom_components/daily_routine/frontend/daily-routine-panel.js
 
 const overview = {
   paused: false,
+  revision: 1,
   areas: [
     {
       id: "kitchen", name: "Kitchen", icon: null,
@@ -478,12 +479,147 @@ test("condition states are picked by name, with Other for anything else", () => 
   assert.match(html, /data-cf="state" value="dimmed"/);
 });
 
-test("choosing a named state saves it; choosing Other clears it for typing", () => {
+test("choosing Other in a condition clears the state, shows a text box, and keeps what is typed", () => {
   const panel = makePanel();
   panel._draft = panel._applyTemplate({ title: "Blank", draft: { trigger: "time", time: "07:00:00", actions: [{ service: "light.turn_off", targetMode: "area" }] } }, "kitchen");
   panel._draft.require_states = [{ entity_id: "lock.front_door", state: "locked" }];
-  const row = panel._draft.require_states[0];
-  row.state = "jammed";
-  panel._draftToRaw(panel._draft);
-  assert.equal(panel._draftToRaw(panel._draft).require_states[0].state, "jammed");
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+
+  panel._onField({ target: { dataset: { ci: "0", cf: "stateChoice" }, value: "__custom" } });
+  let html = panel.shadowRoot.innerHTML;
+  assert.match(html, /data-cf="state"/, "the text box appears under Other");
+  assert.equal(panel._draft.require_states[0].state, "");
+
+  panel._onField({ target: { dataset: { ci: "0", cf: "state" }, value: "jammed", type: "text" } }, true);
+  assert.deepEqual(panel._draftToRaw(panel._draft).require_states, [{ entity_id: "lock.front_door", state: "jammed" }]);
+});
+
+test("a condition left on Choose a state is not saved", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "Blank", draft: { trigger: "time", time: "07:00:00", actions: [{ service: "light.turn_off", targetMode: "area" }] } }, "kitchen");
+  panel._draft.require_states = [{ entity_id: "lock.front_door", state: "" }];
+  assert.deepEqual(panel._draftToRaw(panel._draft).require_states, []);
+});
+
+test("per-person triggers are offered in the editor with a people picker and a place", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "Blank", draft: { trigger: "person_leaves", actions: [{ service: "light.turn_off", targetMode: "all_areas" }] } }, null);
+  panel._view = { name: "editor", room: null };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /<option value="person_leaves"\s+selected>When a person leaves a place<\/option>/);
+  assert.match(html, /data-f="zone"/);
+  assert.match(html, /data-list="people"/);
+});
+
+test("a per-person routine names the people and the place in its summary", () => {
+  const panel = makePanel();
+  const text = panel._describeTrigger({ trigger: "person_leaves", zone: "zone.work", people: ["person.alex"] });
+  assert.equal(text, "When a person leaves a place (Work) · Alex");
+});
+
+test("the catch-up choice shows plain words and keeps a value that is not one of the presets", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "Blank", draft: { trigger: "time", time: "07:00:00", actions: [{ service: "light.turn_off", targetMode: "area" }] } }, "kitchen");
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._draft.catch_up_minutes = 45;
+  panel._render();
+  let html = panel.shadowRoot.innerHTML;
+  assert.match(html, /<option value="45" selected>Within 45 minutes<\/option>/);
+  assert.match(html, /<option value="30"\s*>Within 30 minutes<\/option>/);
+  assert.match(html, /<option value="60"\s*>Within 1 hour<\/option>/);
+  assert.doesNotMatch(html, /catch_up_minutes" value=/, "the old number box is gone");
+  panel._onField({ target: { dataset: { f: "catch_up_minutes" }, value: "120", type: "select-one" } });
+  assert.equal(panel._draftToRaw(panel._draft).catch_up_minutes, 120);
+});
+
+test("duplicate opens a copy with its own name, no id, and a new id when saved", () => {
+  const panel = makePanel();
+  const routine = panel._data.routines[0];
+  const copy = { ...panel._draftFromRoutine(routine), id: "", name: `${routine.name} (copy)`, isNew: true };
+  panel._draft = copy;
+  const raw = panel._draftToRaw(panel._draft);
+  assert.equal(raw.name, "Kitchen lights off (copy)");
+  assert.notEqual(raw.id, routine.id);
+  assert.match(raw.id, /^kitchen_lights_off_copy_/);
+  assert.equal(panel._draft.isNew, true);
+});
+
+test("the routine card offers Duplicate next to Edit", () => {
+  const panel = makePanel();
+  panel._view = { name: "room", room: "kitchen" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /data-act="duplicate" data-id="kitchen_lights"/);
+});
+
+test("three new templates fill in people, schedules and sunrise", () => {
+  const panel = makePanel();
+  const bedtime = panel._applyTemplate(panel._templates().find((t) => t.id === "bedtime_curtains"), null);
+  assert.equal(bedtime.time, "22:00:00");
+  assert.equal(bedtime.actions[0].service, "cover.close_cover");
+  const sunrise = panel._applyTemplate(panel._templates().find((t) => t.id === "lights_off_at_sunrise"), null);
+  assert.equal(sunrise.trigger, "sunrise");
+  const someone = panel._applyTemplate(panel._templates().find((t) => t.id === "lights_off_when_someone_leaves"), null);
+  assert.equal(someone.trigger, "person_leaves");
+  assert.deepEqual(someone.people, ["person.alex"]);
+});
+
+test("the background refresh asks only for run states, and redraws only when they change", async () => {
+  const panel = makePanel();
+  panel._view = { name: "rooms" };
+  panel._hass = {};
+  panel._statusJson = JSON.stringify({ revision: panel._data.revision, paused: panel._data.paused, statuses: panel._data.statuses });
+  const calls = [];
+  panel._call = async (message) => {
+    calls.push(message.type);
+    return { revision: panel._data.revision, paused: false, statuses: { kitchen_lights: { state: "idle", waiting: false, conditions_ok: true, next_run: null } } };
+  };
+  let renders = 0;
+  panel._render = () => { renders += 1; };
+  await panel._refresh();
+  assert.deepEqual(calls, ["daily_routine/status"]);
+  assert.equal(renders, 0, "nothing changed, so nothing is drawn");
+
+  panel._call = async () => ({ revision: panel._data.revision, paused: true, statuses: panel._data.statuses });
+  await panel._refresh();
+  assert.equal(renders, 1);
+  assert.equal(panel._data.paused, true);
+});
+
+test("a new revision from the status poll reloads the whole overview", async () => {
+  const panel = makePanel();
+  panel._hass = {};
+  const types = [];
+  panel._call = async (message) => {
+    types.push(message.type);
+    if (message.type === "daily_routine/status") return { revision: panel._data.revision + 1, paused: false, statuses: {} };
+    return { ...structuredClone(overview), revision: panel._data.revision + 1 };
+  };
+  panel._render = () => {};
+  await panel._refresh();
+  assert.deepEqual(types, ["daily_routine/status", "daily_routine/overview"]);
+});
+
+test("importing a file that is not JSON says so, and nothing is sent", async () => {
+  const panel = makePanel();
+  const sent = [];
+  panel._call = async (message) => { sent.push(message.type); return {}; };
+  await assert.rejects(() => panel._importText("not json"), /isn't a Daily Routine backup/);
+  assert.deepEqual(sent, []);
+});
+
+test("importing a backup sends its routines and reports anything skipped", async () => {
+  const panel = makePanel();
+  const sent = [];
+  panel._call = async (message) => {
+    sent.push(message);
+    if (message.type === "daily_routine/import") return { imported: 1, problems: [{ id: "broken", reason: "Add at least one step." }] };
+    return { ...structuredClone(overview) };
+  };
+  panel._render = () => {};
+  await panel._importText(JSON.stringify({ format: "daily_routine", version: 1, routines: [{ id: "morning", name: "Morning" }] }));
+  assert.equal(sent[0].type, "daily_routine/import");
+  assert.deepEqual(sent[0].routines, [{ id: "morning", name: "Morning" }]);
+  assert.match(panel._notice, /Imported 1 routine\.\s+Skipped: broken: Add at least one step\./);
 });

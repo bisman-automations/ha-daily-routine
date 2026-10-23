@@ -8,6 +8,8 @@ from typing import Any
 from .const import (
     MAX_ACTIONS,
     TRIGGER_EVERYONE_LEAVES,
+    TRIGGER_PERSON_ARRIVES,
+    TRIGGER_PERSON_LEAVES,
     TRIGGER_ROOM_CLEAR,
     TRIGGER_SOMEONE_ARRIVES,
     TRIGGER_TIME,
@@ -40,12 +42,18 @@ DESIRED_STATE: dict[str, str] = {
     "lock.unlock": "unlocked",
 }
 
-PRESENCE_TRIGGERS = (TRIGGER_EVERYONE_LEAVES, TRIGGER_SOMEONE_ARRIVES)
+PRESENCE_TRIGGERS = (
+    TRIGGER_EVERYONE_LEAVES,
+    TRIGGER_SOMEONE_ARRIVES,
+    TRIGGER_PERSON_LEAVES,
+    TRIGGER_PERSON_ARRIVES,
+)
+# Fires when one of the chosen people leaves or arrives at the place (not only when everyone has).
+PER_PERSON_TRIGGERS = (TRIGGER_PERSON_LEAVES, TRIGGER_PERSON_ARRIVES)
 # Triggers that happen as things change, so they run every time (not once a day).
 VALUE_TRIGGERS = (TRIGGER_VALUE_ABOVE, TRIGGER_VALUE_BELOW)
 REPEATING_TRIGGERS = (
-    TRIGGER_EVERYONE_LEAVES,
-    TRIGGER_SOMEONE_ARRIVES,
+    *PRESENCE_TRIGGERS,
     TRIGGER_ROOM_CLEAR,
     *VALUE_TRIGGERS,
 )

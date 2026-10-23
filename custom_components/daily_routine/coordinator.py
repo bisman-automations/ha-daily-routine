@@ -47,6 +47,8 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
     TRIGGER_EVERYONE_LEAVES,
+    TRIGGER_PERSON_ARRIVES,
+    TRIGGER_PERSON_LEAVES,
     TRIGGER_ROOM_CLEAR,
     TRIGGER_SOMEONE_ARRIVES,
     TRIGGER_SUNRISE,
@@ -58,6 +60,7 @@ from .const import (
 )
 from .routines import (
     DESIRED_STATE,
+    PER_PERSON_TRIGGERS,
     PRESENCE_TRIGGERS,
     VALUE_TRIGGERS,
     normalize_routine,
@@ -66,6 +69,8 @@ from .routines import (
 from .schema import vol
 
 _LOGGER = logging.getLogger(__name__)
+
+UNKNOWN_STATES = ("unknown", "unavailable")
 
 H_TIME = "time"
 H_PRESENCE = "presence"
@@ -208,6 +213,8 @@ class HomeRoutinesCoordinator:
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
         self.routines: list[dict[str, Any]] = []
+        # Bumped whenever routines change, so the panel knows when to reload them.
+        self.revision = 0
         self.paused = False
         self.migrated = False
         self.settings: dict[str, Any] = {"hidden_people": [], "notify_services": []}
@@ -262,7 +269,7 @@ class HomeRoutinesCoordinator:
             return False
         for pid in people:
             state = self.hass.states.get(pid)
-            if state is None or state.state in (key, "unknown", "unavailable"):
+            if state is None or state.state in (key, *UNKNOWN_STATES):
                 return False
         return True
 
@@ -415,6 +422,7 @@ class HomeRoutinesCoordinator:
             if rt["state"] == "waiting":
                 rt["state"] = "idle"
         self._start_all(catch_up=False)
+        self.revision += 1
         await self._async_save()
         self._notify_listeners()
         async_dispatcher_send(self.hass, SIGNAL_ROUTINES_CHANGED)
@@ -476,6 +484,42 @@ class HomeRoutinesCoordinator:
             self._runtime.pop(routine_id, None)
             await self.async_reload()
             self._sync_subentries_locked()
+
+    # ----- backup and restore -----
+
+    def export_routines(self) -> list[dict[str, Any]]:
+        """Every routine a person made. Turn-off routines are rebuilt from their parent, so they are left out."""
+        return [dict(r) for r in self.routines if not r.get("companion_of")]
+
+    async def async_import_routines(self, items: list[Any]) -> dict[str, Any]:
+        """Save each routine in the file. Routines that fail are reported and the rest still import."""
+        registry = dr.async_get(self.hass)
+        imported = 0
+        problems: list[dict[str, str]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                problems.append({"id": "?", "reason": "Each routine must be an object."})
+                continue
+            rid = str(item.get("id") or "?")
+            if item.get("companion_of"):
+                problems.append(
+                    {
+                        "id": rid,
+                        "reason": "Turn-off routines are rebuilt automatically; export the main routine instead.",
+                    }
+                )
+                continue
+            device_id = item.get("device_id")
+            if device_id and registry.async_get(device_id) is None:
+                # The device belongs to another Home Assistant install; link to the hub instead.
+                item = {**item, "device_id": None}
+            try:
+                await self.async_save_routine(item)
+            except vol.Invalid as err:
+                problems.append({"id": rid, "reason": str(err)})
+            else:
+                imported += 1
+        return {"imported": imported, "problems": problems}
 
     # ----- integration entries (one per routine, editable in Home Assistant) -----
 
@@ -852,6 +896,9 @@ class HomeRoutinesCoordinator:
         if trigger not in PRESENCE_TRIGGERS:
             return
         people = list(routine["people"])
+        if trigger in PER_PERSON_TRIGGERS:
+            self._watch_each_person(routine, people)
+            return
         rt = self._rt(rid)
         zone = routine["zone"]
         rt["all_away"] = self._all_away(people, zone)
@@ -872,6 +919,34 @@ class HomeRoutinesCoordinator:
                 self.hass.async_create_task(self._execute_routine(routine, now, scheduled=True))
 
         unsub = async_track_state_change_event(self.hass, people, _on_change)
+        self._set_handle(rid, H_PRESENCE, unsub)
+
+    def _watch_each_person(self, routine: dict[str, Any], people: list[str]) -> None:
+        """Leave or arrive for any one chosen person, judged on each person's own change."""
+        rid = routine["id"]
+        trigger = routine["trigger"]
+        zone = routine["zone"]
+
+        @callback
+        def _changed(event: Event[EventStateChangedData]) -> None:
+            if not routine["enabled"]:
+                return
+            old = event.data.get("old_state")
+            new = event.data.get("new_state")
+            key = self._zone_key(zone)
+            if old is None or new is None or key is None:
+                return
+            if old.state in UNKNOWN_STATES or new.state in UNKNOWN_STATES:
+                return
+            was_in = old.state == key
+            is_in = new.state == key
+            leaves = trigger == TRIGGER_PERSON_LEAVES and was_in and not is_in
+            arrives = trigger == TRIGGER_PERSON_ARRIVES and is_in and not was_in
+            now = dt_util.now()
+            if (leaves or arrives) and self._allowed_day(routine, now):
+                self.hass.async_create_task(self._execute_routine(routine, now, scheduled=True))
+
+        unsub = async_track_state_change_event(self.hass, people, _changed)
         self._set_handle(rid, H_PRESENCE, unsub)
 
     def _watch_value(self, routine: dict[str, Any]) -> None:

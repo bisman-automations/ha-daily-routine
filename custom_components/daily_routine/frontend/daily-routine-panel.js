@@ -13,12 +13,15 @@ const TRIGGER_LABELS = {
   sunset: "At sunset",
   everyone_leaves: "When everyone leaves",
   someone_arrives: "When someone arrives",
+  person_leaves: "When a person leaves a place",
+  person_arrives: "When a person arrives at a place",
   room_clear: "When the room has been quiet",
   value_above: "When a sensor goes above a level",
   value_below: "When a sensor drops below a level",
   manual: "Only when I press Run",
 };
-const PRESENCE_TRIGGERS = ["everyone_leaves", "someone_arrives"];
+const PRESENCE_TRIGGERS = ["everyone_leaves", "someone_arrives", "person_leaves", "person_arrives"];
+const PER_PERSON_TRIGGERS = ["person_leaves", "person_arrives"];
 const VALUE_TRIGGERS = ["value_above", "value_below"];
 const STATE_LABELS = { idle: "Ready", waiting: "Waiting", running: "Running", skipped: "Skipped", error: "Error" };
 const REASON_LABELS = {
@@ -136,8 +139,32 @@ const TEMPLATES = [
     hint: "Whole house: turn the lights on when someone arrives.",
     draft: { trigger: "someone_arrives", usePeopleList: true, actions: [{ service: "light.turn_on", targetMode: "all_areas" }] },
   },
+  {
+    id: "lights_off_when_someone_leaves", title: "Lights off when someone leaves", scope: "house",
+    hint: "Whole house: when any of the chosen people leaves Home, turn every light off.",
+    draft: { trigger: "person_leaves", usePeopleList: true, actions: [{ service: "light.turn_off", targetMode: "all_areas" }] },
+  },
+  {
+    id: "bedtime_curtains", title: "Close all curtains at bedtime", scope: "house",
+    hint: "Whole house: close every curtain at 10:00 pm.",
+    draft: { trigger: "time", time: "22:00:00", actions: [{ service: "cover.close_cover", targetMode: "all_areas" }] },
+  },
+  {
+    id: "lights_off_at_sunrise", title: "Lights off at sunrise", scope: "house",
+    hint: "Whole house: turn every light off when the sun comes up.",
+    draft: { trigger: "sunrise", actions: [{ service: "light.turn_off", targetMode: "all_areas" }] },
+  },
   { id: "blank", title: "Blank routine", hint: "Start from scratch.", scope: "any", draft: {} },
 ];
+
+// How long after a restart a missed routine may still run, in minutes.
+const CATCH_UP_CHOICES = [0, 15, 30, 60, 120, 180];
+
+function catchUpLabel(minutes) {
+  if (minutes === 0) return "Don't run it late";
+  if (minutes < 60) return `Within ${minutes} minutes`;
+  return minutes % 60 === 0 ? `Within ${minutes / 60} hour${minutes === 60 ? "" : "s"}` : `Within ${minutes} minutes`;
+}
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -180,7 +207,7 @@ class DailyRoutinePanel extends HTMLElement {
     this._wire();
     this._timer = setInterval(() => {
       if (document.hidden) return;
-      if (["rooms", "room", "all"].includes(this._view.name)) this._load(true);
+      if (["rooms", "room", "all"].includes(this._view.name)) this._refresh();
     }, REFRESH_MS);
   }
 
@@ -216,9 +243,67 @@ class DailyRoutinePanel extends HTMLElement {
       if (!silent) this._showNotice(err.message || String(err), true);
     }
     this.classList.remove("busy");
+    if (this._data) {
+      const { revision, paused, statuses } = this._data;
+      this._statusJson = JSON.stringify({ revision, paused, statuses });
+    }
     // A background refresh that brought nothing new leaves the page alone.
     if (silent && !changed && this._rendered) return;
     this._render();
+  }
+
+  // The background refresh only asks for run states, which are small. Routines themselves are
+  // reloaded only when the revision says they changed.
+  async _refresh() {
+    if (!this._hass || !this._data) return this._load(true);
+    try {
+      const status = await this._call({ type: `${DOMAIN}/status` });
+      if (status.revision !== this._data.revision) return this._load(true);
+      const json = JSON.stringify(status);
+      if (json === this._statusJson) return;
+      this._statusJson = json;
+      this._data.statuses = status.statuses;
+      this._data.paused = status.paused;
+      this._render();
+    } catch (_err) {
+      // Nothing to do: the next refresh tries again.
+    }
+  }
+
+  async _exportRoutines() {
+    const backup = await this._call({ type: `${DOMAIN}/export` });
+    const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "daily-routine-backup.json";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    this._showNotice(`Exported ${backup.routines.length} routine${backup.routines.length === 1 ? "" : "s"}.`);
+  }
+
+  async _importFile(file) {
+    try {
+      await this._importText(await file.text());
+    } catch (err) {
+      this._showNotice(err.message || String(err), true);
+    }
+    this._render();
+  }
+
+  async _importText(text) {
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (_err) {
+      throw new Error("That file isn't a Daily Routine backup. Export one from this page to get a file that loads.");
+    }
+    const routines = Array.isArray(parsed) ? parsed : parsed?.routines;
+    if (!Array.isArray(routines)) throw new Error("That file has no routines in it.");
+    const result = await this._call({ type: `${DOMAIN}/import`, routines });
+    await this._load();
+    const count = `${result.imported} routine${result.imported === 1 ? "" : "s"}`;
+    const skipped = result.problems.map((p) => `${p.id}: ${p.reason}`).join(" ");
+    this._showNotice(`Imported ${count}.${skipped ? ` Skipped: ${skipped}` : ""}`, result.imported === 0 && result.problems.length > 0);
   }
 
   _showNotice(text, error = false) {
@@ -306,7 +391,10 @@ class DailyRoutinePanel extends HTMLElement {
       return `${this._nameFor(routine.value_entity)} ${word} ${level}${windowText}`;
     }
     if (PRESENCE_TRIGGERS.includes(routine.trigger)) {
-      return `${when} (${this._zoneName(routine.zone)})${windowText}`;
+      const who = PER_PERSON_TRIGGERS.includes(routine.trigger) && routine.people.length
+        ? ` · ${routine.people.map((id) => this._nameFor(id)).join(", ")}`
+        : "";
+      return `${when} (${this._zoneName(routine.zone)})${who}${windowText}`;
     }
     if (routine.trigger === "time") return `${when} ${hhmm(routine.time)}${windowText}`;
     if (routine.trigger === "sunrise" || routine.trigger === "sunset") {
@@ -319,6 +407,18 @@ class DailyRoutinePanel extends HTMLElement {
   _zoneName(zoneId) {
     const zones = this._data?.zones || [{ entity_id: "zone.home", name: "Home" }];
     return zones.find((z) => z.entity_id === (zoneId || "zone.home"))?.name || zoneId || "Home";
+  }
+
+  _templates() {
+    return TEMPLATES;
+  }
+
+  _catchUpField(current) {
+    const value = Number(current) || 0;
+    const choices = CATCH_UP_CHOICES.includes(value) ? CATCH_UP_CHOICES : [...CATCH_UP_CHOICES, value].sort((a, b) => a - b);
+    const options = choices.map((m) => `<option value="${m}" ${m === value ? "selected" : ""}>${esc(catchUpLabel(m))}</option>`).join("");
+    return `<label>If Home Assistant was restarting when it was due<select data-f="catch_up_minutes">${options}</select></label>
+      <p class="muted small">The routine still runs once Home Assistant is back, as long as that is within this window.</p>`;
   }
 
   _zoneField(draft) {
@@ -473,7 +573,9 @@ class DailyRoutinePanel extends HTMLElement {
       sensors: draft.sensors,
       require_sensors_clear: draft.require_sensors_clear,
       clear_minutes: Number(draft.clear_minutes) || 0,
-      require_states: draft.require_states.filter((x) => x.entity_id && x.state),
+      require_states: draft.require_states
+        .filter((x) => x.entity_id && x.state)
+        .map((x) => ({ entity_id: x.entity_id, state: x.state })),
       conditions_match: draft.conditions_match === "any" ? "any" : "all",
       repeat: draft.repeat,
       catch_up_minutes: Number(draft.catch_up_minutes) || 0,
@@ -533,6 +635,22 @@ class DailyRoutinePanel extends HTMLElement {
           this._showNotice(result.ran ? "Routine ran." : "Did not run – its conditions are not met right now.", !result.ran);
           break;
         }
+        case "duplicate": {
+          const routine = this._data.routines.find((r) => r.id === el.dataset.id);
+          if (!routine) return;
+          // A copy is a new routine: it gets its own id when saved.
+          this._draft = { ...this._draftFromRoutine(routine), id: "", name: `${routine.name} (copy)`, isNew: true };
+          this._view = { name: "editor", room: routine.room || null };
+          this._preview = null;
+          this._notice = null;
+          break;
+        }
+        case "export":
+          await this._exportRoutines();
+          break;
+        case "import":
+          this.shadowRoot.querySelector("[data-import-file]").click();
+          return;
         case "toggle-enabled": {
           const routine = this._data.routines.find((r) => r.id === el.dataset.id);
           if (!routine) return;
@@ -608,6 +726,12 @@ class DailyRoutinePanel extends HTMLElement {
   _onField(event, live = false) {
     const el = event.target;
     if (!el.dataset) return;
+    if (el.dataset.importFile !== undefined) {
+      const file = el.files?.[0];
+      el.value = "";
+      if (file) this._importFile(file);
+      return;
+    }
     if (!live && (el.dataset.showPerson !== undefined || el.dataset.notifyTarget !== undefined)) {
       if (el.dataset.showPerson !== undefined) {
         this._saveSettings({ hidden_people: this._hiddenFromDom() });
@@ -832,6 +956,7 @@ class DailyRoutinePanel extends HTMLElement {
       <div class="row-actions">
         <button class="ghost" data-act="run" data-id="${esc(routine.id)}">Run now</button>
         <button class="ghost" data-act="edit" data-id="${esc(routine.id)}">Edit</button>
+        <button class="ghost" data-act="duplicate" data-id="${esc(routine.id)}">Duplicate</button>
         <button class="ghost" data-act="toggle-enabled" data-id="${esc(routine.id)}">${routine.enabled ? "Disable" : "Enable"}</button>
         <button class="ghost danger" data-act="delete" data-id="${esc(routine.id)}">Delete</button>
       </div>
@@ -882,6 +1007,15 @@ class DailyRoutinePanel extends HTMLElement {
         <p class="muted small">Choose who appears when you build a routine. Turn off profiles that aren't people, like a shared display. Routines that already use someone keep them.</p>
         <p class="pill">${shown} of ${this._data.people.length} shown</p>
         <div class="checks">${people}</div>
+      </section>
+      <section class="card">
+        <h3>Backup</h3>
+        <p class="muted small">Save every routine to a file, or load a file saved earlier. A routine in the file replaces the one with the same id.</p>
+        <div class="row-actions">
+          <button class="ghost" data-act="export">Export routines</button>
+          <button class="ghost" data-act="import">Import routines…</button>
+          <input type="file" accept="application/json,.json" data-import-file hidden>
+        </div>
       </section>
       <section class="card">
         <h3>Notifications</h3>
@@ -1055,7 +1189,7 @@ class DailyRoutinePanel extends HTMLElement {
         <h3>Options</h3>
         <label class="check"><input type="checkbox" data-f="repeat" ${d.repeat ? "checked" : ""}> Run every time (not just once a day)</label>
         <label class="check"><input type="checkbox" data-f="skip_noop" ${d.skip_noop ? "checked" : ""}> Skip steps that are already done</label>
-        <label>If it was missed after a restart, still run within (minutes)<input type="number" min="0" max="180" data-f="catch_up_minutes" value="${esc(d.catch_up_minutes)}"></label>
+        ${this._catchUpField(d.catch_up_minutes)}
         <label>Retry a failed step (times)<input type="number" min="0" max="3" data-f="retries" value="${esc(d.retries)}"></label>
         <h4>Notify me</h4>
         <label class="check"><input type="checkbox" data-f="notify_on_run" ${d.notify_on_run ? "checked" : ""}> When it runs</label>

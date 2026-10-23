@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from datetime import timedelta
 
 from homeassistant.core import HomeAssistant
@@ -129,9 +128,7 @@ async def test_editing_an_entry_in_home_assistant_updates_the_routine(
             "trigger": "time",
             "time": "06:30",
             "zone": "zone.home",
-            "actions": json.dumps(
-                [{"service": "light.turn_off", "target": {"entity_id": ["light.hall"]}, "data": {}}]
-            ),
+            "actions": "light.turn_off | light.hall",
         },
     )
     assert result["type"] == "abort"
@@ -167,11 +164,11 @@ async def test_bad_steps_in_the_entry_form_show_an_error(
             "trigger": "time",
             "time": "06:30",
             "zone": "zone.home",
-            "actions": "not json",
+            "actions": "light.turn_off | light.hall | {not json",
         },
     )
     assert result["type"] == "form"
-    assert result["errors"] == {"actions": "invalid_json"}
+    assert result["errors"] == {"actions": "invalid_steps"}
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
 

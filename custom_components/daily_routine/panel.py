@@ -111,6 +111,7 @@ def _overview(hass: HomeAssistant, coordinator: HomeRoutinesCoordinator) -> dict
         "routines": coordinator.routines,
         "statuses": statuses,
         "paused": coordinator.paused,
+        "revision": coordinator.revision,
     }
 
 
@@ -125,6 +126,9 @@ def async_setup_panel_api(hass: HomeAssistant) -> None:
         ws_preview_routine,
         ws_set_paused,
         ws_save_settings,
+        ws_status,
+        ws_export,
+        ws_import,
     ):
         websocket_api.async_register_command(hass, command)
     hass.data[_API_REGISTERED] = True
@@ -140,6 +144,58 @@ async def ws_overview(
         connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
         return
     connection.send_result(msg["id"], _overview(hass, coordinator))
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/status"})
+@websocket_api.async_response
+async def ws_status(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """The small, frequent refresh: run states only. A full reload happens when the revision changes."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    connection.send_result(
+        msg["id"],
+        {
+            "revision": coordinator.revision,
+            "paused": coordinator.paused,
+            "statuses": {
+                r["id"]: coordinator.get_status(r["id"]) or {} for r in coordinator.routines
+            },
+        },
+    )
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/export"})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_export(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    connection.send_result(
+        msg["id"], {"format": DOMAIN, "version": 1, "routines": coordinator.export_routines()}
+    )
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/import", vol.Required("routines"): list}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_import(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    connection.send_result(msg["id"], await coordinator.async_import_routines(msg["routines"]))
 
 
 @websocket_api.websocket_command(

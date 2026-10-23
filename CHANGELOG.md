@@ -2,6 +2,24 @@
 
 All notable changes to the **ha-daily-routine** Home Assistant integration will be documented in this file.
 
+## [1.8.0] - 2026-10-23
+
+### Routines
+* **Per-person triggers:** "When a person leaves a place" and "When a person arrives at a place" fire for the people you pick, one at a time, instead of waiting for everyone.
+* **Full editor in Settings:** every routine setting, including people, sensors, quiet time, active hours, extra conditions, linked device, catch-up, retries and notifications, can be changed under Devices & services. Steps and extra conditions are one plain line each.
+* **Duplicate:** copy a routine from its card and change the copy.
+* **Catch-up** is a choice of windows (15 minutes to 3 hours) instead of a number of minutes.
+* **Templates:** lights off when someone leaves, close all curtains at bedtime, lights off at sunrise.
+
+### Backup
+* **Export and import:** save every routine to a file from Settings, and load it on this or another Home Assistant. Routines that fail the checks are listed and the rest still load.
+
+### Faster dashboard
+* The background refresh asks only for each routine's run state, and reloads the routines when they change.
+
+### Fixed
+* The extra-condition picker no longer sends its internal choice flag to Home Assistant.
+
 ## [1.7.0] - 2026-10-23
 
 ### Routines

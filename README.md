@@ -18,7 +18,7 @@
 - **Rooms from Home Assistant.** The sidebar shows every area (room) automatically, plus a **Whole house** card for routines that span the house. Create or rename rooms in *Settings → Areas & zones*, and they appear here.
 - **Routines per room.** Curtains open at 07:00 in most rooms and at 08:00 in the bedroom: two routines. Lights in a room turn off once its motion sensor has been quiet for 10 minutes.
 - **Whole-house routines.** Lights off when everyone has left and the house has been quiet for 15 minutes.
-- **Triggers:** a set time, sunrise or sunset (with offset), everyone leaves or someone arrives at a place (Home, Work, or any other zone you've set up in Home Assistant), a room has been quiet, a sensor rising above or falling below a level (for example humidity), or manual only.
+- **Triggers:** a set time, sunrise or sunset (with offset), everyone leaves or someone arrives at a place, or a chosen person leaves or arrives (Home, Work, or any other zone you've set up in Home Assistant), a room has been quiet, a sensor rising above or falling below a level (for example humidity), or manual only.
 - **Daytime windows.** Any routine can be limited to hours, such as 07:00 to 22:00. Windows can cross midnight.
 - **Humidity fan example.** A bathroom fan turns on when humidity goes above 60% and off again below 50%, but only between 07:00 and 22:00. The turn-off level creates a second routine named "(off)" that you can see and edit.
 - **Safety first.** Unknown or unavailable people and sensors block a run. Conditions are checked again before every step.
@@ -69,7 +69,7 @@ The sidebar has three tabs:
 - **Routines**: search every routine by name, room, device, trigger, or day.
 - **Settings** (administrators only): which people routines can use, and where notifications also go.
 
-Each routine card has **Run now**, **Edit**, **Enable/Disable**, and **Delete**. In the editor, **Linked device** picks the device the routine belongs to.
+Each routine card has **Run now**, **Edit**, **Duplicate**, **Enable/Disable**, and **Delete**. Duplicate opens a copy you can change before saving. In the editor, **Linked device** picks the device the routine belongs to.
 
 ## Routines as devices
 
@@ -79,7 +79,25 @@ Each routine is its own service under the Daily Routine integration. It is linke
 
 ## Editing routines in Home Assistant
 
-Every routine also appears under **Settings → Devices & services → Daily Routine**, as its own entry. Open one to change its name, whether it is on, its trigger, time, place and steps. Steps are a JSON list there. Sensors, people and conditions are kept as they are, and change them in the sidebar. Edits from either place show in both. Deleting an entry deletes its routine.
+Every routine also appears under **Settings → Devices & services → Daily Routine**, as its own entry. Open one to change any of its settings: name, on or off, trigger, time, days, place, people, sensors, the quiet time, active hours, extra conditions, linked device, catch-up, retries, notifications and steps. Edits from either place show in both, and the same checks apply.
+
+Steps and extra conditions are written as plain lines:
+
+```
+light.turn_off | light.kitchen_ceiling, light.hall
+cover.open_cover | area:living_room
+light.turn_on | light.hall | {"brightness": 128}
+wait 30
+```
+
+- A step is `action | targets | extra settings`. Targets are entity ids separated by commas, or `area:` followed by an area id. Extra settings are optional JSON. `wait` takes seconds, or `00:00:30`.
+- An extra condition is `entity = state`, one per line, for example `lock.front_door = unlocked`.
+
+Deleting an entry deletes its routine.
+
+## Backup
+
+On **Settings** in the sidebar (administrators only), **Export routines** saves every routine to a file. **Import routines** loads a file saved earlier. A routine in the file replaces the one with the same id. Routines that fail the checks are listed and the others still load. Turn-off routines are rebuilt from the routine they belong to, so they are not exported. A linked device that isn't on this Home Assistant is linked to the Daily Routine device instead.
 
 ## Diagnostics
 
@@ -94,7 +112,7 @@ On **Settings → Devices & services → Daily Routine**, choose *Download diagn
 
 | Field | Meaning |
 |-------|---------|
-| Trigger | `time`, `sunrise`, `sunset`, `everyone_leaves`, `someone_arrives`, `room_clear`, `value_above`, `value_below`, or `manual` |
+| Trigger | `time`, `sunrise`, `sunset`, `everyone_leaves`, `someone_arrives`, `person_leaves`, `person_arrives`, `room_clear`, `value_above`, `value_below`, or `manual` |
 | Place | For leave and arrive triggers, and "only when everyone is away": the zone that counts, such as Home or Work. Defaults to Home |
 | Sensor and level | For value triggers: a numeric sensor, the level it must cross, and for "above" an optional level to turn back off |
 | Only run between | Optional start and end time. Outside these hours the routine does nothing. Windows can cross midnight |
@@ -105,7 +123,7 @@ On **Settings → Devices & services → Daily Routine**, choose *Download diagn
 | Extra conditions | Entities and states to check, for example `input_boolean.guest_mode` = `off`. With more than one, choose whether **all** of them must match or **any one** is enough |
 | Run every time | Run on every trigger, not once a day (default on for presence and room triggers) |
 | Skip steps already done | Skip a step whose devices are already in the target state (default on) |
-| Catch up | After a restart, still run a missed time routine within N minutes (up to 180). Home Assistant gets about 30 seconds to load, then the routine runs as soon as it can. If a condition blocks it, it is retried each minute until the window closes |
+| Catch up | If Home Assistant was restarting when a time routine was due, still run it once it is back, within a window of up to 3 hours ("Don't run it late" turns this off). Home Assistant gets about 30 seconds to load, then the routine runs as soon as it can. If a condition blocks it, it is retried each minute until the window closes |
 | Retry | Retry a failed step up to 3 times |
 | Steps | Actions chosen by name, such as "Turn off lights" (with a room, specific devices, or no target), or any service under "Other (advanced)", plus waits |
 | Notify | On run, on skip, on failure |
@@ -114,6 +132,7 @@ On **Settings → Devices & services → Daily Routine**, choose *Download diagn
 
 - **Room is quiet** runs once each time the room's sensors have been quiet for the chosen minutes. It does not fire just because Home Assistant restarted in a quiet room.
 - **Everyone leaves / someone arrives** fire on the change itself. With sensors selected, they wait until the room is quiet. "Everyone leaves Work" means every person has left that zone, and "someone arrives at Work" means the first person to reach it after everyone had left. A person who is at another place counts as away from Home.
+- **Person leaves / person arrives** fire when one of the chosen people goes from the place to somewhere else, or from elsewhere to the place. Other people's moves don't count, and a person whose state is unknown or unavailable never triggers it.
 - **Above / below a level** fire when the sensor crosses the level, not on every reading. Staying above it does not run the routine again. The turn-off level for "above" creates a companion routine named "(off)" that runs when the sensor drops below that level.
 - **Outside the window** a crossing is ignored. The routine does not catch up when the window opens. It runs at the next crossing inside the window.
 
