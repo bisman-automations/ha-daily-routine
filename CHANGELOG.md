@@ -2,7 +2,7 @@
 
 All notable changes to the **ha-daily-routine** Home Assistant integration will be documented in this file.
 
-## [Unreleased]
+## [1.9.0] - 2026-10-23
 
 ### Routines
 * **Conditions list:** the "only when everyone is away" and "only when the sensors have been quiet" checkboxes are now entries in one Extra conditions list. Add who is home or away (everyone or anyone, at or away from a place, in either direction), sensors quiet or active for N minutes, or a device's state. Every condition must hold, or any one, as you choose.
