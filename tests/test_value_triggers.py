@@ -172,3 +172,20 @@ def test_notify_targets_are_named_and_generic_services_hidden(hass: HomeAssistan
     targets = notify_targets(hass)
     assert {"entity": "notify.mobile_app_alex_phone", "name": "Alex Phone"} in targets
     assert all(t["entity"] not in {"notify.send_message", "notify.notify"} for t in targets)
+
+
+def test_phone_names_come_from_the_mobile_app_device(hass: HomeAssistant) -> None:
+    """A phone is named by its device, read without the deprecated per-device config entry access."""
+    from homeassistant.helpers import device_registry as dr
+
+    phone_app = MockConfigEntry(domain="mobile_app")
+    phone_app.add_to_hass(hass)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=phone_app.entry_id,
+        identifiers={("mobile_app", "alex_phone")},
+        name="Alex's iPhone",
+    )
+    async_mock_service(hass, "notify", "mobile_app_alex_s_iphone")
+    assert {"entity": "notify.mobile_app_alex_s_iphone", "name": "Alex's iPhone"} in notify_targets(
+        hass
+    )

@@ -2,6 +2,11 @@
 
 All notable changes to the **ha-daily-routine** Home Assistant integration will be documented in this file.
 
+## [1.6.1] - 2026-10-23
+
+### Fixed
+* The dashboard loads and saves quickly again. Phone names were read through a deprecated device attribute, which made each dashboard load slow and logged a deprecation report on every call. The overview now builds in under a millisecond on a home with 800 entities and 200 devices, and a routine save takes a few milliseconds.
+
 ## [1.6.0] - 2026-10-23
 
 ### Routines

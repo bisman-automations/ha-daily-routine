@@ -130,19 +130,14 @@ def notify_targets(hass: HomeAssistant) -> list[dict[str, str]]:
     """Places a routine can send notifications, named the way Home Assistant names them."""
     registry = dr.async_get(hass)
     phone_names: dict[str, str] = {}
-    for device in registry.devices:
-        is_mobile_app = any(
-            (entry := hass.config_entries.async_get_entry(entry_id)) is not None
-            and entry.domain == "mobile_app"
-            for entry_id in device.config_entries
-        )
-        if is_mobile_app:
+    for mobile_entry in hass.config_entries.async_entries("mobile_app"):
+        for device in dr.async_entries_for_config_entry(registry, mobile_entry.entry_id):
             name = device.name_by_user or device.name or ""
             if name:
                 phone_names[slugify(name)] = name
 
     targets = []
-    for service in sorted(hass.services.async_services().get("notify", {})):
+    for service in sorted(hass.services.async_services_for_domain("notify")):
         if service in GENERIC_NOTIFY_SERVICES:
             continue
         if service.startswith("mobile_app_"):
