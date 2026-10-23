@@ -2,14 +2,23 @@
 
 All notable changes to the **ha-daily-routine** Home Assistant integration will be documented in this file.
 
+## [1.6.0] - 2026-10-23
+
+### Routines
+* **Integration entries:** each routine appears under Daily Routine in Settings → Devices & services. Edit its name, on/off, trigger, time, place and steps there. Deleting the entry deletes the routine. (#5)
+* **Diagnostics:** Download diagnostics from the integration page. Phone names and hidden profiles are redacted. (#4)
+* **Catch-up after a restart:** waits for Home Assistant to finish starting, then retries each minute while a condition blocks the run, until the catch-up window closes. (#2)
+* **Faster dashboard:** the overview is built in one pass over the registries, the panel caches its lookups, and a refresh that brings no change no longer redraws the page. (#3)
+* **Loading:** a skeleton placeholder on first load and a progress bar while the dashboard refreshes or saves. (#1)
+
+### Other
+* Added the MIT license, which HACS needs before the integration can be listed in its catalog.
+
 ## [1.5.0] - 2026-10-18
 
 ### Routines
 * **Places:** leave and arrive triggers, and "only when everyone is away," now work with any Home Assistant zone, such as Work. Pick a place in the editor. Home stays the default, so existing routines behave the same.
 * Someone at another place now counts as away from Home for leave-home routines.
-
-### Other
-* Added the MIT license, which HACS needs before the integration can be listed in its catalog.
 
 ## [1.4.0] - 2026-10-17
 

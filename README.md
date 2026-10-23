@@ -77,6 +77,14 @@ Each routine is its own service under the Daily Routine integration. It is linke
 
 ---
 
+## Editing routines in Home Assistant
+
+Every routine also appears under **Settings → Devices & services → Daily Routine**, as its own entry. Open one to change its name, whether it is on, its trigger, time, place and steps. Steps are a JSON list there. Sensors, people and conditions are kept as they are, and change them in the sidebar. Edits from either place show in both. Deleting an entry deletes its routine.
+
+## Diagnostics
+
+On **Settings → Devices & services → Daily Routine**, choose *Download diagnostics* to get the routines, their status and the settings, for reporting a problem. Phone names and hidden profiles are redacted. Routines still contain entity ids, so check the file before posting it publicly.
+
 ## Settings
 
 - **People in routines.** Turn off the profiles that aren't people, such as a shared display, so they don't appear when you build a routine. A routine that already uses someone keeps them.
@@ -97,7 +105,7 @@ Each routine is its own service under the Daily Routine integration. It is linke
 | Extra conditions | Entity + state that must match, for example `input_boolean.guest_mode` = `off` |
 | Run every time | Run on every trigger, not once a day (default on for presence and room triggers) |
 | Skip steps already done | Skip a step whose devices are already in the target state (default on) |
-| Catch up | After a restart, still run a missed time routine within N minutes (up to 180) |
+| Catch up | After a restart, still run a missed time routine within N minutes (up to 180). Home Assistant gets about 30 seconds to load, then the routine runs as soon as it can. If a condition blocks it, it is retried each minute until the window closes |
 | Retry | Retry a failed step up to 3 times |
 | Steps | Actions chosen by name, such as "Turn off lights" (with a room, specific devices, or no target), or any service under "Other (advanced)", plus waits |
 | Notify | On run, on skip, on failure |

@@ -9,5 +9,41 @@
     "abort": {
       "single_instance": "Daily Routine is already set up."
     }
+  },
+  "config_subentries": {
+    "routine": {
+      "entry_type": "Routine",
+      "initiate_flow": {
+        "user": "Add routine",
+        "reconfigure": "Edit routine"
+      },
+      "step": {
+        "user": {
+          "title": "Add routine",
+          "description": "Routines are made in the Daily Routine sidebar."
+        },
+        "reconfigure": {
+          "title": "Edit {name}",
+          "description": "Changes here also show in the Daily Routine sidebar. Sensors, people and conditions are kept as they are; change those in the sidebar.",
+          "data": {
+            "name": "Name",
+            "enabled": "Turned on",
+            "trigger": "When it runs",
+            "time": "Time (for a set time)",
+            "zone": "Place (for leave and arrive triggers)",
+            "actions": "Steps (advanced: a JSON list)"
+          }
+        }
+      },
+      "abort": {
+        "updated": "Routine saved.",
+        "use_sidebar": "Routines are made in the Daily Routine sidebar.",
+        "routine_missing": "This routine no longer exists."
+      },
+      "error": {
+        "invalid_json": "The steps must be a valid JSON list.",
+        "invalid_routine": "This routine can't be saved: {reason}"
+      }
+    }
   }
 }

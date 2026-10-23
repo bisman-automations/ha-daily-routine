@@ -53,6 +53,14 @@ async def _async_migrate(
         hass.config_entries.async_update_entry(entry, title="Daily Routine", data={}, options={})
 
 
+async def _async_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Runs when an integration entry is edited or deleted in Home Assistant."""
+    domain_data = hass.data.get(DOMAIN, {})
+    coordinator = domain_data.get("coordinator")
+    if coordinator is not None and domain_data.get("primary") == entry.entry_id:
+        await coordinator.async_reconcile_subentries()
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the single Daily Routine entry."""
     domain_data = hass.data.setdefault(DOMAIN, {})
@@ -65,9 +73,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         domain_data["primary"] = entry.entry_id
         coordinator = HomeRoutinesCoordinator(hass)
         domain_data["coordinator"] = coordinator
+        coordinator.attach_entry(entry.entry_id)
         await coordinator.async_setup()
         await _async_migrate(hass, entry, coordinator)
         await coordinator.async_start()
+        await coordinator.async_sync_subentries()
+        entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
 
         async def run_routine_service(call: ServiceCall) -> None:
             await coordinator.async_run_routine(call)

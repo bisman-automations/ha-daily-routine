@@ -6,6 +6,8 @@ import assert from "node:assert/strict";
 const defined = new Map();
 
 class FakeElement {
+  classList = { toggle() {}, add() {}, remove() {} };
+
   attachShadow() {
     this.shadowRoot = {
       innerHTML: "",
@@ -403,4 +405,39 @@ test("a presence routine saves the place it watches and names it in summaries", 
   assert.equal(raw.zone, "zone.work");
   assert.equal(panel._describeTrigger({ trigger: "everyone_leaves", zone: "zone.work" }), "When everyone leaves (Work)");
   assert.equal(panel._describeTrigger({ trigger: "someone_arrives", zone: "zone.home" }), "When someone arrives (Home)");
+});
+
+test("the first load shows a skeleton instead of a bare Loading line", () => {
+  const panel = makePanel();
+  panel._data = null;
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /skeleton-grid/);
+  assert.match(html, /skeleton-card/);
+  assert.doesNotMatch(html, /Loading…/);
+});
+
+test("entity lookups come from one cached index per load, and names still resolve", () => {
+  const panel = makePanel();
+  assert.equal(panel._allEntities(), panel._allEntities());
+  assert.equal(panel._nameFor("light.kitchen"), "Kitchen light");
+  assert.equal(panel._nameFor("sensor.nowhere"), "sensor.nowhere");
+  const before = panel._index();
+  panel._data = structuredClone(overview);
+  assert.notEqual(panel._index(), before, "new data gets a fresh index");
+});
+
+test("a background refresh that brings nothing new leaves the page alone", async () => {
+  const panel = makePanel();
+  panel._rendered = true;
+  panel._dataJson = JSON.stringify(panel._data);
+  let renders = 0;
+  panel._render = () => { renders += 1; };
+  panel._hass = { callWS: async () => structuredClone(overview) };
+  await panel._load(true);
+  assert.equal(renders, 0);
+
+  panel._hass = { callWS: async () => ({ ...structuredClone(overview), paused: true }) };
+  await panel._load(true);
+  assert.equal(renders, 1, "a real change still redraws");
 });

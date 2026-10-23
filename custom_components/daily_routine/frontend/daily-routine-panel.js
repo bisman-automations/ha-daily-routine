@@ -162,6 +162,7 @@ class DailyRoutinePanel extends HTMLElement {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     this._wire();
     this._timer = setInterval(() => {
+      if (document.hidden) return;
       if (["rooms", "room", "all"].includes(this._view.name)) this._load(true);
     }, REFRESH_MS);
   }
@@ -184,11 +185,22 @@ class DailyRoutinePanel extends HTMLElement {
 
   async _load(silent = false) {
     if (!this._hass) return;
+    // The thin progress bar shows through the host class, so no redraw is needed to start it.
+    this.classList.toggle("busy", !silent);
+    let changed = true;
     try {
-      this._data = await this._call({ type: `${DOMAIN}/overview` });
+      const data = await this._call({ type: `${DOMAIN}/overview` });
+      const json = JSON.stringify(data);
+      changed = json !== this._dataJson || !this._data;
+      this._data = data;
+      this._dataJson = json;
     } catch (err) {
+      changed = false;
       if (!silent) this._showNotice(err.message || String(err), true);
     }
+    this.classList.remove("busy");
+    // A background refresh that brought nothing new leaves the page alone.
+    if (silent && !changed && this._rendered) return;
     this._render();
   }
 
@@ -228,14 +240,25 @@ class DailyRoutinePanel extends HTMLElement {
     return this._data?.areas || [];
   }
 
+  // Lookup tables, rebuilt only when new data arrives (not on every call).
+  _index() {
+    if (this._idx && this._idx.source === this._data) return this._idx;
+    const areas = this._areas();
+    const byArea = new Map(areas.map((a) => [a.id, a]));
+    const seen = new Map();
+    areas.forEach((a) => a.entities.forEach((e) => seen.set(e.entity_id, e)));
+    const entities = [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const byEntity = new Map(entities.map((e) => [e.entity_id, e]));
+    this._idx = { source: this._data, byArea, entities, byEntity };
+    return this._idx;
+  }
+
   _area(id) {
-    return this._areas().find((a) => a.id === id);
+    return this._index().byArea.get(id);
   }
 
   _allEntities() {
-    const seen = new Map();
-    this._areas().forEach((a) => a.entities.forEach((e) => seen.set(e.entity_id, e)));
-    return [...seen.values()].sort((a, b) => a.name.localeCompare(b.name));
+    return this._index().entities;
   }
 
   _roomEntities(roomId) {
@@ -251,7 +274,7 @@ class DailyRoutinePanel extends HTMLElement {
   }
 
   _nameFor(entityId) {
-    const entity = this._allEntities().find((e) => e.entity_id === entityId)
+    const entity = this._index().byEntity.get(entityId)
       || this._data?.people?.find((p) => p.entity_id === entityId)
       || this._data?.sensors?.find((x) => x.entity_id === entityId);
     return entity?.name || entityId;
@@ -657,15 +680,16 @@ class DailyRoutinePanel extends HTMLElement {
     this._draft = null;
     this._preview = null;
     this._showNotice(`Saved “${result.routine.name}”.`);
-    await this._load(true);
+    await this._load();
   }
 
   // ----- rendering -----
 
   _render() {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this._rendered = true;
     let body;
-    if (!this._data) body = `<p class="muted">Loading…</p>`;
+    if (!this._data) body = `<div class="skeleton-grid" aria-busy="true" aria-label="Loading">${'<div class="skeleton-card"></div>'.repeat(4)}</div>`;
     else if (this._view.name === "room") body = this._renderRoom();
     else if (this._view.name === "all") body = this._renderAll();
     else if (this._view.name === "settings") body = this._renderSettings();
@@ -1141,6 +1165,18 @@ const STYLES = `<style>
   .footer { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin: 12px 0 24px; }
   .template { cursor: pointer; }
   @media (max-width: 600px) { main { padding: 12px; } }
+  :host(.busy)::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 10;
+    background: linear-gradient(90deg, transparent, var(--primary-color, #03a9f4), transparent);
+    background-size: 200% 100%; animation: dr-progress 1.1s linear infinite; }
+  @keyframes dr-progress { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  .skeleton-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+  .skeleton-card { height: 96px; border-radius: 12px;
+    background: linear-gradient(90deg, rgba(127,127,127,.12) 25%, rgba(127,127,127,.24) 37%, rgba(127,127,127,.12) 63%);
+    background-size: 400% 100%; animation: dr-shimmer 1.4s ease infinite; }
+  @keyframes dr-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    :host(.busy)::before, .skeleton-card { animation: none; }
+  }
 </style>`;
 
 customElements.define("daily-routine-panel", DailyRoutinePanel);

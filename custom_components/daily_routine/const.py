@@ -37,6 +37,8 @@ TRIGGERS = (
     TRIGGER_VALUE_BELOW,
 )
 
+ROUTINE_SUBENTRY = "routine"
+
 EVENT_ROUTINE_STARTED = f"{DOMAIN}_routine_started"
 EVENT_ROUTINE_FINISHED = f"{DOMAIN}_routine_finished"
 EVENT_ROUTINE_SKIPPED = f"{DOMAIN}_routine_skipped"

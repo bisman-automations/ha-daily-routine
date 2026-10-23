@@ -8,9 +8,11 @@ import re
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from datetime import time as dt_time
+from types import MappingProxyType
 from typing import Any
 
-from homeassistant.const import SUN_EVENT_SUNRISE, SUN_EVENT_SUNSET
+from homeassistant.config_entries import ConfigEntry, ConfigSubentry
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, SUN_EVENT_SUNRISE, SUN_EVENT_SUNSET
 from homeassistant.core import (
     Event,
     EventStateChangedData,
@@ -24,7 +26,11 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import storage
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from homeassistant.helpers.event import async_track_point_in_time, async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_point_in_time,
+    async_track_state_change_event,
+)
 from homeassistant.helpers.sun import get_astral_event_next
 from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
@@ -36,6 +42,7 @@ from .const import (
     EVENT_ROUTINE_STARTED,
     MAX_ROUTINES,
     RETRY_DELAY_SECONDS,
+    ROUTINE_SUBENTRY,
     SIGNAL_ROUTINES_CHANGED,
     STORAGE_KEY,
     STORAGE_VERSION,
@@ -66,6 +73,11 @@ H_WATCH = "watch"
 H_CLEAR = "clear"
 H_VALUE = "value"
 H_EXPIRE = "expire"
+H_CATCH_UP = "catch_up"
+
+# Wait this long after Home Assistant starts before catching up missed routines,
+# so lights, locks and people have loaded their states.
+STARTUP_SETTLE_SECONDS = 30
 
 # Runtime keys kept in storage. Clear timers and waiting state are not persisted.
 PERSISTED_KEYS = ("last_run_date", "last_run", "last_result")
@@ -142,12 +154,29 @@ def notify_targets(hass: HomeAssistant) -> list[dict[str, str]]:
     return sorted(targets, key=lambda t: t["name"].lower())
 
 
+def _entities_by_area(hass: HomeAssistant) -> dict[str, list[str]]:
+    """Same rule as area_entity_ids, for every area at once: one pass over the registries."""
+    ent_reg = er.async_get(hass)
+    dev_reg = dr.async_get(hass)
+    device_area = {device.id: device.area_id for device in dev_reg.devices if device.area_id}
+    index: dict[str, set[str]] = {}
+    for entry in ent_reg.entities.values():
+        if entry.disabled_by is not None:
+            continue
+        if entry.area_id:
+            index.setdefault(entry.area_id, set()).add(entry.entity_id)
+        elif entry.device_id in device_area:
+            index.setdefault(device_area[entry.device_id], set()).add(entry.entity_id)
+    return {area_id: sorted(ids) for area_id, ids in index.items()}
+
+
 def list_areas(hass: HomeAssistant) -> list[dict[str, Any]]:
     """Every area in Home Assistant, with the entities in it. Nothing is set up by hand."""
     areas = []
+    by_area = _entities_by_area(hass)
     for area in sorted(ar.async_get(hass).async_list_areas(), key=lambda a: a.name.lower()):
         entities = []
-        for entity_id in area_entity_ids(hass, area.id):
+        for entity_id in by_area.get(area.id, []):
             state = hass.states.get(entity_id)
             if state is None:
                 continue
@@ -190,6 +219,10 @@ class HomeRoutinesCoordinator:
         self._runtime: dict[str, dict[str, Any]] = {}
         self._listeners: list[Callable[[], None]] = []
         self._handles: dict[tuple[str, str], Callable[[], None]] = {}
+        self._startup_unsubs: list[Callable[[], None]] = []
+        self._entry_id: str | None = None
+        # Serialises edits so the dashboard and the integration's entries stay in step.
+        self._lock = asyncio.Lock()
         self._store: storage.Store[dict[str, Any]] = storage.Store(
             hass, STORAGE_VERSION, STORAGE_KEY
         )
@@ -341,10 +374,29 @@ class HomeRoutinesCoordinator:
             self._rt(rid).update({k: saved.get(k) for k in PERSISTED_KEYS})
 
     async def async_start(self) -> None:
-        self._start_all(catch_up=True)
+        self._start_all(catch_up=False)
         self._notify_listeners()
+        if self.hass.is_running:
+            self._schedule_startup_catch_up()
+        else:
+            self._startup_unsubs.append(
+                self.hass.bus.async_listen_once(
+                    EVENT_HOMEASSISTANT_STARTED, lambda _event: self._schedule_startup_catch_up()
+                )
+            )
+
+    def _schedule_startup_catch_up(self) -> None:
+        def _later(_now: datetime) -> None:
+            now = dt_util.now()
+            for routine in self.routines:
+                self._maybe_catch_up(routine, now)
+
+        self._startup_unsubs.append(async_call_later(self.hass, STARTUP_SETTLE_SECONDS, _later))
 
     async def async_unload(self) -> None:
+        for unsub in self._startup_unsubs:
+            unsub()
+        self._startup_unsubs.clear()
         self._drop_all_handles()
         await self._async_save()
 
@@ -375,6 +427,12 @@ class HomeRoutinesCoordinator:
     # ----- editing (used by the panel, services and migration) -----
 
     async def async_save_routine(self, raw: Any) -> dict[str, Any]:
+        async with self._lock:
+            routine = await self._save_routine_locked(raw)
+            self._sync_subentries_locked()
+        return routine
+
+    async def _save_routine_locked(self, raw: Any) -> dict[str, Any]:
         routine = normalize_routine(raw)
         untracked = []
         for person_id in routine["people"]:
@@ -417,10 +475,79 @@ class HomeRoutinesCoordinator:
         self.routines = [r for r in self.routines if r.get("companion_of") != routine_id]
 
     async def async_delete_routine(self, routine_id: str) -> None:
-        self._drop_companions(routine_id)
-        self.routines = [r for r in self.routines if r["id"] != routine_id]
-        self._runtime.pop(routine_id, None)
-        await self.async_reload()
+        async with self._lock:
+            self._drop_companions(routine_id)
+            self.routines = [r for r in self.routines if r["id"] != routine_id]
+            self._runtime.pop(routine_id, None)
+            await self.async_reload()
+            self._sync_subentries_locked()
+
+    # ----- integration entries (one per routine, editable in Home Assistant) -----
+
+    def get_routine(self, routine_id: str) -> dict[str, Any] | None:
+        return self._find(routine_id)
+
+    def attach_entry(self, entry_id: str) -> None:
+        self._entry_id = entry_id
+
+    def _entry(self) -> ConfigEntry | None:
+        return self.hass.config_entries.async_get_entry(self._entry_id) if self._entry_id else None
+
+    def _routine_subentries(self, entry: ConfigEntry) -> dict[str, ConfigSubentry]:
+        return {
+            sub.unique_id: sub
+            for sub in entry.subentries.values()
+            if sub.subentry_type == ROUTINE_SUBENTRY and sub.unique_id
+        }
+
+    async def async_sync_subentries(self) -> None:
+        async with self._lock:
+            self._sync_subentries_locked()
+
+    def _sync_subentries_locked(self) -> None:
+        """Make the integration's entries match the routines saved from the dashboard."""
+        entry = self._entry()
+        if entry is None:
+            return
+        managed = {r["id"]: r for r in self.routines if not r.get("companion_of")}
+        existing = self._routine_subentries(entry)
+        for rid, routine in managed.items():
+            sub = existing.get(rid)
+            if sub is None:
+                self.hass.config_entries.async_add_subentry(
+                    entry,
+                    ConfigSubentry(
+                        data=MappingProxyType({"routine_id": rid}),
+                        subentry_type=ROUTINE_SUBENTRY,
+                        title=routine["name"],
+                        unique_id=rid,
+                    ),
+                )
+            elif sub.title != routine["name"]:
+                self.hass.config_entries.async_update_subentry(entry, sub, title=routine["name"])
+        for rid, sub in existing.items():
+            if rid not in managed:
+                self.hass.config_entries.async_remove_subentry(entry, sub.subentry_id)
+
+    async def async_reconcile_subentries(self) -> None:
+        """A routine whose entry was deleted in Home Assistant is deleted too."""
+        async with self._lock:
+            entry = self._entry()
+            if entry is None:
+                return
+            present = set(self._routine_subentries(entry))
+            gone = [
+                r["id"]
+                for r in self.routines
+                if not r.get("companion_of") and r["id"] not in present
+            ]
+            if not gone:
+                return
+            for rid in gone:
+                self._drop_companions(rid)
+                self._runtime.pop(rid, None)
+            self.routines = [r for r in self.routines if r["id"] not in gone]
+            await self.async_reload()
 
     async def async_set_settings(self, raw: Any) -> dict[str, Any]:
         """Save the settings tab: which people routines can use, and an optional notify service."""
@@ -693,7 +820,29 @@ class HomeRoutinesCoordinator:
             and self._rt(routine["id"])["last_run_date"] != now.date().isoformat()
         ):
             _LOGGER.info("Catching up missed routine '%s'", routine["name"])
-            self.hass.async_create_task(self._execute_routine(routine, now, scheduled=True))
+            self.hass.async_create_task(self._run_catch_up(routine, window_end))
+
+    async def _run_catch_up(self, routine: dict[str, Any], window_end: datetime) -> None:
+        """Try a missed run, and keep trying each minute while a condition blocks it, until the window closes."""
+        rid = routine["id"]
+        now = dt_util.now()
+        if not routine["enabled"] or self._rt(rid)["last_run_date"] == now.date().isoformat():
+            return
+        ran = await self._execute_routine(routine, now, scheduled=True)
+        if ran or not uses_conditions(routine):
+            return
+        retry_at = now + timedelta(minutes=1)
+        if retry_at >= window_end:
+            _LOGGER.warning(
+                "Routine '%s' was still blocked when its catch-up window closed.", routine["name"]
+            )
+            return
+
+        @callback
+        def _again(_fired: datetime) -> None:
+            self.hass.async_create_task(self._run_catch_up(routine, window_end))
+
+        self._set_handle(rid, H_CATCH_UP, async_track_point_in_time(self.hass, _again, retry_at))
 
     # ----- presence triggers -----
 
