@@ -12,7 +12,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 
-from .const import DOMAIN
+from .const import DOMAIN, ROUTINE_SUBENTRY
 
 HUB_NAME = "Daily Routine"
 ROUTINE_PREFIX = "routine_"
@@ -44,6 +44,15 @@ def async_ensure_hub(hass: HomeAssistant, entry: ConfigEntry) -> dr.DeviceEntry:
     )
 
 
+def routine_subentry_ids(entry: ConfigEntry) -> dict[str, str]:
+    """Routine id -> the id of its routine entry under Daily Routine."""
+    return {
+        sub.unique_id: sub.subentry_id
+        for sub in entry.subentries.values()
+        if sub.subentry_type == ROUTINE_SUBENTRY and sub.unique_id
+    }
+
+
 @callback
 def async_sync_routine_devices(
     hass: HomeAssistant, entry: ConfigEntry, routines: list[dict[str, Any]]
@@ -52,16 +61,22 @@ def async_sync_routine_devices(
     registry = dr.async_get(hass)
     hub = async_ensure_hub(hass, entry)
     wanted = {routine_identifier(r["id"]) for r in routines}
+    subentries = routine_subentry_ids(entry)
 
     for device in dr.async_entries_for_config_entry(registry, entry.entry_id):
         if _is_routine_device(device) and not (device.identifiers & wanted):
             registry.async_remove_device(device.id)
 
     for routine in routines:
+        subentry_id = subentries.get(routine["id"])
+        if subentry_id is None:
+            # Made once the routine's entry exists; the routines-changed signal runs this again then.
+            continue
         target = registry.async_get(routine["device_id"]) if routine.get("device_id") else None
         via_id = target.id if target is not None else hub.id
         device = registry.async_get_or_create(
             config_entry_id=entry.entry_id,
+            config_subentry_id=subentry_id,
             identifiers={routine_identifier(routine["id"])},
             name=routine["name"],
             entry_type=dr.DeviceEntryType.SERVICE,

@@ -599,9 +599,11 @@ class HomeRoutinesCoordinator:
             return
         managed = {r["id"]: r for r in self.routines if not r.get("companion_of")}
         existing = self._routine_subentries(entry)
+        changed = False
         for rid, routine in managed.items():
             sub = existing.get(rid)
             if sub is None:
+                changed = True
                 self.hass.config_entries.async_add_subentry(
                     entry,
                     ConfigSubentry(
@@ -615,7 +617,11 @@ class HomeRoutinesCoordinator:
                 self.hass.config_entries.async_update_subentry(entry, sub, title=routine["name"])
         for rid, sub in existing.items():
             if rid not in managed:
+                changed = True
                 self.hass.config_entries.async_remove_subentry(entry, sub.subentry_id)
+        if changed:
+            # Devices are linked to their routine entries, so tell them the entries now exist.
+            async_dispatcher_send(self.hass, SIGNAL_ROUTINES_CHANGED)
 
     async def async_reconcile_subentries(self) -> None:
         """A routine whose entry was deleted in Home Assistant is deleted too."""

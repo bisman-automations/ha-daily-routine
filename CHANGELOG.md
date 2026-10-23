@@ -2,6 +2,11 @@
 
 All notable changes to the **ha-daily-routine** Home Assistant integration will be documented in this file.
 
+## [1.9.1] - 2026-10-23
+
+### Fixed
+* Routines now appear under their own entries in Settings → Devices & services → Daily Routine, not under "Devices that don't belong to a sub-entry". A routine's device and status sensor belong to its entry.
+
 ## [1.9.0] - 2026-10-23
 
 ### Routines

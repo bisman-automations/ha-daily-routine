@@ -10,14 +10,14 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import DOMAIN, SIGNAL_ROUTINES_CHANGED
-from .devices import async_sync_routine_devices, routine_identifier
+from .devices import async_sync_routine_devices, routine_identifier, routine_subentry_ids
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
     coordinator = hass.data[DOMAIN]["coordinator"]
     entities: dict[str, RoutineStatusSensor] = {}
@@ -25,11 +25,14 @@ async def async_setup_entry(
     @callback
     def _sync() -> None:
         wanted = {r["id"] for r in coordinator.routines}
-        new = [RoutineStatusSensor(coordinator, rid) for rid in sorted(wanted - entities.keys())]
-        for sensor in new:
-            entities[sensor.routine_id] = sensor
-        if new:
-            async_add_entities(new)
+        subentries = routine_subentry_ids(entry)
+        # A sensor joins its routine's entry, so it waits until that entry exists.
+        for rid in sorted(wanted - entities.keys()):
+            if rid not in subentries:
+                continue
+            sensor = RoutineStatusSensor(coordinator, rid)
+            entities[rid] = sensor
+            async_add_entities([sensor], config_subentry_id=subentries[rid])
         for rid in sorted(entities.keys() - wanted):
             sensor = entities.pop(rid)
             registry = er.async_get(hass)

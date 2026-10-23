@@ -138,6 +138,9 @@ async def test_routines_are_service_devices_linked_to_their_device(
     await hass.async_block_till_done()
     unlinked = registry.async_get_device_by_identifier((DOMAIN, "routine_covers"), entry.entry_id)
     assert unlinked is not None and unlinked.via_device_id == hub.id
+    covers_entry = next(s for s in entry.subentries.values() if s.unique_id == "covers")
+    assert unlinked.config_entry_id == entry.entry_id
+    assert unlinked.config_subentry_id == covers_entry.subentry_id
 
     await coordinator.async_delete_routine("hall")
     await hass.async_block_till_done()
