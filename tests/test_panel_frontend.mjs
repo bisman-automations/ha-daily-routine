@@ -441,3 +441,49 @@ test("a background refresh that brings nothing new leaves the page alone", async
   await panel._load(true);
   assert.equal(renders, 1, "a real change still redraws");
 });
+
+test("extra conditions offer all-or-any once there is more than one, and save the choice", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "Blank", draft: { trigger: "time", time: "07:00:00", actions: [{ service: "light.turn_off", targetMode: "area" }] } }, "kitchen");
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._draft.require_states = [{ entity_id: "light.kitchen", state: "on" }];
+  panel._render();
+  assert.doesNotMatch(panel.shadowRoot.innerHTML, /data-f="conditions_match"/);
+
+  panel._draft.require_states.push({ entity_id: "light.kitchen", state: "off" });
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /data-f="conditions_match"/);
+
+  panel._draft.conditions_match = "any";
+  const raw = panel._draftToRaw(panel._draft);
+  assert.equal(raw.conditions_match, "any");
+  panel._draft.conditions_match = undefined;
+  assert.equal(panel._draftToRaw(panel._draft).conditions_match, "all");
+});
+
+test("condition states are picked by name, with Other for anything else", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "Blank", draft: { trigger: "time", time: "07:00:00", actions: [{ service: "light.turn_off", targetMode: "area" }] } }, "kitchen");
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._draft.require_states = [{ entity_id: "lock.front_door", state: "unlocked" }];
+  panel._render();
+  let html = panel.shadowRoot.innerHTML;
+  assert.match(html, /<option value="unlocked" selected>Unlocked<\/option>/);
+  assert.doesNotMatch(html, /placeholder="state"/, "a known state needs no text box");
+  assert.doesNotMatch(html, />unlocked</, "no raw state text in the labels");
+
+  panel._draft.require_states = [{ entity_id: "light.kitchen", state: "dimmed", custom: true }];
+  panel._render();
+  html = panel.shadowRoot.innerHTML;
+  assert.match(html, /data-cf="state" value="dimmed"/);
+});
+
+test("choosing a named state saves it; choosing Other clears it for typing", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "Blank", draft: { trigger: "time", time: "07:00:00", actions: [{ service: "light.turn_off", targetMode: "area" }] } }, "kitchen");
+  panel._draft.require_states = [{ entity_id: "lock.front_door", state: "locked" }];
+  const row = panel._draft.require_states[0];
+  row.state = "jammed";
+  panel._draftToRaw(panel._draft);
+  assert.equal(panel._draftToRaw(panel._draft).require_states[0].state, "jammed");
+});

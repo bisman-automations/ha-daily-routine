@@ -102,7 +102,7 @@ On **Settings → Devices & services → Daily Routine**, choose *Download diagn
 | Days | Which days it may run |
 | Who | People for presence triggers (or "only when everyone is away"). Only people with location tracking can be checked |
 | Sensors + quiet for | Motion/occupancy sensors that must stay off for N minutes. Motion restarts the count |
-| Extra conditions | Entity + state that must match, for example `input_boolean.guest_mode` = `off` |
+| Extra conditions | Entities and states to check, for example `input_boolean.guest_mode` = `off`. With more than one, choose whether **all** of them must match or **any one** is enough |
 | Run every time | Run on every trigger, not once a day (default on for presence and room triggers) |
 | Skip steps already done | Skip a step whose devices are already in the target state (default on) |
 | Catch up | After a restart, still run a missed time routine within N minutes (up to 180). Home Assistant gets about 30 seconds to load, then the routine runs as soon as it can. If a condition blocks it, it is retried each minute until the window closes |

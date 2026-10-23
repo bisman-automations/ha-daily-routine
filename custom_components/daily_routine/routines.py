@@ -228,6 +228,10 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
     if require_sensors_clear and not sensors:
         raise vol.Invalid("Pick the motion or occupancy sensors to watch.")
 
+    conditions_match = str(raw.get("conditions_match") or "all")
+    if conditions_match not in ("all", "any"):
+        raise vol.Invalid("Extra conditions must match 'all' or 'any'.")
+
     require_states: list[dict[str, str]] = []
     for item in _as_list(raw.get("require_states")):
         if not isinstance(item, dict):
@@ -300,6 +304,7 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "require_sensors_clear": require_sensors_clear,
         "clear_minutes": clear_minutes,
         "require_states": require_states,
+        "conditions_match": conditions_match,
         "repeat": bool(raw.get("repeat", trigger in REPEATING_TRIGGERS)),
         "catch_up_minutes": _int(raw.get("catch_up_minutes"), 0, MAX_CATCH_UP_MINUTES, "Catch-up"),
         "retries": _int(raw.get("retries"), 0, MAX_RETRIES, "Retries"),

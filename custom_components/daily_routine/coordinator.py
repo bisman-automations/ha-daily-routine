@@ -597,8 +597,12 @@ class HomeRoutinesCoordinator:
         ):
             return False, "someone_home"
 
-        for item in routine["require_states"]:
-            if not self._state_is(item["entity_id"], item["state"]):
+        if routine["require_states"]:
+            results = [
+                self._state_is(i["entity_id"], i["state"]) for i in routine["require_states"]
+            ]
+            passes = any(results) if routine.get("conditions_match") == "any" else all(results)
+            if not passes:
                 return False, "extra_condition_not_met"
 
         if routine["require_sensors_clear"]:

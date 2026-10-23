@@ -2,6 +2,12 @@
 
 All notable changes to the **ha-daily-routine** Home Assistant integration will be documented in this file.
 
+## [1.7.0] - 2026-10-23
+
+### Routines
+* **Extra conditions: all or any.** With more than one extra condition, choose whether all of them must be true or just one.
+* **Extra conditions: state names.** Locks, covers, people, trackers, media players, climate and on/off devices offer their states by name (Locked, Unlocked, Open, Home, Away and so on). Choose Other… to type a state yourself.
+
 ## [1.6.1] - 2026-10-23
 
 ### Fixed
