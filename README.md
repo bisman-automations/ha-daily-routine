@@ -145,6 +145,7 @@ On **Settings → Devices & services → Daily Routine**, choose *Download diagn
 
 - **People in routines.** Turn off the profiles that aren't people, such as a shared display, so they don't appear when you build a routine. A routine that already uses someone keeps them.
 - **Notifications.** Routine runs, skips and failures always appear in Home Assistant's notifications. Tick any phones or devices, shown by name, to send them there too. Any number can be selected.
+- **Timing.** Four values apply to every routine: how long a to-do step waits for a list that is still loading (default 30 seconds), how often the health check runs (default every 15 minutes), how long a problem must last before it is announced (default 60 seconds), and a startup quiet period with no health alerts (default 5 minutes). Raise the list wait if a cloud list such as iCloud takes a while to load after a restart.
 
 ## Routine reference
 

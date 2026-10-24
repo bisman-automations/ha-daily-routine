@@ -9,6 +9,7 @@ completes or removes only an open item. A dry run reads the list and changes not
 
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import date, timedelta
 from typing import Any
@@ -169,10 +170,27 @@ NOOP_OUTCOMES = ("already_on_list", "no_open_item", "not_on_list", "not_due")
 FAILED_OUTCOMES = ("list_unavailable", "failed")
 
 
-async def apply_todo_step(hass: HomeAssistant, step: dict[str, Any], *, dry_run: bool) -> str:
-    """Make the change, or with dry_run only say what would happen."""
+async def apply_todo_step(
+    hass: HomeAssistant,
+    step: dict[str, Any],
+    *,
+    dry_run: bool,
+    wait_seconds: float = 0,
+    poll_seconds: float = 2,
+) -> str:
+    """Make the change, or with dry_run only say what would happen.
+
+    A list that has not loaded yet (for example a cloud calendar after a restart) is
+    retried for up to wait_seconds. A dry run never waits.
+    """
     entity_id = step["list"]
     items = await open_items(hass, entity_id)
+    if items is None and not dry_run and wait_seconds > 0:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait_seconds
+        while items is None and loop.time() < deadline:
+            await asyncio.sleep(min(poll_seconds, max(deadline - loop.time(), 0)))
+            items = await open_items(hass, entity_id)
     if items is None:
         return "list_unavailable"
     match = find_open_item(items, step["item"])

@@ -180,6 +180,14 @@ const TEMPLATES = [
 
 // How long after a restart a missed routine may still run, in minutes.
 const CATCH_UP_CHOICES = [0, 15, 30, 60, 120, 180];
+// Global timing settings: key, label, help, and the same limits the server checks.
+const TIMING_FIELDS = [
+  ["list_wait_seconds", "Wait for a to-do list (seconds)", "How long a to-do step waits for a list that has not loaded yet", 0, 300],
+  ["health_check_minutes", "Health check every (minutes)", "How often every routine's devices and lists are checked", 1, 60],
+  ["health_alert_seconds", "Health alert delay (seconds)", "How long a problem must last before it is announced", 0, 600],
+  ["startup_quiet_minutes", "Startup quiet period (minutes)", "No health alerts for this long after Home Assistant starts", 0, 60],
+];
+const TIMING_DEFAULTS = { list_wait_seconds: 30, health_check_minutes: 15, health_alert_seconds: 60, startup_quiet_minutes: 5 };
 
 function catchUpLabel(minutes) {
   if (minutes === 0) return "Don't run it late";
@@ -878,6 +886,10 @@ class DailyRoutinePanel extends HTMLElement {
       if (file) this._importFile(file);
       return;
     }
+    if (!live && el.dataset.setting !== undefined) {
+      if (el.value !== "") this._saveSettings({ [el.dataset.setting]: Number(el.value) });
+      return;
+    }
     if (!live && (el.dataset.showPerson !== undefined || el.dataset.notifyTarget !== undefined)) {
       if (el.dataset.showPerson !== undefined) {
         this._saveSettings({ hidden_people: this._hiddenFromDom() });
@@ -1395,6 +1407,9 @@ class DailyRoutinePanel extends HTMLElement {
           .map((t) => `<label class="check"><input type="checkbox" data-notify-target="${esc(t.entity)}" ${selected.has(t.entity) ? "checked" : ""}> ${esc(t.name)}</label>`)
           .join("")
       : `<p class="muted small">No phones or notification services found. Install the Home Assistant app on a phone and it will appear here.</p>`;
+    const timing = TIMING_FIELDS.map(
+      ([key, label, help, min, max]) => `<label>${esc(label)}<input type="number" min="${min}" max="${max}" step="1" data-setting="${key}" value="${esc(settings[key] ?? TIMING_DEFAULTS[key])}"><span class="muted small">${esc(help)} (${min} to ${max})</span></label>`,
+    ).join("");
     return `<section class="card">
         <h3>People in routines</h3>
         <p class="muted small">Choose who appears when you build a routine. Turn off profiles that aren't people, like a shared display. Routines that already use someone keep them.</p>
@@ -1414,6 +1429,11 @@ class DailyRoutinePanel extends HTMLElement {
         <h3>Notifications</h3>
         <p class="muted small">Routine runs, skips and failures always appear in Home Assistant. Pick any phones or devices to send them there too.</p>
         <div class="checks">${targets}</div>
+      </section>
+      <section class="card">
+        <h3>Timing</h3>
+        <p class="muted small">How patiently Daily Routine waits on slow devices and cloud lists, such as an iCloud to-do list after a restart. Changes are saved when you leave a box.</p>
+        <div class="timing">${timing}</div>
       </section>`;
   }
 
@@ -1804,6 +1824,8 @@ const STYLES = `<style>
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
   .chip { display: inline-flex; align-items: center; gap: 4px; background: var(--secondary-background-color, #eee); border-radius: 999px; padding: 4px 10px; margin: 0; }
   .checks { display: grid; gap: 2px; max-height: 220px; overflow: auto; padding: 4px 0; }
+  .timing { display: grid; gap: 12px; }
+  .timing label { display: grid; gap: 4px; }
   .inline { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px; align-items: center; }
   .inline2 { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .inline2 select, .inline2 input { width: auto; flex: 1 1 auto; }

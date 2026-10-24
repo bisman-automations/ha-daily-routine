@@ -135,9 +135,14 @@ PERSISTED_KEYS = ("last_run_date", "last_run", "last_result", "seen_state", "see
 # How long to wait before saving a state we just saw. Noisy sensors then do not write on every change.
 SEEN_SAVE_DELAY_SECONDS = 10
 # How often to check whether a routine needs attention (a device or list is missing or unavailable).
-HEALTH_CHECK_INTERVAL = timedelta(minutes=15)
+# Timing options on the Settings tab: default, lowest and highest allowed value, and the name shown in errors.
+TIMING_SETTINGS = {
+    "list_wait_seconds": (30, 0, 300, "The to-do list wait"),
+    "health_check_minutes": (15, 1, 60, "The health check interval"),
+    "health_alert_seconds": (60, 0, 600, "The health alert delay"),
+    "startup_quiet_minutes": (5, 0, 60, "The startup quiet period"),
+}
 # A device or list that is unavailable only briefly (for example while Home Assistant starts) is not announced.
-HEALTH_GRACE_SECONDS = 60
 # How many completed item names to remember, so a long list does not grow forever.
 SEEN_DONE_LIMIT = 200
 
@@ -277,11 +282,17 @@ class HomeRoutinesCoordinator:
         self._last_on: dict[str, datetime] = {}
         self.paused = False
         self.migrated = False
-        self.settings: dict[str, Any] = {"hidden_people": [], "notify_services": []}
+        self.settings: dict[str, Any] = {
+            "hidden_people": [],
+            "notify_services": [],
+            **{key: default for key, (default, *_rest) in TIMING_SETTINGS.items()},
+        }
         self._runtime: dict[str, dict[str, Any]] = {}
         self._listeners: list[Callable[[], None]] = []
         self._handles: dict[tuple[str, str], Callable[[], None]] = {}
         self._startup_unsubs: list[Callable[[], None]] = []
+        self._health_unsub: Callable[[], None] | None = None
+        self._started_at: datetime | None = None
         self._entry_id: str | None = None
         # Serialises edits so the dashboard and the integration's entries stay in step.
         self._lock = asyncio.Lock()
@@ -435,6 +446,7 @@ class HomeRoutinesCoordinator:
         self.settings = {
             "hidden_people": [p for p in saved.get("hidden_people", []) if isinstance(p, str)],
             "notify_services": [s for s in (services or []) if isinstance(s, str)],
+            **{key: _timing_value(saved.get(key), key) for key in TIMING_SETTINGS},
         }
         for raw in data.get("routines", []):
             try:
@@ -446,9 +458,8 @@ class HomeRoutinesCoordinator:
 
     async def async_start(self) -> None:
         self._start_all(catch_up=False)
-        self._startup_unsubs.append(
-            async_track_time_interval(self.hass, self._check_health, HEALTH_CHECK_INTERVAL)
-        )
+        self._started_at = dt_util.utcnow()
+        self._schedule_health_interval()
         self._notify_listeners()
         if self.hass.is_running:
             self._schedule_startup_catch_up()
@@ -474,6 +485,9 @@ class HomeRoutinesCoordinator:
         for unsub in self._startup_unsubs:
             unsub()
         self._startup_unsubs.clear()
+        if self._health_unsub is not None:
+            self._health_unsub()
+            self._health_unsub = None
         self._drop_all_handles()
         await self._async_save()
 
@@ -688,10 +702,18 @@ class HomeRoutinesCoordinator:
                 raise vol.Invalid("Choose notification targets from the list.")
             if not self.hass.services.has_service("notify", notify.split(".", 1)[1]):
                 raise vol.Invalid("One of those notification targets is no longer available.")
+        timing = {}
+        for key, (_default, low, high, label) in TIMING_SETTINGS.items():
+            value = raw.get(key, self.settings[key])
+            if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                raise vol.Invalid(f"{label} must be a whole number from {low} to {high}.")
+            timing[key] = value
         self.settings = {
             "hidden_people": sorted(set(hidden)),
             "notify_services": sorted(set(services)),
+            **timing,
         }
+        self._schedule_health_interval()
         await self._async_save()
         self._notify_listeners()
         return self.settings
@@ -1265,9 +1287,27 @@ class HomeRoutinesCoordinator:
         for routine in self.routines:
             self._check_routine_health(routine)
 
+    def _in_startup_quiet(self) -> bool:
+        """True while Home Assistant is still starting up and devices may not have loaded yet."""
+        if self._started_at is None:
+            return False
+        return dt_util.utcnow() < self._started_at + timedelta(
+            minutes=self.settings["startup_quiet_minutes"]
+        )
+
+    def _schedule_health_interval(self) -> None:
+        """(Re)start the regular health check at the interval chosen in settings."""
+        if self._health_unsub is not None:
+            self._health_unsub()
+        self._health_unsub = async_track_time_interval(
+            self.hass,
+            self._check_health,
+            timedelta(minutes=self.settings["health_check_minutes"]),
+        )
+
     def _check_routine_health(self, routine: dict[str, Any]) -> None:
         """Announce, once, a routine whose device or list has gone missing or unavailable."""
-        if not routine["enabled"]:
+        if not routine["enabled"] or self._in_startup_quiet():
             return
         rt = self._rt(routine["id"])
         problems = self.health(routine)
@@ -1306,7 +1346,7 @@ class HomeRoutinesCoordinator:
             if current is not None:
                 self._check_routine_health(current)
 
-        unsub = async_call_later(self.hass, HEALTH_GRACE_SECONDS, _due)
+        unsub = async_call_later(self.hass, self.settings["health_alert_seconds"], _due)
         self._set_handle(routine_id, H_HEALTH_TIMER, unsub)
 
     def _check_done_after_startup(self) -> None:
@@ -1455,7 +1495,12 @@ class HomeRoutinesCoordinator:
 
             if "todo" in action:
                 step = action["todo"]
-                outcome = await apply_todo_step(self.hass, step, dry_run=False)
+                outcome = await apply_todo_step(
+                    self.hass,
+                    step,
+                    dry_run=False,
+                    wait_seconds=self.settings["list_wait_seconds"],
+                )
                 if outcome in FAILED_OUTCOMES:
                     _LOGGER.warning(
                         "Routine '%s': to-do %s on %s failed (%s).",
@@ -1607,6 +1652,14 @@ OPPOSITE_SERVICES = {
     "lock.lock": "lock.unlock",
     "lock.unlock": "lock.lock",
 }
+
+
+def _timing_value(value: Any, key: str) -> int:
+    """A saved timing setting, or its default when the saved value is missing or out of range."""
+    default, low, high, _label = TIMING_SETTINGS[key]
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        return default
+    return value
 
 
 def _companion_for(routine: dict[str, Any]) -> dict[str, Any] | None:

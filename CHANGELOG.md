@@ -2,6 +2,15 @@
 
 All notable changes to the **ha-daily-routine** Home Assistant integration will be documented in this file.
 
+## [1.12.0] - 2026-10-23
+
+### Settings
+* **Timing settings:** a new **Timing** card on the Settings tab sets four values for the whole integration:
+  * **Wait for a to-do list** (default 30 seconds, 0 to 300): a to-do step waits this long for a list that has not loaded yet, such as an iCloud list after a restart. A dry run never waits.
+  * **Health check every** (default 15 minutes, 1 to 60).
+  * **Health alert delay** (default 60 seconds, 0 to 600): how long a problem must last before it is announced.
+  * **Startup quiet period** (default 5 minutes, 0 to 60): no health alerts for this long after Home Assistant starts, while devices are still loading.
+
 ## [1.11.0] - 2026-10-23
 
 ### To-dos

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 import pytest
@@ -16,7 +17,7 @@ from custom_components.daily_routine.const import DOMAIN, STORAGE_KEY
 from custom_components.daily_routine.routines import normalize_routine
 from custom_components.daily_routine.schema import vol
 from custom_components.daily_routine.text_format import parse_steps_text, steps_to_text
-from custom_components.daily_routine.todo import normalize_todo_step
+from custom_components.daily_routine.todo import apply_todo_step, normalize_todo_step
 
 GROCERIES = "todo.groceries"
 CLEAN = "binary_sensor.dishwasher_clean"
@@ -299,6 +300,7 @@ async def test_a_list_that_cannot_be_read_fails_the_run(
 ) -> None:
     hass.states.async_set(CLEAN, "off")
     entry, coordinator = await _setup(hass)
+    await coordinator.async_set_settings({**coordinator.settings, "list_wait_seconds": 0})
     await coordinator.async_save_routine(
         _rule(actions=[{"todo": {"op": "add", "list": "todo.missing", "item": "x"}}])
     )
@@ -311,6 +313,35 @@ async def test_a_list_that_cannot_be_read_fails_the_run(
     )
     assert coordinator.get_history("empty_dishwasher")[0]["outcome"] == "failed"
     await _teardown(hass, entry)
+
+
+async def test_a_list_that_loads_late_is_used_within_the_wait(
+    hass: HomeAssistant, enable_custom_integrations, hass_storage
+) -> None:
+    """A cloud list (iCloud) can load a little after startup: the step waits for it."""
+    step = {"op": "add", "list": GROCERIES, "item": "Empty dishwasher"}
+    hass.loop.call_later(0.1, lambda: FakeTodo(hass))
+    result = await apply_todo_step(hass, step, dry_run=False, wait_seconds=5, poll_seconds=0.02)
+    assert result == "added"
+
+
+async def test_a_list_that_never_loads_gives_up_at_the_wait_limit(
+    hass: HomeAssistant, enable_custom_integrations, hass_storage
+) -> None:
+    step = {"op": "add", "list": GROCERIES, "item": "Empty dishwasher"}
+    result = await apply_todo_step(hass, step, dry_run=False, wait_seconds=0.1, poll_seconds=0.02)
+    assert result == "list_unavailable"
+
+
+async def test_a_dry_run_never_waits_for_the_list(
+    hass: HomeAssistant, enable_custom_integrations, hass_storage
+) -> None:
+    step = {"op": "add", "list": GROCERIES, "item": "Empty dishwasher"}
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    result = await apply_todo_step(hass, step, dry_run=True, wait_seconds=30)
+    assert result == "list_unavailable"
+    assert loop.time() - started < 1
 
 
 async def test_remove_takes_an_open_item_off_the_list(

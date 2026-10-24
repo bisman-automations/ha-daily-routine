@@ -55,12 +55,42 @@ class FakeList:
         hass.states.async_set(GROCERIES, count)
 
 
-async def _setup(hass: HomeAssistant):
+async def _setup(hass: HomeAssistant, *, quiet_minutes: int = 0):
+    """Start the integration. Tests end the startup quiet period unless told otherwise."""
     entry = MockConfigEntry(domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN)
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    return hass.data[DOMAIN]["coordinator"]
+    coordinator = hass.data[DOMAIN]["coordinator"]
+    await coordinator.async_set_settings(
+        {**coordinator.settings, "startup_quiet_minutes": quiet_minutes}
+    )
+    return coordinator
+
+
+async def test_health_alerts_wait_for_the_startup_quiet_period(
+    hass: HomeAssistant, enable_custom_integrations, hass_storage
+) -> None:
+    coord = await _setup(hass, quiet_minutes=5)
+    await coord.async_save_routine(
+        _checked(
+            id="lamp_check",
+            name="Lamp check",
+            watch_entity="input_boolean.lamp_ok",
+            trigger="state_is",
+            watch_states=["on"],
+            notify_on_health=True,
+        )
+    )
+    sent: list[str] = []
+    coord._send_notification = sent.append  # type: ignore[method-assign]
+
+    coord._check_health(None)  # type: ignore[arg-type]
+    assert sent == [], "a device may still be loading during startup, so no alert yet"
+
+    await coord.async_set_settings({**coord.settings, "startup_quiet_minutes": 0})
+    coord._check_health(None)  # type: ignore[arg-type]
+    assert len(sent) == 1 and "Lamp check" in sent[0]
 
 
 def test_checked_off_trigger_needs_a_to_do_list() -> None:

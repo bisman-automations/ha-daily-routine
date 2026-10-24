@@ -1013,3 +1013,41 @@ test("the to-do rule editor saves its due window and says it in the list", async
 
   assert.equal(panel._todoSentence(routine), "Complete “Empty dishwasher” on Groceries · due today");
 });
+
+test("timing card shows the four global settings, with defaults where none are saved yet", () => {
+  const panel = makePanel();
+  panel._data.settings = { ...panel._data.settings, list_wait_seconds: 45 };
+  panel._view = { name: "settings" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /<h3>Timing<\/h3>/);
+  assert.match(html, /data-setting="list_wait_seconds" value="45"/);
+  assert.match(html, /data-setting="health_check_minutes" value="15"/);
+  assert.match(html, /data-setting="health_alert_seconds" value="60"/);
+  assert.match(html, /data-setting="startup_quiet_minutes" value="5"/);
+  assert.match(html, /min="1" max="60" step="1" data-setting="health_check_minutes"/);
+});
+
+test("changing one timing box saves only that setting, and an empty box saves nothing", () => {
+  const panel = makePanel();
+  panel._view = { name: "settings" };
+  const sent = [];
+  panel._call = async (message) => {
+    sent.push(message);
+    return { settings: message.settings };
+  };
+  panel._onField({ target: { dataset: { setting: "health_check_minutes" }, value: "30" } });
+  panel._onField({ target: { dataset: { setting: "list_wait_seconds" }, value: "" } });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].type, "daily_routine/settings/save");
+  assert.equal(sent[0].settings.health_check_minutes, 30);
+  assert.deepEqual(sent[0].settings.hidden_people, ["person.skylight"]);
+});
+
+test("typing in a timing box does not save until the box is left", () => {
+  const panel = makePanel();
+  const sent = [];
+  panel._call = async (message) => { sent.push(message); return { settings: message.settings }; };
+  panel._onField({ target: { dataset: { setting: "startup_quiet_minutes" }, value: "7" } }, true);
+  assert.equal(sent.length, 0);
+});
