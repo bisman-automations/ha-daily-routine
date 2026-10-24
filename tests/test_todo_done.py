@@ -83,7 +83,7 @@ async def test_health_alerts_wait_for_the_startup_quiet_period(
         )
     )
     sent: list[str] = []
-    coord._send_notification = sent.append  # type: ignore[method-assign]
+    coord._send_notification = lambda message, *_: sent.append(message)  # type: ignore[method-assign]
 
     coord._check_health(None)  # type: ignore[arg-type]
     assert sent == [], "a device may still be loading during startup, so no alert yet"
@@ -188,7 +188,7 @@ async def test_health_problem_is_announced_once_and_again_after_it_clears(
         )
     )
     sent: list[str] = []
-    coord._send_notification = sent.append  # type: ignore[method-assign]
+    coord._send_notification = lambda message, *_: sent.append(message)  # type: ignore[method-assign]
 
     coord._check_health(None)  # type: ignore[arg-type]
     coord._check_health(None)  # type: ignore[arg-type]
@@ -266,7 +266,7 @@ async def test_brief_unavailable_does_not_announce_but_a_lasting_one_does(
     )
     await hass.async_block_till_done()
     sent: list[str] = []
-    coord._send_notification = sent.append  # type: ignore[method-assign]
+    coord._send_notification = lambda message, *_: sent.append(message)  # type: ignore[method-assign]
 
     now = dt_util.utcnow()
     hass.states.async_set("input_boolean.lamp_ok", "unavailable")
@@ -285,3 +285,64 @@ async def test_brief_unavailable_does_not_announce_but_a_lasting_one_does(
     await hass.async_block_till_done()
     health = [m for m in sent if "needs attention" in m]
     assert len(health) == 1 and "Lamp watch" in health[0]
+
+
+async def test_a_health_card_is_dismissed_when_the_next_check_is_clear(
+    hass: HomeAssistant, enable_custom_integrations, hass_storage
+) -> None:
+    created = async_mock_service(hass, "persistent_notification", "create")
+    dismissed = async_mock_service(hass, "persistent_notification", "dismiss")
+    hass.states.async_set("input_boolean.lamp_ok", "on")
+    coord = await _setup(hass)
+    await coord.async_save_routine(
+        _checked(
+            id="lamp_card",
+            name="Lamp card",
+            watch_entity="input_boolean.lamp_ok",
+            trigger="state_is",
+            watch_states=["on"],
+            notify_on_health=True,
+        )
+    )
+    await hass.async_block_till_done()
+
+    hass.states.async_set("input_boolean.lamp_ok", "unavailable")
+    coord._check_health(None)  # type: ignore[arg-type]
+    await hass.async_block_till_done()
+    assert len(created) == 1
+    card_id = created[0].data["notification_id"]
+    assert card_id == "daily_routine_health_lamp_card"
+
+    coord._check_health(None)  # type: ignore[arg-type]
+    await hass.async_block_till_done()
+    assert dismissed == [], "still a problem, so the card stays"
+
+    hass.states.async_set("input_boolean.lamp_ok", "on")
+    coord._check_health(None)  # type: ignore[arg-type]
+    await hass.async_block_till_done()
+    assert [call.data["notification_id"] for call in dismissed] == [card_id]
+
+
+async def test_deleting_a_routine_removes_its_health_card(
+    hass: HomeAssistant, enable_custom_integrations, hass_storage
+) -> None:
+    async_mock_service(hass, "persistent_notification", "create")
+    dismissed = async_mock_service(hass, "persistent_notification", "dismiss")
+    hass.states.async_set("input_boolean.lamp_ok", "on")
+    coord = await _setup(hass)
+    await coord.async_save_routine(
+        _checked(
+            id="lamp_gone",
+            name="Lamp gone",
+            watch_entity="input_boolean.lamp_ok",
+            trigger="state_is",
+            watch_states=["on"],
+            notify_on_health=True,
+        )
+    )
+    await hass.async_block_till_done()
+    await coord.async_delete_routine("lamp_gone")
+    await hass.async_block_till_done()
+    assert [call.data["notification_id"] for call in dismissed] == [
+        "daily_routine_health_lamp_gone"
+    ]

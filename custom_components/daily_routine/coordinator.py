@@ -355,10 +355,27 @@ class HomeRoutinesCoordinator:
             data["result"] = result
         self.hass.bus.async_fire(event_type, data)
 
-    def _send_notification(self, message: str) -> None:
-        self.hass.async_create_task(self._notify(message))
+    def _send_notification(self, message: str, notification_id: str | None = None) -> None:
+        self.hass.async_create_task(self._notify(message, notification_id))
 
-    async def _notify(self, message: str) -> None:
+    @staticmethod
+    def _health_notification_id(routine_id: str) -> str:
+        """One fixed id per routine, so its health card can be replaced or dismissed later."""
+        return f"{DOMAIN}_health_{routine_id}"
+
+    async def _dismiss_health_notification(self, routine_id: str) -> None:
+        """Remove a routine's health card. Dismissing a card that is not there does nothing."""
+        try:
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "dismiss",
+                {"notification_id": self._health_notification_id(routine_id)},
+                blocking=False,
+            )
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Could not dismiss health notification for %s", routine_id)
+
+    async def _notify(self, message: str, notification_id: str | None = None) -> None:
         for service in self.settings.get("notify_services") or []:
             try:
                 await self.hass.services.async_call(
@@ -376,7 +393,7 @@ class HomeRoutinesCoordinator:
                 {
                     "message": message,
                     "title": "Daily Routine",
-                    "notification_id": f"{DOMAIN}_{dt_util.now().timestamp()}",
+                    "notification_id": notification_id or f"{DOMAIN}_{dt_util.now().timestamp()}",
                 },
                 blocking=False,
             )
@@ -570,6 +587,7 @@ class HomeRoutinesCoordinator:
     async def async_delete_routine(self, routine_id: str) -> None:
         async with self._lock:
             self._drop_companions(routine_id)
+            self.hass.async_create_task(self._dismiss_health_notification(routine_id))
             self.routines = [r for r in self.routines if r["id"] != routine_id]
             self._runtime.pop(routine_id, None)
             self._history.pop(routine_id, None)
@@ -1313,11 +1331,13 @@ class HomeRoutinesCoordinator:
         problems = self.health(routine)
         if not problems:
             rt["health_alerted"] = False
+            self.hass.async_create_task(self._dismiss_health_notification(routine["id"]))
         elif not rt.get("health_alerted"):
             rt["health_alerted"] = True
             if routine["notify_on_health"]:
                 self._send_notification(
-                    f"Routine '{routine['name']}' needs attention: {' '.join(problems)}"
+                    f"Routine '{routine['name']}' needs attention: {' '.join(problems)}",
+                    self._health_notification_id(routine["id"]),
                 )
 
     def _watch_health(self, routine: dict[str, Any]) -> None:
