@@ -489,7 +489,7 @@ class DailyRoutinePanel extends HTMLElement {
   _todoDoneFields(draft) {
     return `<label>To-do list<select data-f="watch_entity">${this._pickerOptions(this._data.todo_lists || [], draft.watch_entity, "Choose a to-do list…")}</select></label>
       <label>Item name (optional)<input data-f="watch_item" value="${esc(draft.watch_item)}" placeholder="leave empty for any item"></label>
-      <p class="muted small">Runs when the item is checked off. With no name, it runs for any item. Items checked off while Home Assistant is stopped do not run it.</p>`;
+      <p class="muted small">Runs when the item is checked off. With no name, it runs for any item. Items checked off while Home Assistant was stopped run it once after startup.</p>`;
   }
 
   _valueFields(draft, roomId) {

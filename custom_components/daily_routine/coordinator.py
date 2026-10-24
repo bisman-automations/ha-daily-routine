@@ -121,6 +121,8 @@ H_VALUE = "value"
 H_HOLD = "state_hold"
 H_STATE = "state_trigger"
 H_DONE = "todo_done"
+H_HEALTH = "health"
+H_HEALTH_TIMER = "health_timer"
 H_EXPIRE = "expire"
 H_CATCH_UP = "catch_up"
 
@@ -129,11 +131,15 @@ H_CATCH_UP = "catch_up"
 STARTUP_SETTLE_SECONDS = 30
 
 # Runtime keys kept in storage. Clear timers and waiting state are not persisted.
-PERSISTED_KEYS = ("last_run_date", "last_run", "last_result", "seen_state")
+PERSISTED_KEYS = ("last_run_date", "last_run", "last_result", "seen_state", "seen_done")
 # How long to wait before saving a state we just saw. Noisy sensors then do not write on every change.
 SEEN_SAVE_DELAY_SECONDS = 10
 # How often to check whether a routine needs attention (a device or list is missing or unavailable).
 HEALTH_CHECK_INTERVAL = timedelta(minutes=15)
+# A device or list that is unavailable only briefly (for example while Home Assistant starts) is not announced.
+HEALTH_GRACE_SECONDS = 60
+# How many completed item names to remember, so a long list does not grow forever.
+SEEN_DONE_LIMIT = 200
 
 
 def area_entity_ids(hass: HomeAssistant, area_id: str) -> list[str]:
@@ -460,6 +466,7 @@ class HomeRoutinesCoordinator:
             for routine in self.routines:
                 self._maybe_catch_up(routine, now)
             self._check_states_changed_while_stopped()
+            self._check_done_after_startup()
 
         self._startup_unsubs.append(async_call_later(self.hass, STARTUP_SETTLE_SECONDS, _later))
 
@@ -1243,7 +1250,8 @@ class HomeRoutinesCoordinator:
                 dict.fromkeys(key for key in (item_key(i.get("summary")) for i in items) if key)
             )
             previous = rt.get("seen_done")
-            rt["seen_done"] = done
+            rt["seen_done"] = done[-SEEN_DONE_LIMIT:]
+            self._store.async_delay_save(self._payload, SEEN_SAVE_DELAY_SECONDS)
             if previous is None:
                 return  # first look: what is already done does not run the routine
             wanted = item_key(routine["watch_item"])
@@ -1253,20 +1261,59 @@ class HomeRoutinesCoordinator:
 
     @callback
     def _check_health(self, _now: datetime) -> None:
-        """Announce, once, a routine whose device or list has gone missing or unavailable."""
+        """Regular check of every routine. The watchers below catch most changes sooner."""
         for routine in self.routines:
-            if not routine["enabled"]:
-                continue
-            rt = self._rt(routine["id"])
-            problems = self.health(routine)
-            if not problems:
-                rt["health_alerted"] = False
-            elif not rt.get("health_alerted"):
-                rt["health_alerted"] = True
-                if routine["notify_on_health"]:
-                    self._send_notification(
-                        f"Routine '{routine['name']}' needs attention: {' '.join(problems)}"
-                    )
+            self._check_routine_health(routine)
+
+    def _check_routine_health(self, routine: dict[str, Any]) -> None:
+        """Announce, once, a routine whose device or list has gone missing or unavailable."""
+        if not routine["enabled"]:
+            return
+        rt = self._rt(routine["id"])
+        problems = self.health(routine)
+        if not problems:
+            rt["health_alerted"] = False
+        elif not rt.get("health_alerted"):
+            rt["health_alerted"] = True
+            if routine["notify_on_health"]:
+                self._send_notification(
+                    f"Routine '{routine['name']}' needs attention: {' '.join(problems)}"
+                )
+
+    def _watch_health(self, routine: dict[str, Any]) -> None:
+        """When a device or list the routine needs changes, check again after a short grace period."""
+        rid = routine["id"]
+        self._drop_handle(rid, H_HEALTH)
+        self._drop_handle(rid, H_HEALTH_TIMER)
+        entities = self._health_entities(routine)
+        if not routine["enabled"] or not routine["notify_on_health"] or not entities:
+            return
+
+        @callback
+        def _changed(_event: Event[EventStateChangedData]) -> None:
+            self._schedule_health_check(rid)
+
+        unsub = async_track_state_change_event(self.hass, entities, _changed)
+        self._set_handle(rid, H_HEALTH, unsub)
+
+    def _schedule_health_check(self, routine_id: str) -> None:
+        self._drop_handle(routine_id, H_HEALTH_TIMER)
+
+        @callback
+        def _due(_now: datetime) -> None:
+            self._handles.pop((routine_id, H_HEALTH_TIMER), None)
+            current = self._find(routine_id)
+            if current is not None:
+                self._check_routine_health(current)
+
+        unsub = async_call_later(self.hass, HEALTH_GRACE_SECONDS, _due)
+        self._set_handle(routine_id, H_HEALTH_TIMER, unsub)
+
+    def _check_done_after_startup(self) -> None:
+        """Items checked off while Home Assistant was stopped run their routine once, after startup."""
+        for routine in self.routines:
+            if routine["trigger"] in TODO_DONE_TRIGGERS and routine["enabled"]:
+                self.hass.async_create_task(self._check_done(routine))
 
     def _start_all(self, *, catch_up: bool) -> None:
         now = dt_util.now()
@@ -1281,6 +1328,7 @@ class HomeRoutinesCoordinator:
             self._watch_value(routine)
             self._watch_state(routine)
             self._watch_done(routine)
+            self._watch_health(routine)
             self._watch_conditions(routine)
             if catch_up:
                 self._maybe_catch_up(routine, now)
@@ -1515,16 +1563,20 @@ class HomeRoutinesCoordinator:
             "steps": steps,
         }
 
+    def _health_entities(self, routine: dict[str, Any]) -> list[str]:
+        """The devices and lists a routine needs to be present and available."""
+        entities: list[str] = []
+        if routine["trigger"] in WATCH_TRIGGERS:
+            entities.append(routine["watch_entity"])
+        for action in routine["actions"]:
+            if "todo" in action:
+                entities.append(action["todo"]["list"])
+        return list(dict.fromkeys(entities))
+
     def health(self, routine: dict[str, Any]) -> list[str]:
         """Things that will stop this routine from working, shown on its card."""
         problems: list[str] = []
-        checked = []
-        if routine["trigger"] in WATCH_TRIGGERS:
-            checked.append(routine["watch_entity"])
-        for action in routine["actions"]:
-            if "todo" in action:
-                checked.append(action["todo"]["list"])
-        for entity_id in checked:
+        for entity_id in self._health_entities(routine):
             state = self.hass.states.get(entity_id)
             if state is None:
                 problems.append(f"{entity_id} is not in Home Assistant.")

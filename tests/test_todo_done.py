@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 import pytest
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
-from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_fire_time_changed,
+    async_mock_service,
+)
 
 from custom_components.daily_routine.const import DOMAIN
 from custom_components.daily_routine.routines import normalize_routine
@@ -169,3 +175,83 @@ async def test_health_problem_is_announced_once_and_again_after_it_clears(
     coord._check_health(None)  # type: ignore[arg-type]
     assert len(sent) == 2 and "Lamp check" in sent[1]
     assert all("Quiet check" not in message for message in sent)
+
+
+async def test_item_checked_off_while_stopped_runs_once_after_startup(
+    hass: HomeAssistant, enable_custom_integrations, hass_storage
+) -> None:
+    calls = async_mock_service(hass, "light", "turn_on")
+    items = FakeList(
+        hass,
+        [
+            {"uid": "1", "summary": "Milk", "status": "needs_action"},
+            {"uid": "2", "summary": "Eggs", "status": "needs_action"},
+        ],
+    )
+    hass.states.async_set(GROCERIES, "2")
+    coord = await _setup(hass)
+    await coord.async_save_routine(_checked())
+    await hass.async_block_till_done()
+    assert calls == []
+
+    # Checked off with no state change seen, as if Home Assistant were stopped.
+    items.items[0]["status"] = "completed"
+    items.items[1]["status"] = "completed"
+    coord._check_done_after_startup()
+    await hass.async_block_till_done()
+    assert len(calls) == 1, "two items done while stopped run the routine once"
+
+    coord._check_done_after_startup()
+    await hass.async_block_till_done()
+    assert len(calls) == 1, "the next startup does not run it again for the same items"
+
+
+async def test_completed_items_are_saved_for_the_next_start(
+    hass: HomeAssistant, enable_custom_integrations, hass_storage
+) -> None:
+    async_mock_service(hass, "light", "turn_on")
+    FakeList(hass, [{"uid": "1", "summary": "Milk", "status": "needs_action"}])
+    hass.states.async_set(GROCERIES, "1")
+    coord = await _setup(hass)
+    await coord.async_save_routine(_checked())
+    await hass.async_block_till_done()
+    assert "seen_done" in str(coord._payload())
+
+
+async def test_brief_unavailable_does_not_announce_but_a_lasting_one_does(
+    hass: HomeAssistant, enable_custom_integrations, hass_storage
+) -> None:
+    async_mock_service(hass, "light", "turn_on")
+    hass.states.async_set("input_boolean.lamp_ok", "on")
+    coord = await _setup(hass)
+    await coord.async_save_routine(
+        _checked(
+            id="lamp_watch",
+            name="Lamp watch",
+            watch_entity="input_boolean.lamp_ok",
+            trigger="state_is",
+            watch_states=["on"],
+            notify_on_health=True,
+        )
+    )
+    await hass.async_block_till_done()
+    sent: list[str] = []
+    coord._send_notification = sent.append  # type: ignore[method-assign]
+
+    now = dt_util.utcnow()
+    hass.states.async_set("input_boolean.lamp_ok", "unavailable")
+    await hass.async_block_till_done()
+    hass.states.async_set("input_boolean.lamp_ok", "on")
+    await hass.async_block_till_done()
+    async_fire_time_changed(hass, now + timedelta(seconds=120))
+    await hass.async_block_till_done()
+    health = [m for m in sent if "needs attention" in m]
+    assert health == [], "back within the grace period, so nothing is announced"
+
+    now = dt_util.utcnow()
+    hass.states.async_set("input_boolean.lamp_ok", "unavailable")
+    await hass.async_block_till_done()
+    async_fire_time_changed(hass, now + timedelta(seconds=120))
+    await hass.async_block_till_done()
+    health = [m for m in sent if "needs attention" in m]
+    assert len(health) == 1 and "Lamp watch" in health[0]

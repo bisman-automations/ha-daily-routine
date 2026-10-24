@@ -165,7 +165,7 @@ On **Settings → Devices & services → Daily Routine**, choose *Download diagn
 | Catch up | If Home Assistant was restarting when a time routine was due, still run it once it is back, within a window of up to 3 hours ("Don't run it late" turns this off). Home Assistant gets about 30 seconds to load, then the routine runs as soon as it can. If a condition blocks it, it is retried each minute until the window closes |
 | Retry | Retry a failed step up to 3 times |
 | Steps | Actions chosen by name, such as "Turn off lights" (with a room, specific devices, or no target), or any service under "Other (advanced)", plus waits |
-| Notify | On run, on skip, on failure, and when it needs attention (a device or list is missing or unavailable). The attention message is sent once until the problem clears |
+| Notify | On run, on skip, on failure, and when it needs attention (a device or list is missing or unavailable). The attention message is sent once a problem has lasted a minute, and again only after it clears and returns |
 
 ### Trigger notes
 
@@ -173,7 +173,7 @@ On **Settings → Devices & services → Daily Routine**, choose *Download diagn
 - **Everyone leaves / someone arrives** fire on the change itself. With sensors selected, they wait until the room is quiet. "Everyone leaves Work" means every person has left that zone, and "someone arrives at Work" means the first person to reach it after everyone had left. A person who is at another place counts as away from Home.
 - **Person leaves / person arrives** fire when one of the chosen people goes from the place to somewhere else, or from elsewhere to the place. Other people's moves don't count, and a person whose state is unknown or unavailable never triggers it.
 - **Above / below a level** fire when the sensor crosses the level, not on every reading. Staying above it does not run the routine again. The turn-off level for "above" creates a companion routine named "(off)" that runs when the sensor drops below that level.
-- **Checked off** runs when an item on the chosen to-do list is checked off. Items already done when the routine is saved, and items checked off while Home Assistant is stopped, do not run it.
+- **Checked off** runs when an item on the chosen to-do list is checked off. Items already done when the routine is saved do not run it. Items checked off while Home Assistant was stopped run it once after startup, however many there were.
 - **Device changes to a state** runs once each time the device moves into one of its states. If Home Assistant restarts while the device has changed and is still in one of its states, the routine runs once after startup.
 - **Outside the window** a crossing is ignored. The routine does not catch up when the window opens. It runs at the next crossing inside the window.
 

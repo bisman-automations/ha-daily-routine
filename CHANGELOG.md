@@ -9,8 +9,8 @@ All notable changes to the **ha-daily-routine** Home Assistant integration will 
 * **Hold time:** optionally, the device must still be in one of those states after a number of minutes. A change to another state in the meantime cancels the run.
 * **Restart policy:** if the device changed while Home Assistant was stopped and is still in one of its states, the routine runs once after startup.
 * **To-do steps:** a routine can add, complete or remove an item on a to-do list, written `todo add | todo.groceries | Empty dishwasher`. Adding never creates a second open item with the same name, and completing or removing acts only on an open item.
-* **Checked-off trigger:** "When an item is checked off a to-do list" runs a routine when a named item (or any item) is checked off. Items already done when the routine is saved do not count.
-* **Health notifications:** "Notify me when it needs attention" sends one message when a device or to-do list a routine needs goes missing or unavailable, and another only after it has recovered and failed again.
+* **Checked-off trigger:** "When an item is checked off a to-do list" runs a routine when a named item (or any item) is checked off. Items already done when the routine is saved do not count. Items checked off while Home Assistant was stopped run it once after startup.
+* **Health notifications:** "Notify me when it needs attention" sends one message when a device or to-do list a routine needs stays missing or unavailable for a minute, and another only after it has recovered and failed again. Checks run when the device or list changes, and every 15 minutes.
 * **Dry run** shows what each step would do, including to-do steps, without changing anything.
 * **Health warnings:** a routine card warns when a device or to-do list it needs is missing or unavailable.
 * **Recent runs** show what a to-do step did, for example "already on the list".
