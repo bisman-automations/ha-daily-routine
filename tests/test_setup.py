@@ -123,7 +123,11 @@ async def test_routines_are_service_devices_linked_to_their_device(
     assert routine_device is not None
     assert routine_device.entry_type == dr.DeviceEntryType.SERVICE
     assert routine_device.name == "Hall lights off"
-    assert routine_device.via_device_id == lamp.id
+    # Shares the lamp's identifiers where Home Assistant allows it, otherwise is connected via it.
+    assert (
+        routine_device.via_device_id == lamp.id
+        or ("test", "hall_lamp") in routine_device.identifiers
+    )
     sensor_id = entities.async_get_entity_id("sensor", DOMAIN, f"{DOMAIN}_hall_status")
     assert sensor_id is not None
     assert entities.async_get(sensor_id).device_id == routine_device.id

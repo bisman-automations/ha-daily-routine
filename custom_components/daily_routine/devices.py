@@ -73,12 +73,50 @@ def async_sync_routine_devices(
             # Made once the routine's entry exists; the routines-changed signal runs this again then.
             continue
         target = registry.async_get(routine["device_id"]) if routine.get("device_id") else None
-        via_id = target.id if target is not None else hub.id
-        device = registry.async_get_or_create(
-            config_entry_id=entry.entry_id,
-            config_subentry_id=subentry_id,
-            identifiers={routine_identifier(routine["id"])},
+        _link_routine_device(registry, hub, target, routine, entry, subentry_id)
+
+
+def _link_routine_device(
+    registry: dr.DeviceRegistry,
+    hub: dr.DeviceEntry,
+    target: dr.DeviceEntry | None,
+    routine: dict[str, Any],
+    entry: ConfigEntry,
+    subentry_id: str,
+) -> None:
+    """Make the routine's service device, shown under the linked device's "Linked devices".
+
+    Like other integrations, the service device takes on the linked device's identifiers and
+    connections, so Home Assistant lists it as sharing that hardware. Where Home Assistant
+    refuses to share them, it falls back to a plain link ("Connected via").
+    """
+    device = registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        config_subentry_id=subentry_id,
+        identifiers={routine_identifier(routine["id"])},
+        name=routine["name"],
+        entry_type=dr.DeviceEntryType.SERVICE,
+    )
+    own = {routine_identifier(routine["id"])}
+    if target is None:
+        identifiers, connections, via_id = own, set(), hub.id
+    else:
+        identifiers = own | {i for i in target.identifiers if i[0] != DOMAIN}
+        connections = set(target.connections)
+        via_id = None
+    try:
+        registry.async_update_device(
+            device.id,
             name=routine["name"],
-            entry_type=dr.DeviceEntryType.SERVICE,
+            new_identifiers=identifiers,
+            new_connections=connections,
+            via_device_id=via_id,
         )
-        registry.async_update_device(device.id, name=routine["name"], via_device_id=via_id)
+    except dr.DeviceCollisionError:
+        registry.async_update_device(
+            device.id,
+            name=routine["name"],
+            new_identifiers=own,
+            new_connections=set(),
+            via_device_id=target.id if target is not None else hub.id,
+        )

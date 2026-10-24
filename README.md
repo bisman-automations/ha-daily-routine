@@ -74,7 +74,7 @@ Each routine card has **Run now**, **Edit**, **Duplicate**, **Enable/Disable**, 
 
 ## Routines as devices
 
-Each routine is its own service under the Daily Routine integration. It is linked to the device you picked (shown as *Connected via* on the routine's page). Routines without a device link to the **Daily Routine** device. Deleting a routine removes its service.
+Each routine is its own service under the Daily Routine integration. It is linked to the device you picked: on the routine's page it shows *Connected via*, and on that device's page it appears under *Linked devices*, the same way other integrations' services do. Routines without a device link to the **Daily Routine** device. Deleting a routine removes its service. Home Assistant lists one service per physical device under *Linked devices*, so when several routines use the same device, the others show only under *Connected via*.
 
 ---
 

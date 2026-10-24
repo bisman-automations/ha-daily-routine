@@ -10,6 +10,7 @@ All notable changes to the **ha-daily-routine** Home Assistant integration will 
   * **Health check every** (default 15 minutes, 1 to 60).
   * **Health alert delay** (default 60 seconds, 0 to 600): how long a problem must last before it is announced.
   * **Startup quiet period** (default 5 minutes, 0 to 60): no health alerts for this long after Home Assistant starts, while devices are still loading.
+* **Routines appear under Linked devices:** a routine's service shares the linked device's identity, so it is listed under that device's *Linked devices*, as other integrations' services are. On Home Assistant versions that don't allow this, it stays *Connected via* the device. When several routines use one device, only one of them can be listed under *Linked devices*.
 * **Health cards clear themselves:** a health notification in Home Assistant's notifications is removed when the next check finds the problem gone, and when its routine is deleted. Only the notification in Home Assistant is removed; phone notifications stay where they were sent.
 
 ## [1.11.0] - 2026-10-23
