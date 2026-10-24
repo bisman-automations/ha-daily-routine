@@ -10,16 +10,19 @@ completes or removes only an open item. A dry run reads the list and changes not
 from __future__ import annotations
 
 import re
+from datetime import date, timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.util import dt as dt_util
 
 from .schema import vol
 
 TODO_OPS = ("add", "complete", "remove")
 TODO_LIST_RE = re.compile(r"^todo\.[a-z0-9_]+$")
 MAX_ITEM_LENGTH = 255
+MAX_DUE_DAYS = 365
 
 
 def _clean(value: Any) -> str:
@@ -40,7 +43,66 @@ def normalize_todo_step(raw: Any, index: int) -> dict[str, Any]:
         raise vol.Invalid(f"Step {index}: name the to-do item.")
     if len(item) > MAX_ITEM_LENGTH:
         raise vol.Invalid(f"Step {index}: the to-do item name is too long.")
-    return {"op": op, "list": todo_list, "item": item}
+    step: dict[str, Any] = {"op": op, "list": todo_list, "item": item}
+    due = _normalize_due(raw.get("due"), op, index)
+    if due is not None:
+        step["due"] = due
+    return step
+
+
+def _normalize_due(raw_due: Any, op: str, index: int) -> dict[str, Any] | None:
+    """The due-date check for completing or removing an item. None means no check."""
+    if raw_due is None:
+        return None
+    if op == "add":
+        raise vol.Invalid(
+            f"Step {index}: a due date can only be checked when completing or removing an item."
+        )
+    if not isinstance(raw_due, dict):
+        raise vol.Invalid(f"Step {index}: the due date check must be an object.")
+    within = raw_due.get("within")
+    if within is not None and (
+        isinstance(within, bool) or not isinstance(within, int) or not 0 <= within <= MAX_DUE_DAYS
+    ):
+        raise vol.Invalid(
+            f"Step {index}: due within must be 0 to {MAX_DUE_DAYS} days, or any date."
+        )
+    return {
+        "within": within,
+        "overdue": bool(raw_due.get("overdue", True)),
+        "undated": bool(raw_due.get("undated", False)),
+    }
+
+
+def due_date_of(item: dict[str, Any]) -> date | None:
+    """The day an item is due, in local time. None when it has no due date."""
+    value = item.get("due")
+    if not value:
+        return None
+    text = str(value)
+    parsed = dt_util.parse_datetime(text)
+    if parsed is not None:
+        if parsed.tzinfo is not None:
+            return dt_util.as_local(parsed).date()
+        return parsed.date()
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def due_allows(item: dict[str, Any], due: dict[str, Any] | None, today: date) -> bool:
+    """Whether a due-date check lets this item be completed or removed today."""
+    if not due:
+        return True
+    when = due_date_of(item)
+    if when is None:
+        return bool(due["undated"])
+    if when < today:
+        return bool(due["overdue"])
+    if due["within"] is None:
+        return True
+    return when <= today + timedelta(days=int(due["within"]))
 
 
 def find_open_item(items: list[dict[str, Any]], wanted: str) -> dict[str, Any] | None:
@@ -98,10 +160,11 @@ TODO_OUTCOME_TEXT = {
     "would_add": "would be added",
     "would_complete": "would be completed",
     "would_remove": "would be removed",
+    "not_due": "not due in the chosen window",
 }
 
 # Outcomes that do not change the list: the step is skipped and the routine carries on.
-NOOP_OUTCOMES = ("already_on_list", "no_open_item", "not_on_list")
+NOOP_OUTCOMES = ("already_on_list", "no_open_item", "not_on_list", "not_due")
 # Outcomes that stop the routine: the list could not be read or changed.
 FAILED_OUTCOMES = ("list_unavailable", "failed")
 
@@ -123,11 +186,15 @@ async def apply_todo_step(hass: HomeAssistant, step: dict[str, Any], *, dry_run:
     elif op == "complete":
         if match is None:
             return "no_open_item"
+        if not due_allows(match, step.get("due"), dt_util.now().date()):
+            return "not_due"
         if dry_run:
             return "would_complete"
     else:
         if match is None:
             return "not_on_list"
+        if not due_allows(match, step.get("due"), dt_util.now().date()):
+            return "not_due"
         if dry_run:
             return "would_remove"
 

@@ -40,6 +40,7 @@ const TODO_OUTCOME_LABELS = {
   would_add: "would be added",
   would_complete: "would be completed",
   would_remove: "would be removed",
+  not_due: "not due in the chosen window",
 };
 const STATE_LABELS = { idle: "Ready", waiting: "Waiting", running: "Running", skipped: "Skipped", error: "Error" };
 const REASON_LABELS = {
@@ -193,6 +194,30 @@ function esc(value) {
 function slugify(text) {
   const slug = String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 40);
   return (slug || "routine") + "_" + Math.random().toString(36).slice(2, 6);
+}
+
+// Which due dates a complete or remove step acts on. "any" means no check.
+const DUE_CHOICES = [
+  ["any", "Any date"],
+  ["0", "Due today only"],
+  ["1", "Due today or tomorrow"],
+  ["7", "Due within 7 days"],
+  ["21", "Due within 3 weeks"],
+];
+
+function dueOptions(selected) {
+  return DUE_CHOICES.map(([value, label]) => `<option value="${value}" ${value === selected ? "selected" : ""}>${esc(label)}</option>`).join("");
+}
+
+// The stored due check for a step, or undefined when the step has no check.
+function dueFrom(op, choice, overdue, undated) {
+  if (op === "add" || !choice || choice === "any") return undefined;
+  return { within: Number(choice), overdue: overdue !== false, undated: Boolean(undated) };
+}
+
+function dueSummary(due) {
+  if (!due || due.within === null || due.within === undefined) return "";
+  return due.within === 0 ? " · due today" : ` · due within ${due.within} days`;
 }
 
 function splitStates(text) {
@@ -561,7 +586,13 @@ class DailyRoutinePanel extends HTMLElement {
       notify_on_run: routine.notify_on_run, notify_on_skip: routine.notify_on_skip, notify_on_error: routine.notify_on_error,
       notify_on_health: Boolean(routine.notify_on_health),
       actions: routine.actions.map((a) => {
-        if ("todo" in a) return { kind: "todo", todoOp: a.todo.op, todoList: a.todo.list, todoItem: a.todo.item, service: "", targetMode: "none", area: "", entities: [], data: "" };
+        if ("todo" in a) return {
+          kind: "todo", todoOp: a.todo.op, todoList: a.todo.list, todoItem: a.todo.item,
+          todoDue: a.todo.due ? String(a.todo.due.within ?? "any") : "any",
+          todoOverdue: a.todo.due ? a.todo.due.overdue : true,
+          todoUndated: a.todo.due ? a.todo.due.undated : false,
+          service: "", targetMode: "none", area: "", entities: [], data: "",
+        };
         if ("delay" in a) return { kind: "delay", seconds: a.delay, service: "", targetMode: "none", area: "", entities: [], data: "" };
         const areas = a.target?.area_id || [];
         const entities = a.target?.entity_id || [];
@@ -586,7 +617,10 @@ class DailyRoutinePanel extends HTMLElement {
         const item = (step.todoItem || "").trim();
         if (!step.todoList) throw new Error(`Step ${index + 1}: choose a to-do list.`);
         if (!item) throw new Error(`Step ${index + 1}: type the item text.`);
-        return { todo: { op: step.todoOp || "add", list: step.todoList, item } };
+        const todo = { op: step.todoOp || "add", list: step.todoList, item };
+        const due = dueFrom(todo.op, step.todoDue, step.todoOverdue, step.todoUndated);
+        if (due) todo.due = due;
+        return { todo };
       }
       if (!step.service.trim()) throw new Error(`Step ${index + 1}: choose a service.`);
       let target = {};
@@ -1152,7 +1186,7 @@ class DailyRoutinePanel extends HTMLElement {
   }
 
   _newTodoDraft() {
-    return { id: "", name: "", enabled: true, watch_entity: "", watch_states: "", hold_minutes: 0, op: "add", list: "", item: "", isNew: true };
+    return { id: "", name: "", enabled: true, watch_entity: "", watch_states: "", hold_minutes: 0, op: "add", list: "", item: "", due: "any", overdue: true, undated: false, isNew: true };
   }
 
   _todoDraftFromRoutine(rule) {
@@ -1161,12 +1195,15 @@ class DailyRoutinePanel extends HTMLElement {
       id: rule.id, name: rule.name || "", enabled: rule.enabled, watch_entity: rule.watch_entity || "",
       watch_states: (rule.watch_states || []).join(", "), hold_minutes: rule.hold_minutes || 0,
       op: step.op || "add", list: step.list || "", item: step.item || "", isNew: false,
+      due: step.due ? String(step.due.within ?? "any") : "any",
+      overdue: step.due ? step.due.overdue : true,
+      undated: step.due ? step.due.undated : false,
     };
   }
 
   _todoSentence(rule) {
     const step = rule.actions[0]?.todo || {};
-    return `${TODO_VERBS[step.op] || "Change"} “${step.item || ""}” on ${this._nameFor(step.list)}`;
+    return `${TODO_VERBS[step.op] || "Change"} “${step.item || ""}” on ${this._nameFor(step.list)}${dueSummary(step.due)}`;
   }
 
   _healthHtml(routine) {
@@ -1262,9 +1299,12 @@ class DailyRoutinePanel extends HTMLElement {
       <label>Hold for (minutes)<input type="number" min="0" max="1440" data-tf="hold_minutes" value="${esc(d.hold_minutes)}"></label>
       <p class="muted small">Leave at 0 to act straight away. With a hold time, the device must still be in one of those states after that many minutes.</p>
       <h4>Do</h4>
-      <label>Action<select data-tf="op">${ops}</select></label>
+      <label>Action<select data-tf="op" data-rerender>${ops}</select></label>
       <label>To-do list<select data-tf="list">${this._pickerOptions(this._data.todo_lists || [], d.list, "Choose a to-do list…")}</select></label>
       <label>Item text<input data-tf="item" value="${esc(d.item)}" placeholder="for example Empty dishwasher"></label>
+      ${d.op === "add" ? "" : `<label>Only when due<select data-tf="due" data-rerender>${dueOptions(d.due || "any")}</select></label>
+      ${(d.due || "any") === "any" ? "" : `<label class="check"><input type="checkbox" data-tf="overdue" ${d.overdue !== false ? "checked" : ""}> Also when it is overdue</label>
+      <label class="check"><input type="checkbox" data-tf="undated" ${d.undated ? "checked" : ""}> Also when it has no due date</label>`}`}
       <label class="check"><input type="checkbox" data-tf="enabled" ${d.enabled ? "checked" : ""}> Turned on</label>
       <div class="row-actions">
         <button data-act="todo-save">Save</button>
@@ -1280,6 +1320,10 @@ class DailyRoutinePanel extends HTMLElement {
     const field = el.dataset.tf;
     draft[field] = el.type === "checkbox" ? el.checked : el.value;
     if (live) return;
+    if (el.dataset.rerender !== undefined) {
+      this._render();
+      return;
+    }
     if (field === "watch_entity") {
       this._render();
       this._loadStateHints(el.value);
@@ -1327,7 +1371,7 @@ class DailyRoutinePanel extends HTMLElement {
       notify_on_run: false,
       notify_on_skip: false,
       notify_on_error: true,
-      actions: [{ todo: { op: d.op || "add", list: d.list, item } }],
+      actions: [{ todo: { op: d.op || "add", list: d.list, item, ...(dueFrom(d.op, d.due, d.overdue, d.undated) ? { due: dueFrom(d.op, d.due, d.overdue, d.undated) } : {}) } }],
     };
     const result = await this._call({ type: `${DOMAIN}/routine/save`, routine: rule });
     this._view = { name: "todos" };
@@ -1630,9 +1674,12 @@ class DailyRoutinePanel extends HTMLElement {
       const ops = Object.entries(TODO_VERBS).map(([value, label]) =>
         `<option value="${value}" ${(step.todoOp || "add") === value ? "selected" : ""}>${esc(label)} an item</option>`).join("");
       return `<div class="step">${head}${kind}
-        <label>To-do action<select data-si="${i}" data-sf="todoOp">${ops}</select></label>
+        <label>To-do action<select data-si="${i}" data-sf="todoOp" data-rerender>${ops}</select></label>
         <label>To-do list<select data-si="${i}" data-sf="todoList">${this._pickerOptions(this._data.todo_lists || [], step.todoList || "", "Choose a to-do list…")}</select></label>
         <label>Item text<input data-si="${i}" data-sf="todoItem" value="${esc(step.todoItem || "")}" placeholder="for example Empty dishwasher"></label>
+        ${(step.todoOp || "add") === "add" ? "" : `<label>Only when due<select data-si="${i}" data-sf="todoDue" data-rerender>${dueOptions(step.todoDue || "any")}</select></label>
+        ${(step.todoDue || "any") === "any" ? "" : `<label class="check"><input type="checkbox" data-si="${i}" data-sf="todoOverdue" ${step.todoOverdue !== false ? "checked" : ""}> Also when it is overdue</label>
+        <label class="check"><input type="checkbox" data-si="${i}" data-sf="todoUndated" ${step.todoUndated ? "checked" : ""}> Also when it has no due date</label>`}`}
       </div>`;
     }
     if (step.kind === "delay") {

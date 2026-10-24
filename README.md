@@ -92,7 +92,7 @@ wait 30
 ```
 
 - A step is `action | targets | extra settings`. Targets are entity ids separated by commas, or `area:` followed by an area id. Extra settings are optional JSON. `wait` takes seconds, or `00:00:30`.
-- A to-do step adds, completes or removes an item on a to-do list. It is written `todo add | todo.groceries | Empty dishwasher`: `add`, `complete` or `remove`, then the to-do list and the item name. In the editor, choose **To-do list** as the step type. To-do rules on the To-dos tab are routines built from the same step.
+- A to-do step adds, completes or removes an item on a to-do list. It is written `todo add | todo.groceries | Empty dishwasher`: `add`, `complete` or `remove`, then the to-do list and the item name. In the editor, choose **To-do list** as the step type. Complete and remove steps can also check the due date: `todo complete | todo.groceries | Buy milk | due=1 overdue=yes undated=no` acts only on items due today or tomorrow, with overdue items included and undated items left alone. Use `due=any` for no date check, and `due=0` for today only. To-do rules on the To-dos tab are routines built from the same step.
 
 - Conditions are one per line, in the **Extra conditions** list. There are three kinds:
   - `presence everyone away | person.sam, person.alex | zone.home`: everyone listed is away from the place. Use `presence anyone in | person.sam | zone.work` for "at least one person is at Work". `everyone` or `anyone`, then `in` or `away`, then the people and the place.
@@ -111,6 +111,7 @@ A to-do rule adds, completes or removes an item on a to-do list when a device or
 - **Changes to**: one or more states, separated by commas, such as `on` or `on, off`. The suggestions are the states the device has reported in the last 30 days, and any text is accepted.
 - **Hold for**: optional minutes. The device must still be in one of those states after this long before the rule runs. A change to another state in the meantime cancels it.
 - **Action**: add, complete or remove an item.
+- **Only when due** (complete and remove): act only on items due today, within 1, 7 or 21 days, or on any date. Overdue items and items with no due date are left alone unless you tick **Also when it is overdue** or **Also when it has no due date**.
 - **To-do list** and **Item text**.
 
 For a dishwasher, two rules cover a full cycle:

@@ -965,3 +965,51 @@ test("the notify-on-health choice is shown under Options and saved with the rout
   const loaded = panel._draftFromRoutine({ ...overview.routines[0], notify_on_health: true });
   assert.equal(loaded.notify_on_health, true);
 });
+
+test("a complete step offers the due-date choices, and a add step does not", () => {
+  const panel = todoPanel();
+  panel._draft = panel._newDraft(null);
+  panel._draft.actions = [{ kind: "todo", todoOp: "complete", todoList: "todo.groceries", todoItem: "Milk", todoDue: "any", todoOverdue: true, todoUndated: false, service: "", targetMode: "none", area: "", entities: [], data: "" }];
+  panel._view = { name: "editor", room: null };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /data-sf="todoDue"/);
+  assert.match(panel.shadowRoot.innerHTML, /<option value="0"[^>]*>Due today only<\/option>/);
+  panel._draft.actions[0].todoOp = "add";
+  panel._render();
+  assert.doesNotMatch(panel.shadowRoot.innerHTML, /data-sf="todoDue"/);
+});
+
+test("a due window is saved with the step and read back, and any date is saved as no check", () => {
+  const panel = todoPanel();
+  panel._draft = panel._newDraft(null);
+  panel._draft.actions = [{ kind: "todo", todoOp: "complete", todoList: "todo.groceries", todoItem: "Milk", todoDue: "1", todoOverdue: false, todoUndated: true, service: "", targetMode: "none", area: "", entities: [], data: "" }];
+  panel._draft.actions[0].todoItem = "Milk";
+  const raw = panel._draftToRaw(panel._draft);
+  assert.deepEqual(raw.actions[0].todo, { op: "complete", list: "todo.groceries", item: "Milk", due: { within: 1, overdue: false, undated: true } });
+
+  const loaded = panel._draftFromRoutine({ ...overview.routines[0], actions: [{ todo: raw.actions[0].todo }] });
+  assert.equal(loaded.actions[0].todoDue, "1");
+  assert.equal(loaded.actions[0].todoOverdue, false);
+  assert.equal(loaded.actions[0].todoUndated, true);
+
+  panel._draft.actions[0].todoDue = "any";
+  assert.equal(panel._draftToRaw(panel._draft).actions[0].todo.due, undefined);
+});
+
+test("the to-do rule editor saves its due window and says it in the list", async () => {
+  const panel = todoPanel();
+  const sent = [];
+  panel._hass = {
+    callWS: async (message) => {
+      sent.push(message);
+      if (message.type === "daily_routine/overview") return structuredClone(panel._data);
+      return message.type === "daily_routine/routine/save" ? { routine: { ...message.routine } } : {};
+    },
+  };
+  panel._todoDraft = { ...panel._newTodoDraft(), watch_entity: "binary_sensor.dishwasher_clean", watch_states: "on", op: "complete", list: "todo.groceries", item: "Empty dishwasher", due: "0", overdue: true, undated: false };
+  await panel._saveTodoDraft();
+  const routine = sent.find((m) => m.type === "daily_routine/routine/save").routine;
+  assert.deepEqual(routine.actions[0].todo.due, { within: 0, overdue: true, undated: false });
+
+  assert.equal(panel._todoSentence(routine), "Complete “Empty dishwasher” on Groceries · due today");
+});

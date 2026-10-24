@@ -26,6 +26,39 @@ WAIT_WORD = "wait"
 TODO_WORD = "todo"
 
 
+def _due_from_text(text: str, number: int) -> dict[str, Any]:
+    """Read due options such as "due=1 overdue=yes undated=no"."""
+    values: dict[str, str] = {}
+    for token in text.split():
+        key, sep, value = token.partition("=")
+        if not sep or not value or key not in ("due", "overdue", "undated"):
+            raise vol.Invalid(
+                f"Line {number}: due options are due=<days or any>, overdue=yes|no and undated=yes|no."
+            )
+        values[key] = value.lower()
+    if "due" not in values:
+        raise vol.Invalid(f"Line {number}: a due check needs due=<days or any>.")
+
+    def yes_no(key: str, default: str) -> bool:
+        choice = values.get(key, default)
+        if choice not in ("yes", "no"):
+            raise vol.Invalid(f"Line {number}: {key} must be yes or no.")
+        return choice == "yes"
+
+    if values["due"] == "any":
+        within: int | None = None
+    else:
+        try:
+            within = int(values["due"])
+        except ValueError as err:
+            raise vol.Invalid(f"Line {number}: due must be a number of days, or any.") from err
+    return {
+        "within": within,
+        "overdue": yes_no("overdue", "yes"),
+        "undated": yes_no("undated", "no"),
+    }
+
+
 def _number_text(seconds: float) -> str:
     return str(int(seconds)) if float(seconds).is_integer() else str(seconds)
 
@@ -35,7 +68,14 @@ def steps_to_text(actions: list[dict[str, Any]]) -> str:
     for action in actions:
         if "todo" in action:
             step = action["todo"]
-            lines.append(f"{TODO_WORD} {step['op']} | {step['list']} | {step['item']}")
+            line = f"{TODO_WORD} {step['op']} | {step['list']} | {step['item']}"
+            if step.get("due"):
+                due = step["due"]
+                within = "any" if due["within"] is None else str(due["within"])
+                overdue = "yes" if due["overdue"] else "no"
+                undated = "yes" if due["undated"] else "no"
+                line += f" | due={within} overdue={overdue} undated={undated}"
+            lines.append(line)
             continue
         if "delay" in action:
             lines.append(f"{WAIT_WORD} {_number_text(action['delay'])}")
@@ -71,12 +111,16 @@ def parse_steps_text(text: str) -> list[dict[str, Any]]:
         if first.lower() == TODO_WORD and "|" in rest:
             head, _, after = line.partition("|")
             op = head.split()[1] if len(head.split()) == 2 else ""
-            parts = [part.strip() for part in after.split("|", 1)]
-            if len(parts) != 2:
+            parts = [part.strip() for part in after.split("|")]
+            if len(parts) not in (2, 3):
                 raise vol.Invalid(
-                    f"Line {number}: write a to-do step as todo add|complete|remove | list | item."
+                    f"Line {number}: write a to-do step as todo add|complete|remove | list | item,"
+                    " optionally followed by | due options."
                 )
-            actions.append({"todo": {"op": op, "list": parts[0], "item": parts[1]}})
+            step: dict[str, Any] = {"op": op, "list": parts[0], "item": parts[1]}
+            if len(parts) == 3:
+                step["due"] = _due_from_text(parts[2], number)
+            actions.append({"todo": step})
             continue
         if (
             line.split(None, 1)[0].lower() == WAIT_WORD

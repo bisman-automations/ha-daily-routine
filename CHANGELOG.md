@@ -2,6 +2,11 @@
 
 All notable changes to the **ha-daily-routine** Home Assistant integration will be documented in this file.
 
+## [Unreleased]
+
+### To-dos
+* **Due date check:** a complete or remove step can act only on items due today, within 1, 7 or 21 days, or on any date. Choose whether overdue items, and items with no due date, are included too. Set it in the editor, or add `due=1 overdue=yes undated=no` to the one-line step. Steps without a check behave as before.
+
 ## [1.10.0] - 2026-10-23
 
 ### Routines
