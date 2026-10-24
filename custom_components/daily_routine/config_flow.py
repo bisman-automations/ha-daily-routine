@@ -85,6 +85,10 @@ def _form_from_routine(routine: dict[str, Any]) -> dict[str, Any]:
         "value_entity": routine["value_entity"],
         "value_threshold": routine["value_threshold"],
         "off_threshold": routine["off_threshold"],
+        "watch_entity": routine["watch_entity"],
+        "watch_states": ", ".join(routine["watch_states"]),
+        "hold_minutes": routine["hold_minutes"],
+        "watch_item": routine["watch_item"],
         "conditions_match": routine["conditions_match"],
         "conditions": conditions_to_text(routine["conditions"]),
         "catch_up_minutes": routine["catch_up_minutes"],
@@ -94,6 +98,7 @@ def _form_from_routine(routine: dict[str, Any]) -> dict[str, Any]:
         "notify_on_run": routine["notify_on_run"],
         "notify_on_skip": routine["notify_on_skip"],
         "notify_on_error": routine["notify_on_error"],
+        "notify_on_health": routine["notify_on_health"],
         "actions": steps_to_text(routine["actions"]),
     }
 
@@ -124,6 +129,10 @@ def _routine_from_form(
         "value_entity": values.get("value_entity") or None,
         "value_threshold": values.get("value_threshold"),
         "off_threshold": values.get("off_threshold"),
+        "watch_entity": values.get("watch_entity") or None,
+        "watch_states": values.get("watch_states") or None,
+        "hold_minutes": int(values.get("hold_minutes") or 0),
+        "watch_item": values.get("watch_item") or "",
         "conditions_match": values.get("conditions_match") or "all",
         "conditions": conditions,
         "catch_up_minutes": int(values.get("catch_up_minutes") or 0),
@@ -133,6 +142,7 @@ def _routine_from_form(
         "notify_on_run": bool(values.get("notify_on_run")),
         "notify_on_skip": bool(values.get("notify_on_skip")),
         "notify_on_error": bool(values.get("notify_on_error")),
+        "notify_on_health": bool(values.get("notify_on_health")),
         "actions": actions,
     }
 
@@ -215,6 +225,10 @@ def _form_schema(hass: Any, values: dict[str, Any]) -> vol.Schema:
             optional("value_entity"): entity("sensor"),
             optional("value_threshold"): number(-1_000_000, 1_000_000, "any"),
             optional("off_threshold"): number(-1_000_000, 1_000_000, "any"),
+            optional("watch_entity"): selector.EntitySelector(),
+            optional("watch_states"): str,
+            vol.Required("hold_minutes", default=values.get("hold_minutes") or 0): number(0, 1440),
+            optional("watch_item"): str,
             vol.Required(
                 "conditions_match", default=values.get("conditions_match") or "all"
             ): selector.SelectSelector(
@@ -236,6 +250,7 @@ def _form_schema(hass: Any, values: dict[str, Any]) -> vol.Schema:
             vol.Required(
                 "notify_on_error", default=bool(values.get("notify_on_error", True))
             ): bool,
+            vol.Required("notify_on_health", default=bool(values.get("notify_on_health"))): bool,
             vol.Required("actions", default=values.get("actions", "")): selector.TextSelector(
                 selector.TextSelectorConfig(multiline=True)
             ),

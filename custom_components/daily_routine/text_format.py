@@ -23,6 +23,7 @@ from .schema import vol
 
 AREA_PREFIX = "area:"
 WAIT_WORD = "wait"
+TODO_WORD = "todo"
 
 
 def _number_text(seconds: float) -> str:
@@ -32,6 +33,10 @@ def _number_text(seconds: float) -> str:
 def steps_to_text(actions: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for action in actions:
+        if "todo" in action:
+            step = action["todo"]
+            lines.append(f"{TODO_WORD} {step['op']} | {step['list']} | {step['item']}")
+            continue
         if "delay" in action:
             lines.append(f"{WAIT_WORD} {_number_text(action['delay'])}")
             continue
@@ -62,6 +67,17 @@ def _meaningful_lines(text: str) -> list[tuple[int, str]]:
 def parse_steps_text(text: str) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     for number, line in _meaningful_lines(text):
+        first, _, rest = line.partition(" ")
+        if first.lower() == TODO_WORD and "|" in rest:
+            head, _, after = line.partition("|")
+            op = head.split()[1] if len(head.split()) == 2 else ""
+            parts = [part.strip() for part in after.split("|", 1)]
+            if len(parts) != 2:
+                raise vol.Invalid(
+                    f"Line {number}: write a to-do step as todo add|complete|remove | list | item."
+                )
+            actions.append({"todo": {"op": op, "list": parts[0], "item": parts[1]}})
+            continue
         if (
             line.split(None, 1)[0].lower() == WAIT_WORD
             and len(line.split(None, 1)) == 2

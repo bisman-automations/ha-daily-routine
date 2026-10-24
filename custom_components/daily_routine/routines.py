@@ -12,13 +12,16 @@ from .const import (
     TRIGGER_PERSON_LEAVES,
     TRIGGER_ROOM_CLEAR,
     TRIGGER_SOMEONE_ARRIVES,
+    TRIGGER_STATE_IS,
     TRIGGER_TIME,
+    TRIGGER_TODO_DONE,
     TRIGGER_VALUE_ABOVE,
     TRIGGER_VALUE_BELOW,
     TRIGGERS,
     WEEKDAYS,
 )
 from .schema import vol
+from .todo import MAX_ITEM_LENGTH, normalize_todo_step
 
 ROUTINE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 SERVICE_RE = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$")
@@ -52,10 +55,17 @@ PRESENCE_TRIGGERS = (
 PER_PERSON_TRIGGERS = (TRIGGER_PERSON_LEAVES, TRIGGER_PERSON_ARRIVES)
 # Triggers that happen as things change, so they run every time (not once a day).
 VALUE_TRIGGERS = (TRIGGER_VALUE_ABOVE, TRIGGER_VALUE_BELOW)
+# Watch one device and run when it changes to a chosen state.
+STATE_TRIGGERS = (TRIGGER_STATE_IS,)
+# Watch a to-do list and run when an item on it is checked off.
+TODO_DONE_TRIGGERS = (TRIGGER_TODO_DONE,)
+WATCH_TRIGGERS = (*STATE_TRIGGERS, *TODO_DONE_TRIGGERS)
 REPEATING_TRIGGERS = (
     *PRESENCE_TRIGGERS,
     TRIGGER_ROOM_CLEAR,
     *VALUE_TRIGGERS,
+    *STATE_TRIGGERS,
+    *TODO_DONE_TRIGGERS,
 )
 
 
@@ -160,11 +170,35 @@ def _int(value: Any, low: int, high: int, label: str) -> int:
     return number
 
 
+def _item_name(value: Any) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) > MAX_ITEM_LENGTH:
+        raise vol.Invalid("The to-do item name is too long.")
+    return text
+
+
+def _state_list(value: Any) -> list[str]:
+    """States to watch for: a list, or text separated by commas. Duplicates are dropped."""
+    items = value.split(",") if isinstance(value, str) else _as_list(value)
+    states: list[str] = []
+    for item in items:
+        text = " ".join(str(item).split())
+        if not text:
+            continue
+        if len(text) > 255:
+            raise vol.Invalid("A state name is too long.")
+        if text not in states:
+            states.append(text)
+    return states
+
+
 def _normalize_action(raw: Any, index: int) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise vol.Invalid(f"Step {index} must be an object.")
     if "delay" in raw:
         return {"delay": parse_delay(raw["delay"])}
+    if "todo" in raw:
+        return {"todo": normalize_todo_step(raw["todo"], index)}
 
     service = str(raw.get("service") or "").strip()
     if not SERVICE_RE.fullmatch(service):
@@ -339,6 +373,24 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
             if off_threshold >= value_threshold:
                 raise vol.Invalid("The turn-off level must be below the turn-on level.")
 
+    watch_entity: str | None = None
+    watch_states: list[str] = []
+    watch_item = ""
+    hold_minutes = 0
+    if trigger in WATCH_TRIGGERS:
+        watch_entity = str(raw.get("watch_entity") or "").strip() or None
+        if trigger in TODO_DONE_TRIGGERS:
+            if not watch_entity or not watch_entity.startswith("todo."):
+                raise vol.Invalid("Pick the to-do list to watch.")
+            watch_item = _item_name(raw.get("watch_item"))
+        else:
+            if not watch_entity or not ENTITY_ID_RE.fullmatch(watch_entity):
+                raise vol.Invalid("Pick the device to watch.")
+            watch_states = _state_list(raw.get("watch_states", raw.get("watch_state")))
+            if not watch_states:
+                raise vol.Invalid("Set the state to watch for.")
+            hold_minutes = _int(raw.get("hold_minutes") or 0, 0, 1440, "The hold time")
+
     active_from = normalize_time(raw.get("active_from")) if raw.get("active_from") else None
     active_to = normalize_time(raw.get("active_to")) if raw.get("active_to") else None
     if bool(active_from) != bool(active_to):
@@ -352,8 +404,14 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
     if len(actions_raw) > MAX_ACTIONS:
         raise vol.Invalid(f"A routine can have at most {MAX_ACTIONS} steps.")
     actions = [_normalize_action(item, i + 1) for i, item in enumerate(actions_raw)]
-    if not any("service" in action for action in actions):
-        raise vol.Invalid("Add at least one service step (delays alone do nothing).")
+    if not any("service" in action or "todo" in action for action in actions):
+        raise vol.Invalid("Add at least one service or to-do step (delays alone do nothing).")
+
+    kind = "todo" if raw.get("kind") == "todo" else "routine"
+    if kind == "todo" and (
+        trigger not in STATE_TRIGGERS or len(actions) != 1 or "todo" not in actions[0]
+    ):
+        raise vol.Invalid("A to-do rule watches one device and does one to-do step.")
 
     return {
         "id": rid,
@@ -365,6 +423,11 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "value_entity": value_entity,
         "value_threshold": value_threshold,
         "off_threshold": off_threshold,
+        "kind": kind,
+        "watch_entity": watch_entity,
+        "watch_states": watch_states,
+        "hold_minutes": hold_minutes,
+        "watch_item": watch_item,
         "active_from": active_from,
         "active_to": active_to,
         "companion_of": companion_of,
@@ -385,5 +448,6 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "notify_on_run": bool(raw.get("notify_on_run", False)),
         "notify_on_skip": bool(raw.get("notify_on_skip", False)),
         "notify_on_error": bool(raw.get("notify_on_error", True)),
+        "notify_on_health": bool(raw.get("notify_on_health", False)),
         "actions": actions,
     }

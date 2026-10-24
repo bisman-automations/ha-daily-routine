@@ -99,6 +99,19 @@ def _overview(hass: HomeAssistant, coordinator: HomeRoutinesCoordinator) -> dict
         if s.attributes.get("unit_of_measurement") and _is_number(s.state)
     ]
     statuses = {r["id"]: coordinator.get_status(r["id"]) or {} for r in coordinator.routines}
+    # Every entity, not only the ones in an area, so a to-do link can watch any device.
+    all_entities = sorted(
+        (
+            {
+                "entity_id": s.entity_id,
+                "name": s.attributes.get("friendly_name") or s.entity_id,
+                "state": s.state,
+            }
+            for s in hass.states.async_all()
+        ),
+        key=lambda e: e["name"].lower(),
+    )
+    todo_lists = [e for e in all_entities if e["entity_id"].startswith("todo.")]
     return {
         "areas": list_areas(hass),
         "devices": _devices(hass),
@@ -109,6 +122,9 @@ def _overview(hass: HomeAssistant, coordinator: HomeRoutinesCoordinator) -> dict
         "binary_sensors": sensors,
         "sensors": numeric,
         "routines": coordinator.routines,
+        "health": {r["id"]: coordinator.health(r) for r in coordinator.routines},
+        "todo_lists": todo_lists,
+        "all_entities": all_entities,
         "statuses": statuses,
         "paused": coordinator.paused,
         "revision": coordinator.revision,
@@ -179,12 +195,20 @@ async def ws_export(
         connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
         return
     connection.send_result(
-        msg["id"], {"format": DOMAIN, "version": 1, "routines": coordinator.export_routines()}
+        msg["id"],
+        {
+            "format": DOMAIN,
+            "version": 1,
+            "routines": coordinator.export_routines(),
+        },
     )
 
 
 @websocket_api.websocket_command(
-    {vol.Required("type"): f"{DOMAIN}/import", vol.Required("routines"): list}
+    {
+        vol.Required("type"): f"{DOMAIN}/import",
+        vol.Required("routines"): list,
+    }
 )
 @websocket_api.require_admin
 @websocket_api.async_response
@@ -271,7 +295,7 @@ async def ws_preview_routine(
     except vol.Invalid as err:
         connection.send_error(msg["id"], "invalid_routine", str(err))
         return
-    connection.send_result(msg["id"], coordinator.preview(routine))
+    connection.send_result(msg["id"], await coordinator.preview(routine))
 
 
 @websocket_api.websocket_command(

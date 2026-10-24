@@ -31,6 +31,7 @@ from homeassistant.helpers.event import (
     async_call_later,
     async_track_point_in_time,
     async_track_state_change_event,
+    async_track_time_interval,
 )
 from homeassistant.helpers.sun import get_astral_event_next
 from homeassistant.util import dt as dt_util
@@ -63,11 +64,15 @@ from .routines import (
     DESIRED_STATE,
     PER_PERSON_TRIGGERS,
     PRESENCE_TRIGGERS,
+    STATE_TRIGGERS,
+    TODO_DONE_TRIGGERS,
     VALUE_TRIGGERS,
+    WATCH_TRIGGERS,
     normalize_routine,
     uses_conditions,
 )
 from .schema import vol
+from .todo import FAILED_OUTCOMES, TODO_OUTCOME_TEXT, apply_todo_step, item_key, list_items
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -113,6 +118,9 @@ def _all_people(routine: dict[str, Any]) -> list[str]:
 
 
 H_VALUE = "value"
+H_HOLD = "state_hold"
+H_STATE = "state_trigger"
+H_DONE = "todo_done"
 H_EXPIRE = "expire"
 H_CATCH_UP = "catch_up"
 
@@ -121,7 +129,11 @@ H_CATCH_UP = "catch_up"
 STARTUP_SETTLE_SECONDS = 30
 
 # Runtime keys kept in storage. Clear timers and waiting state are not persisted.
-PERSISTED_KEYS = ("last_run_date", "last_run", "last_result")
+PERSISTED_KEYS = ("last_run_date", "last_run", "last_result", "seen_state")
+# How long to wait before saving a state we just saw. Noisy sensors then do not write on every change.
+SEEN_SAVE_DELAY_SECONDS = 10
+# How often to check whether a routine needs attention (a device or list is missing or unavailable).
+HEALTH_CHECK_INTERVAL = timedelta(minutes=15)
 
 
 def area_entity_ids(hass: HomeAssistant, area_id: str) -> list[str]:
@@ -240,6 +252,8 @@ def _blank_runtime() -> dict[str, Any]:
         "armed": False,  # room_clear: a real off-transition happened since start
         "pending_date": None,  # local date while waiting for conditions
         "all_away": None,  # last known "everyone away" for presence triggers
+        "seen_done": None,  # in memory: names of completed items already seen
+        "health_alerted": False,  # in memory: a problem was already announced
     }
 
 
@@ -252,6 +266,7 @@ class HomeRoutinesCoordinator:
         # Bumped whenever routines change, so the panel knows when to reload them.
         self.revision = 0
         self._history: dict[str, deque[dict[str, str]]] = {}
+        self._done_lock = asyncio.Lock()
         # When each sensor was last seen on (in memory). Needed for 'active within N minutes'.
         self._last_on: dict[str, datetime] = {}
         self.paused = False
@@ -425,6 +440,9 @@ class HomeRoutinesCoordinator:
 
     async def async_start(self) -> None:
         self._start_all(catch_up=False)
+        self._startup_unsubs.append(
+            async_track_time_interval(self.hass, self._check_health, HEALTH_CHECK_INTERVAL)
+        )
         self._notify_listeners()
         if self.hass.is_running:
             self._schedule_startup_catch_up()
@@ -436,10 +454,12 @@ class HomeRoutinesCoordinator:
             )
 
     def _schedule_startup_catch_up(self) -> None:
+        @callback
         def _later(_now: datetime) -> None:
             now = dt_util.now()
             for routine in self.routines:
                 self._maybe_catch_up(routine, now)
+            self._check_states_changed_while_stopped()
 
         self._startup_unsubs.append(async_call_later(self.hass, STARTUP_SETTLE_SECONDS, _later))
 
@@ -450,17 +470,18 @@ class HomeRoutinesCoordinator:
         self._drop_all_handles()
         await self._async_save()
 
-    async def _async_save(self) -> None:
+    def _payload(self) -> dict[str, Any]:
         runtime = {rid: {k: rt.get(k) for k in PERSISTED_KEYS} for rid, rt in self._runtime.items()}
-        await self._store.async_save(
-            {
-                "routines": self.routines,
-                "paused": self.paused,
-                "migrated": self.migrated,
-                "settings": self.settings,
-                "runtime": runtime,
-            }
-        )
+        return {
+            "routines": self.routines,
+            "paused": self.paused,
+            "migrated": self.migrated,
+            "settings": self.settings,
+            "runtime": runtime,
+        }
+
+    async def _async_save(self) -> None:
+        await self._store.async_save(self._payload())
 
     async def async_reload(self) -> None:
         """Restart every schedule and watcher from the current routine list."""
@@ -1118,7 +1139,134 @@ class HomeRoutinesCoordinator:
         unsub = async_track_state_change_event(self.hass, [routine["value_entity"]], _changed)
         self._set_handle(rid, H_VALUE, unsub)
 
+    def _watch_state(self, routine: dict[str, Any]) -> None:
+        """Run when the device changes into one of the chosen states (after the hold time, if any)."""
+        rid = routine["id"]
+        self._drop_handle(rid, H_STATE)
+        self._drop_handle(rid, H_HOLD)
+        if routine["trigger"] not in STATE_TRIGGERS:
+            return
+        rt = self._rt(rid)
+        entity = routine["watch_entity"]
+        wanted = routine["watch_states"]
+        current = self.hass.states.get(entity)
+        if rt.get("seen_state") is None and current is not None:
+            rt["seen_state"] = current.state  # first time: remember where the device is
+        if not routine["enabled"]:
+            return
+
+        @callback
+        def _changed(event: Event[EventStateChangedData]) -> None:
+            new = event.data.get("new_state")
+            if new is None:
+                return
+            old = event.data.get("old_state")
+            rt["seen_state"] = new.state
+            self._store.async_delay_save(self._payload, SEEN_SAVE_DELAY_SECONDS)
+            if new.state not in wanted:
+                self._drop_handle(rid, H_HOLD)
+                return
+            if old is not None and old.state in wanted:
+                return  # moving between chosen states: the run already counts
+            self._start_state_run(routine)
+
+        unsub = async_track_state_change_event(self.hass, [entity], _changed)
+        self._set_handle(rid, H_STATE, unsub)
+
+    def _start_state_run(self, routine: dict[str, Any]) -> None:
+        rid = routine["id"]
+        if routine["hold_minutes"] <= 0:
+            self._run_state_routine(routine)
+            return
+
+        @callback
+        def _held(_now: datetime) -> None:
+            self._handles.pop((rid, H_HOLD), None)
+            state = self.hass.states.get(routine["watch_entity"])
+            if state is not None and state.state in routine["watch_states"]:
+                self._run_state_routine(routine)
+
+        unsub = async_call_later(self.hass, routine["hold_minutes"] * 60, _held)
+        self._set_handle(rid, H_HOLD, unsub)
+
+    def _run_state_routine(self, routine: dict[str, Any]) -> None:
+        now = dt_util.now()
+        if self._allowed_day(routine, now):
+            self.hass.async_create_task(self._execute_routine(routine, now, scheduled=True))
+
+    def _check_states_changed_while_stopped(self) -> None:
+        """A device that changed into a chosen state while Home Assistant was stopped runs its routine once."""
+        changed = False
+        for routine in self.routines:
+            if routine["trigger"] not in STATE_TRIGGERS or not routine["enabled"]:
+                continue
+            state = self.hass.states.get(routine["watch_entity"])
+            if state is None:
+                continue
+            rt = self._rt(routine["id"])
+            seen = rt.get("seen_state")
+            if seen != state.state:
+                rt["seen_state"] = state.state
+                changed = True
+            if seen is not None and seen != state.state and state.state in routine["watch_states"]:
+                self._start_state_run(routine)
+        if changed:
+            self.hass.async_create_task(self._async_save())
+
     # ----- starting everything -----
+
+    def _watch_done(self, routine: dict[str, Any]) -> None:
+        """Run when an item is checked off the chosen to-do list (the watched item, or any item)."""
+        rid = routine["id"]
+        self._drop_handle(rid, H_DONE)
+        if routine["trigger"] not in TODO_DONE_TRIGGERS or not routine["enabled"]:
+            return
+        if self._rt(rid).get("seen_done") is None:
+            self.hass.async_create_task(self._check_done(routine))
+
+        @callback
+        def _changed(event: Event[EventStateChangedData]) -> None:
+            if event.data.get("new_state") is not None:
+                self.hass.async_create_task(self._check_done(routine))
+
+        unsub = async_track_state_change_event(self.hass, [routine["watch_entity"]], _changed)
+        self._set_handle(rid, H_DONE, unsub)
+
+    async def _check_done(self, routine: dict[str, Any]) -> None:
+        """Compare the completed items with the last look; run once for each newly completed one."""
+        async with self._done_lock:
+            rt = self._rt(routine["id"])
+            items = await list_items(self.hass, routine["watch_entity"], ["completed"])
+            if items is None:
+                return
+            done = list(
+                dict.fromkeys(key for key in (item_key(i.get("summary")) for i in items) if key)
+            )
+            previous = rt.get("seen_done")
+            rt["seen_done"] = done
+            if previous is None:
+                return  # first look: what is already done does not run the routine
+            wanted = item_key(routine["watch_item"])
+            new = [key for key in done if key not in previous]
+            if any(not wanted or key == wanted for key in new):
+                self._run_state_routine(routine)
+
+    @callback
+    def _check_health(self, _now: datetime) -> None:
+        """Announce, once, a routine whose device or list has gone missing or unavailable."""
+        for routine in self.routines:
+            if not routine["enabled"]:
+                continue
+            rt = self._rt(routine["id"])
+            problems = self.health(routine)
+            if not problems:
+                rt["health_alerted"] = False
+            elif not rt.get("health_alerted"):
+                rt["health_alerted"] = True
+                if routine["notify_on_health"]:
+                    self._send_notification(
+                        f"Routine '{routine['name']}' needs attention: {' '.join(problems)}"
+                    )
 
     def _start_all(self, *, catch_up: bool) -> None:
         now = dt_util.now()
@@ -1131,6 +1279,8 @@ class HomeRoutinesCoordinator:
             self._schedule_one(routine, now)
             self._watch_presence(routine)
             self._watch_value(routine)
+            self._watch_state(routine)
+            self._watch_done(routine)
             self._watch_conditions(routine)
             if catch_up:
                 self._maybe_catch_up(routine, now)
@@ -1241,6 +1391,7 @@ class HomeRoutinesCoordinator:
         self._fire_event(EVENT_ROUTINE_STARTED, routine)
 
         result = "success"
+        details: list[str] = []
         for action in routine["actions"]:
             ok, reason = self._check(routine, dt_util.now())
             if not ok:
@@ -1252,6 +1403,22 @@ class HomeRoutinesCoordinator:
 
             if "delay" in action:
                 await asyncio.sleep(action["delay"])
+                continue
+
+            if "todo" in action:
+                step = action["todo"]
+                outcome = await apply_todo_step(self.hass, step, dry_run=False)
+                if outcome in FAILED_OUTCOMES:
+                    _LOGGER.warning(
+                        "Routine '%s': to-do %s on %s failed (%s).",
+                        routine["name"],
+                        step["op"],
+                        step["list"],
+                        outcome,
+                    )
+                    result = f"error:todo_{outcome}"
+                    break
+                details.append(f"{step['item']}: {TODO_OUTCOME_TEXT[outcome]}")
                 continue
 
             outcome, override, _entities = self._plan_action(routine, action)
@@ -1279,15 +1446,19 @@ class HomeRoutinesCoordinator:
                 break
 
         rt["last_result"] = result
+        summary = "; ".join(details)
         self._record(
-            rid, "ran" if result == "success" else "failed", "" if result == "success" else result
+            rid,
+            "ran" if result == "success" else "failed",
+            summary if result == "success" else result,
         )
         if result == "success":
             rt["state"] = "idle"
             _LOGGER.info("Routine '%s' completed.", routine["name"])
             self._fire_event(EVENT_ROUTINE_FINISHED, routine, "success")
             if routine["notify_on_run"]:
-                self._send_notification(f"Routine '{routine['name']}' completed.")
+                note = f" ({summary})" if summary else ""
+                self._send_notification(f"Routine '{routine['name']}' completed{note}.")
         else:
             rt["state"] = "error"
             self._fire_event(EVENT_ROUTINE_FINISHED, routine, result)
@@ -1305,14 +1476,27 @@ class HomeRoutinesCoordinator:
             raise vol.Invalid(f"No routine with id '{routine_id}'.")
         return await self._execute_routine(routine, dt_util.now(), scheduled=False)
 
-    def preview(self, routine: dict[str, Any]) -> dict[str, Any]:
-        """What a run would do right now, without calling any service."""
+    async def preview(self, routine: dict[str, Any]) -> dict[str, Any]:
+        """What a run would do right now. Reads lists for to-do steps, and calls no service."""
         now = dt_util.now()
         ok, reason = self._check(routine, now)
         steps: list[dict[str, Any]] = []
         for action in routine["actions"]:
             if "delay" in action:
                 steps.append({"type": "delay", "seconds": action["delay"]})
+                continue
+            if "todo" in action:
+                step = action["todo"]
+                outcome = await apply_todo_step(self.hass, step, dry_run=True)
+                steps.append(
+                    {
+                        "type": "todo",
+                        "op": step["op"],
+                        "list": step["list"],
+                        "item": step["item"],
+                        "outcome": outcome,
+                    }
+                )
                 continue
             outcome, _override, entities = self._plan_action(routine, action)
             steps.append(
@@ -1330,6 +1514,24 @@ class HomeRoutinesCoordinator:
             "paused": self.paused,
             "steps": steps,
         }
+
+    def health(self, routine: dict[str, Any]) -> list[str]:
+        """Things that will stop this routine from working, shown on its card."""
+        problems: list[str] = []
+        checked = []
+        if routine["trigger"] in WATCH_TRIGGERS:
+            checked.append(routine["watch_entity"])
+        for action in routine["actions"]:
+            if "todo" in action:
+                checked.append(action["todo"]["list"])
+        for entity_id in checked:
+            state = self.hass.states.get(entity_id)
+            if state is None:
+                problems.append(f"{entity_id} is not in Home Assistant.")
+            elif state.state in UNKNOWN_STATES:
+                name = state.attributes.get("friendly_name") or entity_id
+                problems.append(f"{name} is unavailable right now.")
+        return problems
 
     # ----- service handlers -----
 
@@ -1361,6 +1563,8 @@ def _companion_for(routine: dict[str, Any]) -> dict[str, Any] | None:
         return None
     actions: list[dict[str, Any]] = []
     for action in routine["actions"]:
+        if "todo" in action:
+            continue  # a to-do step is not reversed; the turn-back-off routine leaves it out
         if "service" not in action:
             actions.append(action)
             continue

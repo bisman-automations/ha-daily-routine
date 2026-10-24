@@ -18,7 +18,7 @@
 - **Rooms from Home Assistant.** The sidebar shows every area (room) automatically, plus a **Whole house** card for routines that span the house. Create or rename rooms in *Settings → Areas & zones*, and they appear here.
 - **Routines per room.** Curtains open at 07:00 in most rooms and at 08:00 in the bedroom: two routines. Lights in a room turn off once its motion sensor has been quiet for 10 minutes.
 - **Whole-house routines.** Lights off when everyone has left and the house has been quiet for 15 minutes.
-- **Triggers:** a set time, sunrise or sunset (with offset), everyone leaves or someone arrives at a place, or a chosen person leaves or arrives (Home, Work, or any other zone you've set up in Home Assistant), a room has been quiet, a sensor rising above or falling below a level (for example humidity), or manual only.
+- **Triggers:** a set time, sunrise or sunset (with offset), everyone leaves or someone arrives at a place, or a chosen person leaves or arrives (Home, Work, or any other zone you've set up in Home Assistant), a room has been quiet, a sensor rising above or falling below a level (for example humidity), a device changing to a chosen state (for example a switch turning on), or manual only.
 - **Daytime windows.** Any routine can be limited to hours, such as 07:00 to 22:00. Windows can cross midnight.
 - **Humidity fan example.** A bathroom fan turns on when humidity goes above 60% and off again below 50%, but only between 07:00 and 22:00. The turn-off level creates a second routine named "(off)" that you can see and edit.
 - **Safety first.** Unknown or unavailable people and sensors block a run. Conditions are checked again before every step.
@@ -63,13 +63,14 @@ Your routines are moved into the new storage automatically on the first start. O
 
 Room routines target the room itself, so lights or covers you add to that room later are included without editing the routine.
 
-The sidebar has three tabs:
+The sidebar has four tabs:
 
 - **Rooms**: pick a room to see and add its routines.
 - **Routines**: search every routine by name, room, device, trigger, or day.
+- **To-dos**: rules that add, complete or remove a to-do item when a device changes. See [To-do rules](#to-do-rules).
 - **Settings** (administrators only): which people routines can use, and where notifications also go.
 
-Each routine card has **Run now**, **Edit**, **Duplicate**, **Enable/Disable**, and **Delete**. Under the routine's details, **Recent runs** lists its last five runs, including skips and failures and why they happened. Duplicate opens a copy you can change before saving. In the editor, **Linked device** picks the device the routine belongs to.
+Each routine card has **Run now**, **Edit**, **Duplicate**, **Enable/Disable**, and **Delete**. Under the routine's details, **Recent runs** lists its last five runs, including skips and failures and why they happened. A yellow warning appears on the card when something the routine needs is missing or unavailable, such as a device or to-do list. Duplicate opens a copy you can change before saving. In the editor, **Linked device** picks the device the routine belongs to.
 
 ## Routines as devices
 
@@ -91,6 +92,8 @@ wait 30
 ```
 
 - A step is `action | targets | extra settings`. Targets are entity ids separated by commas, or `area:` followed by an area id. Extra settings are optional JSON. `wait` takes seconds, or `00:00:30`.
+- A to-do step adds, completes or removes an item on a to-do list. It is written `todo add | todo.groceries | Empty dishwasher`: `add`, `complete` or `remove`, then the to-do list and the item name. In the editor, choose **To-do list** as the step type. To-do rules on the To-dos tab are routines built from the same step.
+
 - Conditions are one per line, in the **Extra conditions** list. There are three kinds:
   - `presence everyone away | person.sam, person.alex | zone.home`: everyone listed is away from the place. Use `presence anyone in | person.sam | zone.work` for "at least one person is at Work". `everyone` or `anyone`, then `in` or `away`, then the people and the place.
   - `sensors quiet 10 | binary_sensor.hall_motion`: the sensors have been off for 10 minutes. Use `sensors active 5 | ...` for "one of these has been on within the last 5 minutes".
@@ -100,9 +103,38 @@ wait 30
 
 Deleting an entry deletes its routine.
 
+## To-do rules
+
+A to-do rule adds, completes or removes an item on a to-do list when a device or sensor changes to a state you choose. Each rule is a routine, so it also gets pause, conditions, run history, retries, notifications, dry run and backup. Open the **To-dos** tab and choose **New to-do rule**:
+
+- **Device or sensor to watch**: any entity.
+- **Changes to**: one or more states, separated by commas, such as `on` or `on, off`. The suggestions are the states the device has reported in the last 30 days, and any text is accepted.
+- **Hold for**: optional minutes. The device must still be in one of those states after this long before the rule runs. A change to another state in the meantime cancels it.
+- **Action**: add, complete or remove an item.
+- **To-do list** and **Item text**.
+
+For a dishwasher, two rules cover a full cycle:
+
+- The clean sensor changes to `on`: add "Empty dishwasher".
+- The clean sensor changes to `off`: complete "Empty dishwasher".
+
+A filter sensor works the same way: changes to `on` adds "Clean dishwasher filter", and `off` completes it.
+
+How the rules behave:
+
+- **Add** does nothing if an open item with that name is already on the list. The run is recorded as "already on the list".
+- **Complete** and **remove** act only on an open item with that name. Names match ignoring capitals and extra spaces.
+- A rule runs when the device changes into one of its states. Staying in that state does not run it again.
+- If the list cannot be read or changed, nothing else happens. The card shows the problem and the run is recorded as failed.
+- **Run now** makes the change straight away. **Test (dry run)** in the routine editor shows what would happen without changing the list.
+- Pausing or deleting a rule does not change the items already on the list.
+
+To run other steps when an item is checked off, make a routine with the **When an item is checked off a to-do list** trigger. Name the item, or leave it empty for any item.
+
+
 ## Backup
 
-On **Settings** in the sidebar (administrators only), **Export routines** saves every routine to a file. **Import routines** loads a file saved earlier. A routine in the file replaces the one with the same id. Routines that fail the checks are listed and the others still load. Turn-off routines are rebuilt from the routine they belong to, so they are not exported. A linked device that isn't on this Home Assistant is linked to the Daily Routine device instead.
+On **Settings** in the sidebar (administrators only), **Export routines** saves every routine, including to-do rules, to a file. **Import routines** loads a file saved earlier. A routine in the file replaces the one with the same id. Routines that fail the checks are listed and the others still load. Turn-off routines are rebuilt from the routine they belong to, so they are not exported. A linked device that isn't on this Home Assistant is linked to the Daily Routine device instead.
 
 ## Diagnostics
 
@@ -117,7 +149,9 @@ On **Settings → Devices & services → Daily Routine**, choose *Download diagn
 
 | Field | Meaning |
 |-------|---------|
-| Trigger | `time`, `sunrise`, `sunset`, `everyone_leaves`, `someone_arrives`, `person_leaves`, `person_arrives`, `room_clear`, `value_above`, `value_below`, or `manual` |
+| Trigger | `time`, `sunrise`, `sunset`, `everyone_leaves`, `someone_arrives`, `person_leaves`, `person_arrives`, `room_clear`, `value_above`, `value_below`, `state_is`, `todo_done`, or `manual` |
+| Device and states | For a device-state trigger: the device to watch, the states it changes to (several, separated by commas, such as `on, off`), and an optional hold time in minutes. The routine runs when the device changes into one of those states, not while it stays in them. A change to another state during the hold time cancels the run |
+| To-do list and item | For the checked-off trigger: the to-do list to watch, and an optional item name. With no name, any item counts |
 | Place | For leave and arrive triggers: the zone that counts, such as Home or Work. Defaults to Home |
 | Sensor and level | For value triggers: a numeric sensor, the level it must cross, and for "above" an optional level to turn back off |
 | Only run between | Optional start and end time. Outside these hours the routine does nothing. Windows can cross midnight |
@@ -131,7 +165,7 @@ On **Settings → Devices & services → Daily Routine**, choose *Download diagn
 | Catch up | If Home Assistant was restarting when a time routine was due, still run it once it is back, within a window of up to 3 hours ("Don't run it late" turns this off). Home Assistant gets about 30 seconds to load, then the routine runs as soon as it can. If a condition blocks it, it is retried each minute until the window closes |
 | Retry | Retry a failed step up to 3 times |
 | Steps | Actions chosen by name, such as "Turn off lights" (with a room, specific devices, or no target), or any service under "Other (advanced)", plus waits |
-| Notify | On run, on skip, on failure |
+| Notify | On run, on skip, on failure, and when it needs attention (a device or list is missing or unavailable). The attention message is sent once until the problem clears |
 
 ### Trigger notes
 
@@ -139,6 +173,8 @@ On **Settings → Devices & services → Daily Routine**, choose *Download diagn
 - **Everyone leaves / someone arrives** fire on the change itself. With sensors selected, they wait until the room is quiet. "Everyone leaves Work" means every person has left that zone, and "someone arrives at Work" means the first person to reach it after everyone had left. A person who is at another place counts as away from Home.
 - **Person leaves / person arrives** fire when one of the chosen people goes from the place to somewhere else, or from elsewhere to the place. Other people's moves don't count, and a person whose state is unknown or unavailable never triggers it.
 - **Above / below a level** fire when the sensor crosses the level, not on every reading. Staying above it does not run the routine again. The turn-off level for "above" creates a companion routine named "(off)" that runs when the sensor drops below that level.
+- **Checked off** runs when an item on the chosen to-do list is checked off. Items already done when the routine is saved, and items checked off while Home Assistant is stopped, do not run it.
+- **Device changes to a state** runs once each time the device moves into one of its states. If Home Assistant restarts while the device has changed and is still in one of its states, the routine runs once after startup.
 - **Outside the window** a crossing is ignored. The routine does not catch up when the window opens. It runs at the next crossing inside the window.
 
 ---

@@ -42,6 +42,10 @@
             "active_to": "Only run until (HH:MM)",
             "value_entity": "Sensor to watch",
             "value_threshold": "Level to watch for",
+            "watch_entity": "Device or to-do list to watch",
+            "watch_item": "To-do item to watch for (leave empty for any item)",
+            "watch_states": "States to watch for, separated by commas (for example on, or locked)",
+            "hold_minutes": "Wait this many minutes before running (0 runs at once)",
             "off_threshold": "Turn back off below this level (optional)",
             "conditions_match": "Extra conditions",
             "catch_up_minutes": "If missed after a restart, still run within (minutes, 0 = never)",
@@ -51,6 +55,7 @@
             "notify_on_run": "Notify me when it runs",
             "notify_on_skip": "Notify me when it is skipped",
             "notify_on_error": "Notify me when it fails",
+            "notify_on_health": "Notify me when it needs attention (a device or list is missing or unavailable)",
             "actions": "Steps (one per line)",
             "conditions": "Extra conditions (one per line)"
           }

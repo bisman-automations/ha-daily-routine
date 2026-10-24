@@ -701,3 +701,267 @@ test("only the five newest runs are listed on a card", () => {
   const html = panel._historyHtml({ history });
   assert.equal((html.match(/<li>/g) || []).length, 5);
 });
+
+test("a state trigger takes several states and a hold time, and saves them", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "Blank", draft: { trigger: "state_is", actions: [{ service: "light.turn_off", targetMode: "entities", entities: ["light.kitchen"], data: "" }] } }, null);
+  panel._draft.watch_entity = "input_boolean.dinner_done";
+  panel._draft.watch_states = "on, off";
+  panel._draft.hold_minutes = "5";
+  panel._view = { name: "editor", room: null };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /<option value="state_is"\s+selected>When a device changes to a value<\/option>/);
+  assert.match(html, /data-f="watch_entity"/);
+  assert.match(html, /data-f="watch_states"[^>]*value="on, off"/);
+  assert.match(html, /data-f="hold_minutes"/);
+  const raw = panel._draftToRaw(panel._draft);
+  assert.equal(raw.watch_entity, "input_boolean.dinner_done");
+  assert.deepEqual(raw.watch_states, ["on", "off"]);
+  assert.equal(raw.hold_minutes, 5);
+});
+
+test("a state trigger is summarised with its states and hold time", () => {
+  const panel = makePanel();
+  const text = panel._describeTrigger({
+    trigger: "state_is", watch_entity: "input_boolean.dinner_done", watch_states: ["on", "off"], hold_minutes: 5,
+    active_from: null, active_to: null,
+  });
+  assert.match(text, /input_boolean\.dinner_done becomes on or off for 5 min$/);
+});
+
+test("an empty state trigger is saved without a device or states", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "Blank", draft: { trigger: "time", time: "07:00:00", actions: [{ service: "light.turn_off", targetMode: "area" }] } }, "kitchen");
+  const raw = panel._draftToRaw(panel._draft);
+  assert.equal(raw.watch_entity, null);
+  assert.deepEqual(raw.watch_states, []);
+  assert.equal(raw.hold_minutes, 0);
+});
+
+const dishwasherRule = () => ({
+  id: "empty_dishwasher", name: "Empty dishwasher", kind: "todo", enabled: true, room: null, device_id: null, zone: "zone.home",
+  trigger: "state_is", watch_entity: "binary_sensor.dishwasher_clean", watch_states: ["on"], hold_minutes: 0,
+  time: "07:00:00", offset_minutes: 0, days: ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], people: [], sensors: [],
+  clear_minutes: 0, conditions: [], conditions_match: "all", repeat: true, catch_up_minutes: 0, retries: 0, skip_noop: true,
+  notify_on_run: false, notify_on_skip: false, notify_on_error: true,
+  actions: [{ todo: { op: "add", list: "todo.groceries", item: "Empty dishwasher" } }],
+});
+
+function todoPanel() {
+  const panel = makePanel();
+  Object.assign(panel._data, {
+    all_entities: [
+      { entity_id: "binary_sensor.dishwasher_clean", name: "Dishwasher clean", state: "off" },
+      { entity_id: "todo.groceries", name: "Groceries", state: "2" },
+    ],
+    todo_lists: [{ entity_id: "todo.groceries", name: "Groceries", state: "2" }],
+  });
+  panel._data.routines.push(dishwasherRule());
+  panel._data.statuses.empty_dishwasher = { state: "idle", waiting: false, history: [] };
+  return panel;
+}
+
+test("the To-dos tab lists to-do rules only; rooms and the routines list leave them out", () => {
+  const panel = todoPanel();
+  panel._view = { name: "todos" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /<h3>Empty dishwasher<\/h3>/);
+  assert.doesNotMatch(panel.shadowRoot.innerHTML, /Kitchen lights off/);
+
+  panel._view = { name: "all" };
+  panel._render();
+  assert.doesNotMatch(panel.shadowRoot.innerHTML, /Empty dishwasher/);
+  assert.equal(panel._routinesFor(null).length, 0);
+});
+
+test("the To-dos tab opens the to-do page", () => {
+  const panel = todoPanel();
+  assert.ok(panel._tabs().some((t) => t.id === "todos" && t.label === "To-dos"));
+  panel._onClick({ target: { closest: () => ({ dataset: { act: "tab", tab: "todos" } }) } });
+  assert.equal(panel._view.name, "todos");
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /<h1>To-dos<\/h1>/);
+  assert.match(panel.shadowRoot.innerHTML, /aria-selected="true"[^>]*>To-dos</);
+});
+
+test("a to-do rule card says what it does in names, and shows its last run", () => {
+  const panel = todoPanel();
+  panel._data.statuses.empty_dishwasher.history = [{ at: "2026-10-23T20:00:00", outcome: "ran", detail: "Empty dishwasher: already on the list" }];
+  panel._view = { name: "todos" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Add “Empty dishwasher” on Groceries/);
+  assert.match(html, /Dishwasher clean becomes on/);
+  assert.match(html, /Empty dishwasher: already on the list/);
+  assert.doesNotMatch(html, /binary_sensor\.dishwasher_clean/, "entity ids are not shown");
+});
+
+test("a to-do rule card warns when its list or device is unavailable", () => {
+  const panel = todoPanel();
+  panel._data.health = { empty_dishwasher: ["Groceries is unavailable right now."] };
+  panel._view = { name: "todos" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /Groceries is unavailable right now\./);
+});
+
+test("a routine card shows health warnings from the overview", () => {
+  const panel = makePanel();
+  panel._data.health = { kitchen_lights: ["Kitchen motion is unavailable right now."] };
+  panel._view = { name: "room", room: "kitchen" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /Kitchen motion is unavailable right now\./);
+});
+
+test("the to-do editor saves a to-do rule as a routine with one to-do step", async () => {
+  const panel = todoPanel();
+  const sent = [];
+  panel._hass = {
+    callWS: async (message) => {
+      sent.push(message);
+      if (message.type === `daily_routine/overview`) return structuredClone(panel._data);
+      return message.type === "daily_routine/routine/save" ? { routine: { ...message.routine } } : {};
+    },
+  };
+  panel._onClick({ target: { closest: () => ({ dataset: { act: "todo-new" } }) } });
+  panel._render();
+  let html = panel.shadowRoot.innerHTML;
+  assert.match(html, /<option value="todo\.groceries"\s*>Groceries<\/option>/);
+  assert.match(html, /<option value="binary_sensor\.dishwasher_clean"\s*>Dishwasher clean<\/option>/);
+
+  panel._onField({ target: { dataset: { tf: "watch_entity" }, value: "binary_sensor.dishwasher_clean", type: "select-one" } });
+  panel._onField({ target: { dataset: { tf: "watch_states" }, value: "on", type: "text" } }, true);
+  panel._onField({ target: { dataset: { tf: "list" }, value: "todo.groceries", type: "select-one" } });
+  panel._onField({ target: { dataset: { tf: "item" }, value: "Empty dishwasher", type: "text" } }, true);
+  await panel._saveTodoDraft();
+
+  const saves = sent.filter((m) => m.type === "daily_routine/routine/save");
+  assert.equal(saves.length, 1);
+  const routine = saves[0].routine;
+  assert.equal(routine.kind, "todo");
+  assert.equal(routine.trigger, "state_is");
+  assert.equal(routine.watch_entity, "binary_sensor.dishwasher_clean");
+  assert.deepEqual(routine.watch_states, ["on"]);
+  assert.equal(routine.hold_minutes, 0);
+  assert.deepEqual(routine.actions, [{ todo: { op: "add", list: "todo.groceries", item: "Empty dishwasher" } }]);
+  assert.equal(panel._view.name, "todos", "saving returns to the To-dos tab");
+});
+
+test("the to-do editor says what is missing instead of saving an incomplete rule", async () => {
+  const panel = todoPanel();
+  panel._hass = { callWS: async () => ({}) };
+  panel._todoDraft = { ...panel._newTodoDraft(), watch_entity: "binary_sensor.dishwasher_clean", watch_states: "on", item: "Empty dishwasher" };
+  await assert.rejects(panel._saveTodoDraft(), /Choose a to-do list/);
+});
+
+test("suggested states come from the device history and leave out unavailable", () => {
+  const panel = todoPanel();
+  panel._stateHints = { "binary_sensor.dishwasher_clean": ["off", "on", "unavailable"] };
+  panel._todoDraft = { ...panel._newTodoDraft(), watch_entity: "binary_sensor.dishwasher_clean" };
+  panel._view = { name: "todo-editor" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /<datalist id="state-suggestions">[\s\S]*<option value="on">/);
+  assert.doesNotMatch(html, /<option value="unavailable">/);
+});
+
+test("pausing a to-do rule saves the routine turned off", async () => {
+  const panel = todoPanel();
+  const sent = [];
+  panel._hass = {
+    callWS: async (message) => {
+      sent.push(message);
+      return message.type === "daily_routine/overview" ? structuredClone(panel._data) : {};
+    },
+  };
+  await panel._onClick({ target: { closest: () => ({ dataset: { act: "todo-toggle", id: "empty_dishwasher" } }) } });
+  const save = sent.find((m) => m.type === "daily_routine/routine/save");
+  assert.equal(save.routine.enabled, false);
+  assert.equal(save.routine.kind, "todo");
+});
+
+test("a routine can have a to-do step, shown and saved in plain words", () => {
+  const panel = todoPanel();
+  panel._draft = panel._draftFromRoutine({ ...overview.routines[0], actions: [{ todo: { op: "remove", list: "todo.groceries", item: "Old item" } }] });
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /<option value="todo"\s+selected>To-do list<\/option>/);
+  assert.match(html, /<option value="remove"\s+selected>Remove an item<\/option>/);
+  assert.match(html, /data-sf="todoItem"[^>]*value="Old item"/);
+  assert.deepEqual(panel._draftToRaw(panel._draft).actions, [{ todo: { op: "remove", list: "todo.groceries", item: "Old item" } }]);
+});
+
+test("a to-do step without a list or item is rejected with the step number", () => {
+  const panel = makePanel();
+  panel._draft = panel._newDraft(null);
+  panel._draft.actions = [{ kind: "todo", todoOp: "add", todoList: "", todoItem: "Milk" }];
+  assert.throws(() => panel._draftToRaw(panel._draft), /Step 1: choose a to-do list/);
+});
+
+test("the dry run says what a to-do step would do, in words", () => {
+  const panel = todoPanel();
+  panel._draft = panel._newDraft(null);
+  panel._view = { name: "editor", room: null };
+  panel._preview = {
+    conditions_ok: true, block_reason: null, paused: false,
+    steps: [{ type: "todo", op: "add", list: "todo.groceries", item: "Empty dishwasher", outcome: "would_add" }],
+  };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /Add “Empty dishwasher” on Groceries → would be added/);
+});
+
+test("importing a file sends routines only and reports skipped ones", async () => {
+  const panel = todoPanel();
+  const sent = [];
+  panel._hass = {
+    callWS: async (message) => {
+      sent.push(message);
+      if (message.type === "daily_routine/import") return { imported: 1, problems: [{ id: "x", reason: "bad" }] };
+      return structuredClone(panel._data);
+    },
+  };
+  await panel._importText(JSON.stringify({ routines: [dishwasherRule()] }));
+  const call = sent.find((m) => m.type === "daily_routine/import");
+  assert.deepEqual(Object.keys(call).sort(), ["routines", "type"]);
+  assert.match(panel._notice, /Imported 1 routine\. Skipped: x: bad/);
+});
+
+test("a checked-off trigger is summarised by its item and list", () => {
+  const panel = makePanel();
+  panel._data.all_entities = [{ entity_id: "todo.groceries", name: "Groceries", state: "2" }];
+  const text = panel._describeTrigger({ trigger: "todo_done", watch_entity: "todo.groceries", watch_item: "Milk", active_from: null, active_to: null });
+  assert.equal(text, "“Milk” checked off Groceries");
+  const any = panel._describeTrigger({ trigger: "todo_done", watch_entity: "todo.groceries", watch_item: "", active_from: null, active_to: null });
+  assert.equal(any, "any item checked off Groceries");
+});
+
+test("the checked-off trigger offers a to-do list and an optional item name, and saves them", () => {
+  const panel = makePanel();
+  panel._data.todo_lists = [{ entity_id: "todo.groceries", name: "Groceries", state: "2" }];
+  panel._draft = panel._applyTemplate({ title: "Blank", draft: { trigger: "todo_done", actions: [{ service: "light.turn_on", targetMode: "area" }] } }, null);
+  panel._draft.watch_entity = "todo.groceries";
+  panel._draft.watch_item = "  Milk ";
+  panel._view = { name: "editor", room: null };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /<option value="todo_done"\s+selected>When an item is checked off a to-do list<\/option>/);
+  assert.match(html, /data-f="watch_item"/);
+  assert.doesNotMatch(html, /data-f="watch_states"/, "no state box for this trigger");
+  const raw = panel._draftToRaw(panel._draft);
+  assert.equal(raw.watch_entity, "todo.groceries");
+  assert.equal(raw.watch_item, "Milk");
+});
+
+test("the notify-on-health choice is shown under Options and saved with the routine", () => {
+  const panel = makePanel();
+  panel._draft = panel._newDraft(null);
+  panel._draft.actions = [{ kind: "service", service: "light.turn_on", targetMode: "none", area: "", entities: [], data: "" }];
+  panel._view = { name: "editor", room: null };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /data-f="notify_on_health"/);
+  panel._onField({ target: { dataset: { f: "notify_on_health" }, type: "checkbox", checked: true, value: "on" } });
+  assert.equal(panel._draftToRaw(panel._draft).notify_on_health, true);
+  const loaded = panel._draftFromRoutine({ ...overview.routines[0], notify_on_health: true });
+  assert.equal(loaded.notify_on_health, true);
+});

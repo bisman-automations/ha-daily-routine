@@ -416,7 +416,7 @@ async def test_preview_describes_a_dry_run(hass: HomeAssistant) -> None:
             ]
         ),
     )
-    plan = coord.preview(
+    plan = await coord.preview(
         make_routine(
             actions=[
                 {"delay": 2},
