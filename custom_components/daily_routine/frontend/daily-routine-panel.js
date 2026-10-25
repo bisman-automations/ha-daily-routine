@@ -28,6 +28,32 @@ const VALUE_TRIGGERS = ["value_above", "value_below"];
 const STATE_TRIGGERS = ["state_is"];
 const TODO_DONE_TRIGGERS = ["todo_done"];
 const TODO_VERBS = { add: "Add", complete: "Complete", remove: "Remove" };
+const ACTIVITY_WINDOWS = [["today", "Today"], ["7d", "7 days"], ["30d", "30 days"]];
+const ACTIVITY_FILTERS = [["all", "All"], ["ran", "Succeeded"], ["failed", "Failed"], ["skipped", "Skipped"]];
+const ACTIVITY_OUTCOMES = { ran: "Succeeded", failed: "Failed", skipped: "Skipped" };
+const SKIP_REASON_LABELS = {
+  paused: "Routines were paused",
+  conditions_not_met: "Conditions were not met by the end of the day",
+  disabled: "Routine was turned off",
+  already_ran_today: "Already ran today",
+};
+
+// Plain words for the codes the coordinator records when a run is skipped or fails.
+function activityReason(code) {
+  if (!code) return "";
+  if (SKIP_REASON_LABELS[code]) return SKIP_REASON_LABELS[code];
+  if (code.startsWith("missing_service:")) return `Action not found: ${code.slice("missing_service:".length)}`;
+  if (code === "error:todo_list_unavailable") return "To-do list was not available";
+  if (code.startsWith("error:todo_")) return "A to-do step failed";
+  if (code.startsWith("error:")) return `Action failed: ${code.slice("error:".length)}`;
+  if (code.startsWith("conditions_failed_mid_run:")) return `Conditions stopped the run partway: ${code.slice("conditions_failed_mid_run:".length)}`;
+  return code;
+}
+
+function fmtTime(iso) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
 const TODO_OUTCOME_LABELS = {
   added: "added",
   already_on_list: "already on the list",
@@ -265,6 +291,7 @@ class DailyRoutinePanel extends HTMLElement {
     this._timer = setInterval(() => {
       if (document.hidden) return;
       if (["rooms", "room", "all", "todos"].includes(this._view.name)) this._refresh();
+      if (this._view.name === "activity") this._loadActivity(true);
     }, REFRESH_MS);
   }
 
@@ -810,12 +837,24 @@ class DailyRoutinePanel extends HTMLElement {
         }
         case "tab": {
           const tab = el.dataset.tab;
-          this._view = { name: tab === "routines" ? "all" : tab === "todos" ? "todos" : tab === "settings" ? "settings" : "rooms" };
+          this._view = { name: tab === "routines" ? "all" : tab === "todos" ? "todos" : tab === "settings" ? "settings" : tab === "activity" ? "activity" : "rooms" };
           this._draft = null;
           this._preview = null;
           this._notice = null;
+          if (tab === "activity") {
+            this._render();
+            await this._loadActivity();
+            return;
+          }
           break;
         }
+        case "activity-window":
+          this._activityWindow = el.dataset.window;
+          await this._loadActivity();
+          return;
+        case "activity-filter":
+          this._activityFilter = el.dataset.filter;
+          break;
         case "tracked-people":
           this._draft.people = this._data.people.filter((p) => p.tracked && !p.hidden).map((p) => p.entity_id);
           break;
@@ -1018,6 +1057,7 @@ class DailyRoutinePanel extends HTMLElement {
     else if (this._view.name === "room") body = this._renderRoom();
     else if (this._view.name === "all") body = this._renderAll();
     else if (this._view.name === "settings") body = this._renderSettings();
+    else if (this._view.name === "activity") body = this._renderActivity();
     else if (this._view.name === "templates") body = this._renderTemplates();
     else if (this._view.name === "editor") body = this._renderEditor();
     else if (this._view.name === "todos") body = this._renderTodos();
@@ -1036,6 +1076,7 @@ class DailyRoutinePanel extends HTMLElement {
       { id: "rooms", label: "Rooms" },
       { id: "routines", label: "Routines" },
       { id: "todos", label: "To-dos" },
+      { id: "activity", label: "Activity" },
     ];
     if (this._hass?.user?.is_admin) tabs.push({ id: "settings", label: "Settings" });
     return tabs;
@@ -1045,6 +1086,7 @@ class DailyRoutinePanel extends HTMLElement {
     if (this._view.name === "all") return "routines";
     if (["todos", "todo-editor"].includes(this._view.name)) return "todos";
     if (this._view.name === "settings") return "settings";
+    if (this._view.name === "activity") return "activity";
     return "rooms";
   }
 
@@ -1071,6 +1113,7 @@ class DailyRoutinePanel extends HTMLElement {
     if (this._view.name === "todos") return "To-dos";
     if (this._view.name === "todo-editor") return this._todoDraft?.isNew ? "New to-do rule" : "Edit to-do rule";
     if (this._view.name === "settings") return "Settings";
+    if (this._view.name === "activity") return "Activity";
     if (this._view.name === "rooms") return "Daily Routine";
     if (this._view.name === "editor") return this._draft?.isNew ? "New routine" : "Edit routine";
     if (this._view.name === "templates") return "New routine";
@@ -1390,6 +1433,80 @@ class DailyRoutinePanel extends HTMLElement {
     this._todoDraft = null;
     this._showNotice(`Saved “${result.routine.name}”.`);
     await this._load();
+  }
+
+  async _loadActivity(silent = false) {
+    if (!this._hass) return;
+    this._activityWindow = this._activityWindow || "7d";
+    this._activityFilter = this._activityFilter || "all";
+    try {
+      const data = await this._call({ type: `${DOMAIN}/activity`, window: this._activityWindow });
+      this._activity = data;
+    } catch (err) {
+      if (!silent) this._showNotice(err.message || String(err), true);
+    }
+    if (this._view.name === "activity") this._render();
+  }
+
+  _renderActivity() {
+    const windows = `<div class="chips" role="group" aria-label="Period">${ACTIVITY_WINDOWS
+      .map(([id, label]) => `<button class="${this._activityWindow === id ? "" : "ghost"}" data-act="activity-window" data-window="${id}" aria-pressed="${this._activityWindow === id}">${label}</button>`)
+      .join("")}</div>`;
+    const a = this._activity;
+    if (!a) return `${windows}<p class="muted">Loading activity…</p>`;
+
+    const t = a.totals;
+    const tile = (label, value) => `<div class="tile"><span class="muted small">${esc(label)}</span><strong>${esc(String(value))}</strong></div>`;
+    const tiles = `<div class="tiles">${tile("Triggered", t.triggered)}${tile("Succeeded", t.ran)}${tile("Failed", t.failed)}${tile("Skipped", t.skipped)}${tile("Success rate", t.success_rate === null ? "—" : `${t.success_rate}%`)}</div>`;
+
+    const attention = [];
+    for (const h of a.health) attention.push(`<li><strong>${esc(h.name)}</strong> needs attention: ${esc(h.problems.join(" "))}</li>`);
+    for (const r of a.repeated_failures) attention.push(`<li><strong>${esc(r.name)}</strong> failed ${r.count} times in a row</li>`);
+    if (a.quiet_routines.length) attention.push(`<li>No runs in this period: ${esc(a.quiet_routines.join(", "))}</li>`);
+    const attentionCard = attention.length
+      ? `<section class="card"><h3>Needs attention</h3><ul class="plain">${attention.join("")}</ul></section>`
+      : "";
+
+    const maxDay = Math.max(1, ...a.by_day.map((d) => d.ran + d.failed + d.skipped));
+    const days = a.by_day.length
+      ? `<div class="bars" role="img" aria-label="Runs per day">${a.by_day
+          .map((d) => {
+            const total = d.ran + d.failed + d.skipped;
+            const seg = (n, cls) => (n ? `<span class="seg ${cls}" style="flex:${n}"></span>` : "");
+            return `<div class="bar-col" title="${esc(d.day)}: ${total} triggered, ${d.ran} succeeded, ${d.failed} failed, ${d.skipped} skipped"><div class="bar" style="height:${Math.round((total / maxDay) * 100)}%">${seg(d.skipped, "skip")}${seg(d.failed, "fail")}${seg(d.ran, "ok")}</div><span class="muted small">${esc(d.day.slice(5))}</span></div>`;
+          })
+          .join("")}</div><p class="muted small"><span class="key ok"></span> Succeeded <span class="key fail"></span> Failed <span class="key skip"></span> Skipped</p>`
+      : `<p class="muted small">Nothing has run in this period yet.</p>`;
+
+    const reasonList = (rows, empty) => rows.length
+      ? `<ul class="plain reasons">${rows.map((r) => `<li><span>${esc(activityReason(r.reason))}</span><strong>${r.count}</strong></li>`).join("")}</ul>`
+      : `<p class="muted small">${esc(empty)}</p>`;
+
+    const byRoutine = a.by_routine.length
+      ? `<div class="table-wrap"><table><thead><tr><th>Routine</th><th>Succeeded</th><th>Failed</th><th>Skipped</th><th>Last run</th><th>Last failure</th></tr></thead><tbody>${a.by_routine
+          .map((r) => `<tr><td>${esc(r.name)}${r.enabled ? "" : ` <span class="muted small">· off</span>`}</td><td>${r.ran}</td><td>${r.failed}</td><td>${r.skipped}</td><td>${esc(fmtTime(r.last_at))}</td><td>${r.last_failure ? `${esc(fmtTime(r.last_failure.at))}<br><span class="muted small">${esc(activityReason(r.last_failure.reason))}</span>` : "—"}</td></tr>`)
+          .join("")}</tbody></table></div>`
+      : `<p class="muted small">No routines yet.</p>`;
+
+    const filter = this._activityFilter || "all";
+    const filters = `<div class="chips" role="group" aria-label="Filter activity">${ACTIVITY_FILTERS
+      .map(([id, label]) => `<button class="${filter === id ? "" : "ghost"}" data-act="activity-filter" data-filter="${id}" aria-pressed="${filter === id}">${label}</button>`)
+      .join("")}</div>`;
+    const shown = a.recent.filter((e) => filter === "all" || e.outcome === filter);
+    const events = shown.length
+      ? `<ul class="plain events">${shown
+          .map((e) => `<li><time class="muted small">${esc(fmtTime(e.at))}</time> <strong>${esc(e.name)}</strong> <span class="pill ${e.outcome === "failed" ? "error" : e.outcome === "skipped" ? "warn" : ""}">${ACTIVITY_OUTCOMES[e.outcome] || esc(e.outcome)}</span>${e.reason ? `<div class="muted small">${esc(activityReason(e.reason))}</div>` : ""}${e.outcome === "ran" && e.detail ? `<div class="muted small">${esc(e.detail)}</div>` : ""}</li>`)
+          .join("")}</ul>`
+      : `<p class="muted small">Nothing in this period matches that filter.</p>`;
+
+    return `${windows}
+      ${tiles}
+      ${attentionCard}
+      <section class="card"><h3>Runs per day</h3>${days}</section>
+      <section class="card"><h3>Why runs failed</h3>${reasonList(a.failure_reasons, "No failures in this period.")}</section>
+      <section class="card"><h3>Why runs were skipped</h3><p class="muted small">Triggered, but the conditions were not met, so nothing ran.</p>${reasonList(a.skip_reasons, "Nothing was skipped in this period.")}</section>
+      <section class="card"><h3>By routine</h3>${byRoutine}</section>
+      <section class="card"><h3>Recent activity</h3>${filters}${events}</section>`;
   }
 
   _renderSettings() {
@@ -1824,6 +1941,27 @@ const STYLES = `<style>
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
   .chip { display: inline-flex; align-items: center; gap: 4px; background: var(--secondary-background-color, #eee); border-radius: 999px; padding: 4px 10px; margin: 0; }
   .checks { display: grid; gap: 2px; max-height: 220px; overflow: auto; padding: 4px 0; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin: 12px 0; }
+  .tile { display: grid; gap: 4px; padding: 12px; border-radius: 12px; background: var(--card-background-color, #fff); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .tile strong { font-size: 22px; }
+  .bars { display: flex; align-items: flex-end; gap: 6px; height: 140px; padding-top: 8px; overflow-x: auto; }
+  .bar-col { flex: 1 0 28px; display: grid; grid-template-rows: 1fr auto; justify-items: center; height: 100%; min-width: 28px; }
+  .bar { width: 100%; align-self: end; display: flex; flex-direction: column-reverse; border-radius: 6px 6px 0 0; overflow: hidden; min-height: 2px; }
+  .seg { display: block; }
+  .seg.ok { background: var(--success-color, #43a047); }
+  .seg.fail { background: var(--error-color, #db4437); }
+  .seg.skip { background: var(--warning-color, #ffa600); }
+  .key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 8px; }
+  .key.ok { background: var(--success-color, #43a047); }
+  .key.fail { background: var(--error-color, #db4437); }
+  .key.skip { background: var(--warning-color, #ffa600); }
+  ul.plain { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 8px; }
+  ul.reasons li, ul.events li { display: flex; justify-content: space-between; gap: 12px; }
+  ul.events li { display: block; padding-bottom: 8px; border-bottom: 1px solid var(--divider-color, #eee); }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--divider-color, #eee); vertical-align: top; }
   .timing { display: grid; gap: 12px; }
   .timing label { display: grid; gap: 4px; }
   .inline { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px; align-items: center; }

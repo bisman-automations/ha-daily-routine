@@ -12,6 +12,20 @@ from .const import DOMAIN
 
 # Phone names and hidden profiles are personal, so they are redacted from the download.
 TO_REDACT = {"notify_services", "hidden_people"}
+# Routines name people and phones in their people, condition and step targets. Those ids
+# are replaced wherever they appear, however deep.
+PRIVATE_PREFIXES = ("person.", "notify.")
+REDACTED = "**REDACTED**"
+
+
+def _redact_people(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _redact_people(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_people(item) for item in value]
+    if isinstance(value, str) and value.startswith(PRIVATE_PREFIXES):
+        return REDACTED
+    return value
 
 
 async def async_get_config_entry_diagnostics(
@@ -25,8 +39,8 @@ async def async_get_config_entry_diagnostics(
         "loaded": True,
         "paused": coordinator.paused,
         "settings": async_redact_data(coordinator.settings, TO_REDACT),
-        "routines": routines,
-        "statuses": {r["id"]: coordinator.get_status(r["id"]) for r in routines},
+        "routines": _redact_people(routines),
+        "statuses": _redact_people({r["id"]: coordinator.get_status(r["id"]) for r in routines}),
         "integration_entries": sorted(
             sub.unique_id or sub.subentry_id for sub in entry.subentries.values()
         ),

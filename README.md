@@ -141,6 +141,19 @@ On **Settings** in the sidebar (administrators only), **Export routines** saves 
 
 On **Settings → Devices & services → Daily Routine**, choose *Download diagnostics* to get the routines, their status and the settings, for reporting a problem. Phone names and hidden profiles are redacted. Routines still contain entity ids, so check the file before posting it publicly.
 
+## Activity
+
+The **Activity** tab shows how routines have been doing, for **Today**, the **7 days** or the **30 days**:
+
+- **Totals:** how many runs were triggered, how many succeeded, failed or were skipped, and the success rate.
+- **Needs attention:** routines whose devices or lists are missing or unavailable right now, routines that failed several times in a row, and routines with no runs in the period.
+- **Runs per day:** a bar for each day, split into succeeded, failed and skipped.
+- **Why runs failed** and **Why runs were skipped:** each reason with how often it happened, in plain words, such as *Action not found* or *Conditions were not met by the end of the day*.
+- **By routine:** each routine's counts, its last run and its last failure.
+- **Recent activity:** the latest events, filterable to succeeded, failed or skipped.
+
+The history is saved with Home Assistant, keeps the last 30 days, and is removed for a routine when that routine is deleted.
+
 ## Settings
 
 - **People in routines.** Turn off the profiles that aren't people, such as a shared display, so they don't appear when you build a routine. A routine that already uses someone keeps them.

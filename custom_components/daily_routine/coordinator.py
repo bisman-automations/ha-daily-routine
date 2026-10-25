@@ -71,6 +71,7 @@ from .routines import (
     normalize_routine,
     uses_conditions,
 )
+from .run_log import RunLog
 from .schema import vol
 from .todo import FAILED_OUTCOMES, TODO_OUTCOME_TEXT, apply_todo_step, item_key, list_items
 
@@ -299,6 +300,7 @@ class HomeRoutinesCoordinator:
         self._store: storage.Store[dict[str, Any]] = storage.Store(
             hass, STORAGE_VERSION, STORAGE_KEY
         )
+        self.run_log = RunLog(hass)
 
     # ----- helpers -----
 
@@ -418,6 +420,14 @@ class HomeRoutinesCoordinator:
     def _record(self, routine_id: str, outcome: str, detail: str = "") -> None:
         runs = self._history.setdefault(routine_id, deque(maxlen=HISTORY_LENGTH))
         runs.append({"at": dt_util.now().isoformat(), "outcome": outcome, "detail": detail})
+        routine = self._find(routine_id)
+        name = routine["name"] if routine else routine_id
+        if outcome == "skipped":
+            self.run_log.record(routine_id, name, "skipped", reason=detail)
+        elif outcome == "ran":
+            self.run_log.record(routine_id, name, "ran", detail=detail)
+        else:
+            self.run_log.record(routine_id, name, "failed", reason=detail, detail=detail)
 
     def get_history(self, routine_id: str) -> list[dict[str, str]]:
         """Recent runs for a routine, newest first."""
@@ -453,6 +463,7 @@ class HomeRoutinesCoordinator:
 
     async def async_setup(self) -> None:
         """Load stored routines and settings. Scheduling starts in async_start."""
+        await self.run_log.async_load()
         data = await self._store.async_load() or {}
         self.paused = bool(data.get("paused", False))
         self.migrated = bool(data.get("migrated", False))
@@ -591,6 +602,7 @@ class HomeRoutinesCoordinator:
             self.routines = [r for r in self.routines if r["id"] != routine_id]
             self._runtime.pop(routine_id, None)
             self._history.pop(routine_id, None)
+            self.run_log.forget_routine(routine_id)
             await self.async_reload()
             self._sync_subentries_locked()
 

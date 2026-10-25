@@ -2,6 +2,16 @@
 
 All notable changes to the **ha-daily-routine** Home Assistant integration will be documented in this file.
 
+## [1.13.0] - 2026-10-25
+
+### Activity
+* **Activity tab:** statistics, activity and analytics in one place, for today, the last 7 days or the last 30 days. It shows triggered, succeeded, failed and skipped runs, the success rate, runs per day, why runs failed, why runs were skipped (with the conditions that were not met), each routine's last run and last failure, and recent events filterable by outcome.
+* **Needs attention:** routines whose devices or lists are missing right now, routines that failed several times in a row, and routines with no runs in the period.
+* **Run history is kept:** every run, skip and failure is saved with Home Assistant for 30 days, so the Activity tab survives restarts. A deleted routine's history is removed with it.
+
+### Fixed
+* **Diagnostics:** person and notify entity ids inside routines are replaced in the download, not just in the settings.
+
 ## [1.12.1] - 2026-10-24
 
 ### Fixed

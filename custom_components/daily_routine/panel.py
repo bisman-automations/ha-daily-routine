@@ -11,10 +11,12 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .coordinator import HomeRoutinesCoordinator, list_areas, list_people, notify_targets
 from .routines import normalize_routine
+from .run_log import WINDOWS, summarize
 from .schema import vol
 
 _LOGGER = logging.getLogger(__name__)
@@ -143,6 +145,7 @@ def async_setup_panel_api(hass: HomeAssistant) -> None:
         ws_set_paused,
         ws_save_settings,
         ws_status,
+        ws_activity,
         ws_export,
         ws_import,
     ):
@@ -160,6 +163,31 @@ async def ws_overview(
         connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
         return
     connection.send_result(msg["id"], _overview(hass, coordinator))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/activity",
+        vol.Optional("window", default="7d"): vol.In(WINDOWS),
+    }
+)
+@websocket_api.async_response
+async def ws_activity(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Statistics, activity and health for the Activity tab, for one window."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    now = dt_util.now()
+    summary = summarize(coordinator.run_log.events(), msg["window"], now, coordinator.routines)
+    summary["health"] = [
+        {"id": r["id"], "name": r["name"], "problems": problems}
+        for r in coordinator.routines
+        if r["enabled"] and (problems := coordinator.health(r))
+    ]
+    connection.send_result(msg["id"], summary)
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/status"})

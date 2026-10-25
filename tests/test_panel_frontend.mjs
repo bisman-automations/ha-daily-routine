@@ -1051,3 +1051,62 @@ test("typing in a timing box does not save until the box is left", () => {
   panel._onField({ target: { dataset: { setting: "startup_quiet_minutes" }, value: "7" } }, true);
   assert.equal(sent.length, 0);
 });
+
+const activityFixture = {
+  window: "7d",
+  totals: { triggered: 5, ran: 2, failed: 1, skipped: 2, success_rate: 67 },
+  by_routine: [
+    {
+      id: "lights", name: "Lights off", enabled: true, ran: 2, failed: 1, skipped: 2,
+      last_at: "2026-10-25T14:00:00+00:00", last_outcome: "failed",
+      last_failure: { at: "2026-10-25T14:00:00+00:00", reason: "missing_service:light.turn_off" },
+      failing_in_a_row: 1,
+    },
+  ],
+  failure_reasons: [{ reason: "missing_service:light.turn_off", count: 1 }],
+  skip_reasons: [{ reason: "paused", count: 2 }],
+  by_day: [{ day: "2026-10-25", ran: 2, failed: 1, skipped: 2 }],
+  recent: [
+    { at: "2026-10-25T14:00:00+00:00", routine_id: "lights", name: "Lights off", outcome: "failed", reason: "missing_service:light.turn_off", detail: "" },
+    { at: "2026-10-25T13:00:00+00:00", routine_id: "lights", name: "Lights off", outcome: "skipped", reason: "paused", detail: "" },
+    { at: "2026-10-25T12:00:00+00:00", routine_id: "lights", name: "Lights off", outcome: "ran", reason: "", detail: "Ran 2 steps" },
+  ],
+  quiet_routines: ["Lock up"],
+  repeated_failures: [],
+  health: [{ id: "lights", name: "Lights off", problems: ["Light is unavailable right now."] }],
+};
+
+test("activity tab shows totals, why runs failed or were skipped, and what needs attention", () => {
+  const panel = makePanel();
+  panel._view = { name: "activity" };
+  panel._activity = structuredClone(activityFixture);
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /data-tab="activity"/);
+  assert.match(html, /<strong>67%<\/strong>/);
+  assert.match(html, /Action not found: light\.turn_off/);
+  assert.match(html, /Routines were paused/);
+  assert.match(html, /Lock up/);
+  assert.match(html, /Light is unavailable right now\./);
+  assert.match(html, /<td>Lights off<\/td>/);
+});
+
+test("activity filter keeps only the chosen outcome in recent activity", () => {
+  const panel = makePanel();
+  panel._view = { name: "activity" };
+  panel._activity = structuredClone(activityFixture);
+  panel._activityFilter = "failed";
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Action not found/);
+  assert.doesNotMatch(html, /Ran 2 steps/);
+  assert.doesNotMatch(html, /pill warn">Skipped/, "skipped runs are left out of the failed filter");
+});
+
+test("activity tab says it is loading until the first answer arrives", () => {
+  const panel = makePanel();
+  panel._view = { name: "activity" };
+  panel._activity = null;
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /Loading activity/);
+});
