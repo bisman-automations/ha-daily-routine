@@ -83,7 +83,7 @@ def async_sync_routine_devices(
 def _link_routine_device(
     registry: dr.DeviceRegistry,
     hub: dr.DeviceEntry,
-    target: dr.DeviceEntry | None,
+    target: dr.DeviceEntry | dr.ChildDeviceEntry | None,
     routine: dict[str, Any],
     entry: ConfigEntry,
     subentry_id: str,
@@ -93,6 +93,11 @@ def _link_routine_device(
     Like other integrations, the service device takes on the linked device's identifiers and
     connections, so Home Assistant lists it as sharing that hardware. Where Home Assistant
     refuses to share them, it falls back to a plain link ("Connected via").
+
+    On newer Home Assistant the chosen device can be a child device, which has
+    identifiers but no connections (reading them is deprecated), so only a full
+    device's connections are copied. `ChildDeviceEntry` is only named in the type
+    hint, so older Home Assistant versions, which don't have it, still work.
     """
     device = registry.async_get_or_create(
         config_entry_id=entry.entry_id,
@@ -106,7 +111,9 @@ def _link_routine_device(
         identifiers, connections, via_id = own, set(), hub.id
     else:
         identifiers = own | {i for i in target.identifiers if i[0] != DOMAIN}
-        connections = set(target.connections)
+        connections = (
+            set(target.connections) if isinstance(target, dr.DeviceEntry) else set()
+        )
         via_id = None
     try:
         registry.async_update_device(
