@@ -1,17 +1,17 @@
-# Daily Routine
-
 <p align="center">
-  <img src="custom_components/daily_routine/brand/icon.png" alt="Daily Routine logo" width="128">
+  <img src="https://raw.githubusercontent.com/bisman-automations/ha-daily-routine/main/custom_components/daily_routine/brand/icon.png" alt="Daily Routine icon" width="128">
 </p>
 
+# Daily Routine
+
+[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-2026.9%2B-blue.svg)](https://www.home-assistant.io/)
+[![GitHub Release](https://img.shields.io/github/v/release/bisman-automations/ha-daily-routine)](https://github.com/bisman-automations/ha-daily-routine/releases)
+[![Test](https://github.com/bisman-automations/ha-daily-routine/actions/workflows/test.yml/badge.svg)](https://github.com/bisman-automations/ha-daily-routine/actions/workflows/test.yml)
+[![Validate](https://github.com/bisman-automations/ha-daily-routine/actions/workflows/validate.yml/badge.svg)](https://github.com/bisman-automations/ha-daily-routine/actions/workflows/validate.yml)
+[![License](https://img.shields.io/github/license/bisman-automations/ha-daily-routine)](LICENSE)
+
 **Room-by-room, safety-aware daily routines for Home Assistant.** Every room you already have in Home Assistant appears in the sidebar. Open a room, add a routine, done. Nothing to set up twice.
-
-[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration)
-[![GitHub release](https://img.shields.io/github/v/release/bisman-automations/ha-daily-routine)](https://github.com/bisman-automations/ha-daily-routine/releases)
-
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=bisman-automations&repository=ha-daily-routine&category=integration)
-
----
 
 ## What it does
 
@@ -32,28 +32,32 @@
 - **Notifications** on run, skip, or failure (failures are on by default).
 - **Status sensors** per routine (`idle`, `waiting`, `running`, `skipped`, `error`) for dashboards and automations.
 
----
-
-## Install
+## Installation
 
 ### HACS
 
-1. Click the badge above, or in HACS add `https://github.com/bisman-automations/ha-daily-routine` as a custom repository of type **Integration**.
-2. Install **Daily Routine**, then restart Home Assistant.
-3. *Settings → Devices & services → Add integration* → **Daily Routine**.
-4. Open **Daily Routine** in the sidebar.
+[![Open your Home Assistant instance and open this repository in HACS.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=bisman-automations&repository=ha-daily-routine&category=integration)
 
-Requires Home Assistant 2026.9.0 or newer.
+1. Click the button above, or in HACS open the menu, choose **Custom repositories**, and add `https://github.com/bisman-automations/ha-daily-routine` as an **Integration**.
+2. Download **Daily Routine** and restart Home Assistant.
+
+Requires **Home Assistant 2026.9 or newer**.
 
 ### Manual
 
-Copy `custom_components/daily_routine` into your `config/custom_components/` folder, restart, and add the integration.
+Download `daily_routine.zip` from the [latest release](https://github.com/bisman-automations/ha-daily-routine/releases/latest), unzip it into `config/custom_components/daily_routine/`, and restart Home Assistant.
 
 ### Upgrading from 1.0.0
 
 Your routines are moved into the new storage automatically on the first start. Old per-routine entries become empty entries titled *Daily Routine (migrated – safe to delete)*. Delete them when you are happy with the new setup.
 
----
+## Setup
+
+[![Open your Home Assistant instance and start setting up Daily Routine.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=daily_routine)
+
+Or go to **Settings → Devices & services → Add integration → Daily Routine**.
+
+Then open **Daily Routine** in the sidebar. Rooms come from your Home Assistant areas, so there is nothing else to set up.
 
 ## Using the sidebar
 
@@ -75,8 +79,6 @@ Each routine card has **Run now**, **Edit**, **Duplicate**, **Enable/Disable**, 
 ## Routines as devices
 
 Each routine is its own service under the Daily Routine integration. It is linked to the device you picked: on the routine's page it shows *Connected via*, and on that device's page it appears under *Linked devices*, the same way other integrations' services do. Routines without a device link to the **Daily Routine** device. Deleting a routine removes its service. Home Assistant lists one service per physical device under *Linked devices*, so when several routines use the same device, the others show only under *Connected via*.
-
----
 
 ## Editing routines in Home Assistant
 
@@ -131,7 +133,6 @@ How the rules behave:
 - Pausing or deleting a rule does not change the items already on the list.
 
 To run other steps when an item is checked off, make a routine with the **When an item is checked off a to-do list** trigger. Name the item, or leave it empty for any item.
-
 
 ## Backup
 
@@ -192,8 +193,6 @@ The history is saved with Home Assistant, keeps the last 30 days, and is removed
 - **Device changes to a state** runs once each time the device moves into one of its states. If Home Assistant restarts while the device has changed and is still in one of its states, the routine runs once after startup.
 - **Outside the window** a crossing is ignored. The routine does not catch up when the window opens. It runs at the next crossing inside the window.
 
----
-
 ## Services
 
 | Service | Description |
@@ -220,8 +219,6 @@ Entities:
 
 Every event includes `routine_id` and `name`.
 
----
-
 ## Safety behaviour
 
 - Missing, `unknown`, or `unavailable` people or sensors → the condition fails and the routine does not run.
@@ -234,20 +231,51 @@ Every event includes `routine_id` and `name`.
 - Pausing and resuming takes effect immediately.
 - This is **not a security system**. Test with harmless steps before using locks or alarms.
 
----
+## Troubleshooting
+
+### Diagnostics and debug logs
+
+When something goes wrong, download diagnostics from **Settings → Devices & services → Daily Routine → ⋮ → Download diagnostics** and check the file before you share it.
+
+For debug logs, use **Enable debug logging** on the integration page, or add this to `configuration.yaml` and restart:
+
+```yaml
+logger:
+  logs:
+    custom_components.daily_routine: debug
+```
+
+Then open an [issue](https://github.com/bisman-automations/ha-daily-routine/issues/new/choose) with the diagnostics, the log, and your Home Assistant and Daily Routine versions.
 
 ## Development
 
 - Routines live in Home Assistant storage (`.storage/daily_routine.routines`). The sidebar talks to them through websocket commands in `panel.py`.
 - Pure routine validation is in `routines.py`. Scheduling and execution are in `coordinator.py`. Room discovery uses the area, device, and entity registries.
-- Tests:
-  - `pip install -r requirements_test.txt`
-  - `pytest` (Home Assistant test harness, covering scheduling, safety, migration, and setup)
-  - `node --test tests/test_panel_frontend.mjs` (sidebar panel smoke tests)
-- Version lives in `custom_components/daily_routine/manifest.json`. See `CHANGELOG.md`.
+- The Python tests cover scheduling, safety, migration and setup; `tests/test_panel_frontend.mjs` holds the sidebar panel smoke tests.
 
----
+Tests run inside a real Home Assistant through
+[pytest-homeassistant-custom-component](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component).
+You need Python 3.14 for the current Home Assistant.
 
-## Licence and feedback
+```bash
+python3.14 -m venv .venv && . .venv/bin/activate
+pip install -r requirements_test.txt
+ruff check . && ruff format --check .
+pytest
+```
 
-MIT licensed (see [LICENSE](LICENSE)). Issues and pull requests welcome: https://github.com/bisman-automations/ha-daily-routine/issues
+The frontend tests run with `node --test tests/*.mjs`.
+
+To test against the oldest supported Home Assistant (2026.9), use Python 3.14 and
+`pip install -r requirements_test_min.txt` instead.
+
+CI runs the same checks on every push and pull request, on both Home Assistant
+versions, plus hassfest, HACS validation and the shared repo standards, using the
+workflows in [bisman-automations/.github](https://github.com/bisman-automations/.github).
+Releases are drafted from [CHANGELOG.md](CHANGELOG.md); see [CLAUDE.md](CLAUDE.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+Issues and pull requests welcome: https://github.com/bisman-automations/ha-daily-routine/issues
