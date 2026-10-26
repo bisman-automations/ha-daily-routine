@@ -2,12 +2,12 @@
   "domain": "daily_routine",
   "name": "Daily Routine",
   "codeowners": [
-    "@bisman-automations"
+    "@donavanbecker"
   ],
   "config_flow": true,
   "dependencies": [
-    "http",
     "frontend",
+    "http",
     "panel_custom"
   ],
   "documentation": "https://github.com/bisman-automations/ha-daily-routine",
