@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.1] - 2026-10-26
+
+### Changed
+
+- The README follows the same layout as the other bisman-automations integrations: a button that opens it in HACS, a button that starts setup, and troubleshooting steps for debug logs and diagnostics.
+- Each release now includes `daily_routine.zip` for installing without HACS.
+
+### Fixed
+
+- Setup and options screens show their labels and descriptions instead of raw keys: the English text is now shipped where Home Assistant reads it.
+- Linking a routine to a child device on newer Home Assistant no longer reads that device's connections, which Home Assistant deprecates.
+
 ## [1.13.0] - 2026-10-25
 
 ### Added
@@ -226,7 +238,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
-[Unreleased]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.13.0...HEAD
+[Unreleased]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.13.1...HEAD
+[1.13.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.13.0...v1.13.1
 [1.13.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.12.1...v1.13.0
 [1.12.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.11.0...v1.12.0
