@@ -1,0 +1,76 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Daily Routine",
+        "description": "Adds Daily Routine. Routines are created in the Daily Routine sidebar panel, room by room, from the rooms you already have in Home Assistant."
+      }
+    },
+    "abort": {
+      "single_instance": "Daily Routine is already set up."
+    }
+  },
+  "config_subentries": {
+    "routine": {
+      "entry_type": "Routine",
+      "initiate_flow": {
+        "user": "Add routine",
+        "reconfigure": "Edit routine"
+      },
+      "step": {
+        "user": {
+          "title": "Add routine",
+          "description": "Routines are made in the Daily Routine sidebar."
+        },
+        "reconfigure": {
+          "title": "Edit {name}",
+          "description": "Everything here is also in the Daily Routine sidebar, and changes show in both. Steps: one per line, for example light.turn_off | light.hall, or wait 30. Extra conditions: one per line, for example lock.front_door = unlocked, presence everyone away | person.a, person.b | zone.home, or sensors quiet 10 | binary_sensor.hall_motion.",
+          "data": {
+            "name": "Name",
+            "enabled": "Turned on",
+            "trigger": "When it runs",
+            "time": "Time (for a set time, HH:MM)",
+            "offset_minutes": "Offset in minutes (for sunrise or sunset; negative is before)",
+            "days": "Days",
+            "zone": "Place (for leave and arrive triggers)",
+            "room": "Room (leave empty for the whole house)",
+            "device_id": "Linked device",
+            "people": "People (for leave and arrive triggers)",
+            "sensors": "Motion or occupancy sensors (for a room-is-quiet trigger)",
+            "clear_minutes": "Quiet for (minutes, for a room-is-quiet trigger)",
+            "active_from": "Only run from (HH:MM)",
+            "active_to": "Only run until (HH:MM)",
+            "value_entity": "Sensor to watch",
+            "value_threshold": "Level to watch for",
+            "watch_entity": "Device or to-do list to watch",
+            "watch_item": "To-do item to watch for (leave empty for any item)",
+            "watch_states": "States to watch for, separated by commas (for example on, or locked)",
+            "hold_minutes": "Wait this many minutes before running (0 runs at once)",
+            "off_threshold": "Turn back off below this level (optional)",
+            "conditions_match": "Extra conditions",
+            "catch_up_minutes": "If missed after a restart, still run within (minutes, 0 = never)",
+            "retries": "Retry a failed step (times)",
+            "repeat": "Run every time (not just once a day)",
+            "skip_noop": "Skip steps that are already done",
+            "notify_on_run": "Notify me when it runs",
+            "notify_on_skip": "Notify me when it is skipped",
+            "notify_on_error": "Notify me when it fails",
+            "notify_on_health": "Notify me when it needs attention (a device or list is missing or unavailable)",
+            "actions": "Steps (one per line)",
+            "conditions": "Extra conditions (one per line)"
+          }
+        }
+      },
+      "abort": {
+        "updated": "Routine saved.",
+        "use_sidebar": "Routines are made in the Daily Routine sidebar.",
+        "routine_missing": "This routine no longer exists."
+      },
+      "error": {
+        "invalid_steps": "{reason}",
+        "invalid_conditions": "{reason}",
+        "invalid_routine": "This routine can't be saved: {reason}"
+      }
+    }
+  }
+}
