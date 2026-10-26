@@ -40,7 +40,9 @@ async def async_get_config_entry_diagnostics(
         "paused": coordinator.paused,
         "settings": async_redact_data(coordinator.settings, TO_REDACT),
         "routines": _redact_people(routines),
-        "statuses": _redact_people({r["id"]: coordinator.get_status(r["id"]) for r in routines}),
+        "statuses": _redact_people(
+            {r["id"]: coordinator.get_status(r["id"]) for r in routines}
+        ),
         "integration_entries": sorted(
             sub.unique_id or sub.subentry_id for sub in entry.subentries.values()
         ),

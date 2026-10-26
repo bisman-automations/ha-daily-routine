@@ -12,12 +12,16 @@ from homeassistant.config_entries import (
     SubentryFlowResult,
 )
 from homeassistant.core import callback
-from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers import selector
+from homeassistant.helpers import device_registry as dr, selector
 
 from .const import DOMAIN, ROUTINE_SUBENTRY, TRIGGERS, WEEKDAYS
 from .schema import vol
-from .text_format import conditions_to_text, parse_conditions_text, parse_steps_text, steps_to_text
+from .text_format import (
+    conditions_to_text,
+    parse_conditions_text,
+    parse_steps_text,
+    steps_to_text,
+)
 
 TRIGGER_NAMES = {
     "time": "At a set time",
@@ -39,7 +43,9 @@ class DailyRoutineConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
         if self._async_current_entries():
             return self.async_abort(reason="single_instance")
         if user_input is not None:
@@ -124,7 +130,9 @@ def _routine_from_form(
         "people": list(values.get("people") or []),
         "sensors": list(values.get("sensors") or []),
         "clear_minutes": int(values.get("clear_minutes") or 0),
-        "active_from": _hhmmss(values["active_from"]) if values.get("active_from") else None,
+        "active_from": _hhmmss(values["active_from"])
+        if values.get("active_from")
+        else None,
         "active_to": _hhmmss(values["active_to"]) if values.get("active_to") else None,
         "value_entity": values.get("value_entity") or None,
         "value_threshold": values.get("value_threshold"),
@@ -184,31 +192,38 @@ def _form_schema(hass: Any, values: dict[str, Any]) -> vol.Schema:
         {
             vol.Required("name", default=values.get("name", "")): str,
             vol.Required("enabled", default=bool(values.get("enabled", True))): bool,
-            vol.Required("trigger", default=values.get("trigger", "time")): selector.SelectSelector(
+            vol.Required(
+                "trigger", default=values.get("trigger", "time")
+            ): selector.SelectSelector(
                 selector.SelectSelectorConfig(
                     options=[
-                        selector.SelectOptionDict(value=t, label=TRIGGER_NAMES.get(t, t))
+                        selector.SelectOptionDict(
+                            value=t, label=TRIGGER_NAMES.get(t, t)
+                        )
                         for t in TRIGGERS
                     ],
                     mode=selector.SelectSelectorMode.DROPDOWN,
                 )
             ),
             vol.Required("time", default=values.get("time", "07:00")): str,
-            vol.Required("offset_minutes", default=values.get("offset_minutes") or 0): number(
-                -720, 720
-            ),
+            vol.Required(
+                "offset_minutes", default=values.get("offset_minutes") or 0
+            ): number(-720, 720),
             vol.Required(
                 "days", default=values.get("days") or list(WEEKDAYS)
             ): selector.SelectSelector(
                 selector.SelectSelectorConfig(
                     options=[
-                        selector.SelectOptionDict(value=d, label=d.capitalize()) for d in WEEKDAYS
+                        selector.SelectOptionDict(value=d, label=d.capitalize())
+                        for d in WEEKDAYS
                     ],
                     multiple=True,
                     mode=selector.SelectSelectorMode.LIST,
                 )
             ),
-            vol.Required("zone", default=values.get("zone") or "zone.home"): entity("zone"),
+            vol.Required("zone", default=values.get("zone") or "zone.home"): entity(
+                "zone"
+            ),
             optional("room"): selector.AreaSelector(selector.AreaSelectorConfig()),
             optional("device_id"): selector.SelectSelector(
                 selector.SelectSelectorConfig(
@@ -217,9 +232,9 @@ def _form_schema(hass: Any, values: dict[str, Any]) -> vol.Schema:
             ),
             optional("people"): entity("person", multiple=True),
             optional("sensors"): entity("binary_sensor", multiple=True),
-            vol.Required("clear_minutes", default=values.get("clear_minutes") or 0): number(
-                0, 1440
-            ),
+            vol.Required(
+                "clear_minutes", default=values.get("clear_minutes") or 0
+            ): number(0, 1440),
             optional("active_from"): str,
             optional("active_to"): str,
             optional("value_entity"): entity("sensor"),
@@ -227,33 +242,44 @@ def _form_schema(hass: Any, values: dict[str, Any]) -> vol.Schema:
             optional("off_threshold"): number(-1_000_000, 1_000_000, "any"),
             optional("watch_entity"): selector.EntitySelector(),
             optional("watch_states"): str,
-            vol.Required("hold_minutes", default=values.get("hold_minutes") or 0): number(0, 1440),
+            vol.Required(
+                "hold_minutes", default=values.get("hold_minutes") or 0
+            ): number(0, 1440),
             optional("watch_item"): str,
             vol.Required(
                 "conditions_match", default=values.get("conditions_match") or "all"
             ): selector.SelectSelector(
                 selector.SelectSelectorConfig(
-                    options=CONDITION_MATCH_OPTIONS, mode=selector.SelectSelectorMode.DROPDOWN
+                    options=CONDITION_MATCH_OPTIONS,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
                 )
             ),
-            vol.Required("conditions", default=values.get("conditions", "")): selector.TextSelector(
-                selector.TextSelectorConfig(multiline=True)
-            ),
-            vol.Required("catch_up_minutes", default=values.get("catch_up_minutes") or 0): number(
-                0, 180
-            ),
+            vol.Required(
+                "conditions", default=values.get("conditions", "")
+            ): selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
+            vol.Required(
+                "catch_up_minutes", default=values.get("catch_up_minutes") or 0
+            ): number(0, 180),
             vol.Required("retries", default=values.get("retries") or 0): number(0, 3),
             vol.Required("repeat", default=bool(values.get("repeat"))): bool,
-            vol.Required("skip_noop", default=bool(values.get("skip_noop", True))): bool,
-            vol.Required("notify_on_run", default=bool(values.get("notify_on_run"))): bool,
-            vol.Required("notify_on_skip", default=bool(values.get("notify_on_skip"))): bool,
+            vol.Required(
+                "skip_noop", default=bool(values.get("skip_noop", True))
+            ): bool,
+            vol.Required(
+                "notify_on_run", default=bool(values.get("notify_on_run"))
+            ): bool,
+            vol.Required(
+                "notify_on_skip", default=bool(values.get("notify_on_skip"))
+            ): bool,
             vol.Required(
                 "notify_on_error", default=bool(values.get("notify_on_error", True))
             ): bool,
-            vol.Required("notify_on_health", default=bool(values.get("notify_on_health"))): bool,
-            vol.Required("actions", default=values.get("actions", "")): selector.TextSelector(
-                selector.TextSelectorConfig(multiline=True)
-            ),
+            vol.Required(
+                "notify_on_health", default=bool(values.get("notify_on_health"))
+            ): bool,
+            vol.Required(
+                "actions", default=values.get("actions", "")
+            ): selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
         }
     )
 
@@ -261,7 +287,9 @@ def _form_schema(hass: Any, values: dict[str, Any]) -> vol.Schema:
 class RoutineSubentryFlow(ConfigSubentryFlow):
     """Edit one routine from Home Assistant. New routines are made in the sidebar."""
 
-    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
         return self.async_abort(reason="use_sidebar")
 
     async def async_step_reconfigure(

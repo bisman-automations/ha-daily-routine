@@ -10,8 +10,8 @@ completes or removes only an open item. A dry run reads the list and changes not
 from __future__ import annotations
 
 import asyncio
-import re
 from datetime import date, timedelta
+import re
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -35,7 +35,9 @@ def normalize_todo_step(raw: Any, index: int) -> dict[str, Any]:
         raise vol.Invalid(f"Step {index}: the to-do step must be an object.")
     op = str(raw.get("op") or "").strip().lower()
     if op not in TODO_OPS:
-        raise vol.Invalid(f"Step {index}: the to-do action must be add, complete or remove.")
+        raise vol.Invalid(
+            f"Step {index}: the to-do action must be add, complete or remove."
+        )
     todo_list = str(raw.get("list") or "").strip()
     if not TODO_LIST_RE.fullmatch(todo_list):
         raise vol.Invalid(f"Step {index}: pick the to-do list.")
@@ -63,7 +65,9 @@ def _normalize_due(raw_due: Any, op: str, index: int) -> dict[str, Any] | None:
         raise vol.Invalid(f"Step {index}: the due date check must be an object.")
     within = raw_due.get("within")
     if within is not None and (
-        isinstance(within, bool) or not isinstance(within, int) or not 0 <= within <= MAX_DUE_DAYS
+        isinstance(within, bool)
+        or not isinstance(within, int)
+        or not 0 <= within <= MAX_DUE_DAYS
     ):
         raise vol.Invalid(
             f"Step {index}: due within must be 0 to {MAX_DUE_DAYS} days, or any date."
@@ -122,7 +126,9 @@ def item_key(text: Any) -> str:
     return _clean(text).casefold()
 
 
-async def open_items(hass: HomeAssistant, entity_id: str) -> list[dict[str, Any]] | None:
+async def open_items(
+    hass: HomeAssistant, entity_id: str
+) -> list[dict[str, Any]] | None:
     """Items on the list that are not done yet, or None when the list cannot be read."""
     return await list_items(hass, entity_id, ["needs_action"])
 
@@ -142,7 +148,9 @@ async def list_items(
     except HomeAssistantError:
         return None
     entity_result = response.get(entity_id) if isinstance(response, dict) else None
-    raw_items = entity_result.get("items", []) if isinstance(entity_result, dict) else []
+    raw_items = (
+        entity_result.get("items", []) if isinstance(entity_result, dict) else []
+    )
     if not isinstance(raw_items, list):
         return []
     return [item for item in raw_items if isinstance(item, dict)]
@@ -216,11 +224,18 @@ async def apply_todo_step(
         if dry_run:
             return "would_remove"
 
-    ref = (match.get("uid") or match.get("summary")) if match is not None else step["item"]
+    ref = (
+        (match.get("uid") or match.get("summary"))
+        if match is not None
+        else step["item"]
+    )
     try:
         if op == "add":
             await hass.services.async_call(
-                "todo", "add_item", {"entity_id": entity_id, "item": step["item"]}, blocking=True
+                "todo",
+                "add_item",
+                {"entity_id": entity_id, "item": step["item"]},
+                blocking=True,
             )
             return "added"
         if op == "complete":

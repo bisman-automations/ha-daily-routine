@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
-from homeassistant.core import HomeAssistant
 
 from custom_components.daily_routine.schema import vol
 from custom_components.daily_routine.text_format import parse_steps_text, steps_to_text
@@ -14,6 +13,7 @@ from custom_components.daily_routine.todo import (
     due_allows,
     normalize_todo_step,
 )
+from homeassistant.core import HomeAssistant
 
 from .test_todo_rules import GROCERIES, FakeTodo
 
@@ -65,17 +65,21 @@ def test_due_check_is_kept_for_complete_and_remove_only() -> None:
     )
     assert step["due"] == {"within": 1, "overdue": True, "undated": False}
     with pytest.raises(vol.Invalid):
-        normalize_todo_step({"op": "add", "list": GROCERIES, "item": "Milk", "due": _window(1)}, 1)
+        normalize_todo_step(
+            {"op": "add", "list": GROCERIES, "item": "Milk", "due": _window(1)}, 1
+        )
 
 
 def test_due_window_must_be_a_sensible_number_of_days() -> None:
     with pytest.raises(vol.Invalid):
         normalize_todo_step(
-            {"op": "complete", "list": GROCERIES, "item": "Milk", "due": _window(400)}, 1
+            {"op": "complete", "list": GROCERIES, "item": "Milk", "due": _window(400)},
+            1,
         )
     with pytest.raises(vol.Invalid):
         normalize_todo_step(
-            {"op": "complete", "list": GROCERIES, "item": "Milk", "due": _window(True)}, 1
+            {"op": "complete", "list": GROCERIES, "item": "Milk", "due": _window(True)},
+            1,
         )
 
 
@@ -89,7 +93,9 @@ def test_one_line_syntax_carries_the_due_options_both_ways() -> None:
 def test_one_line_syntax_without_due_options_is_unchanged() -> None:
     action = parse_steps_text("todo complete | todo.groceries | Buy milk")[0]["todo"]
     assert "due" not in action
-    assert steps_to_text([{"todo": action}]) == "todo complete | todo.groceries | Buy milk"
+    assert (
+        steps_to_text([{"todo": action}]) == "todo complete | todo.groceries | Buy milk"
+    )
 
 
 def test_one_line_due_option_errors_name_the_line() -> None:
@@ -102,7 +108,15 @@ async def test_item_outside_the_window_is_left_on_the_list(
 ) -> None:
     freezer.move_to("2026-10-23 12:00:00")
     fake = FakeTodo(
-        hass, [{"uid": "1", "summary": "Milk", "status": "needs_action", "due": "2026-10-24"}]
+        hass,
+        [
+            {
+                "uid": "1",
+                "summary": "Milk",
+                "status": "needs_action",
+                "due": "2026-10-24",
+            }
+        ],
     )
     step = {"op": "complete", "list": GROCERIES, "item": "Milk", "due": _window(0)}
 
@@ -116,7 +130,8 @@ async def test_item_inside_the_window_is_completed(
 ) -> None:
     freezer.move_to("2026-10-23 12:00:00")
     fake = FakeTodo(
-        hass, [{"uid": "1", "summary": "Milk", "status": "needs_action", "due": TODAY_ISO}]
+        hass,
+        [{"uid": "1", "summary": "Milk", "status": "needs_action", "due": TODAY_ISO}],
     )
     step = {"op": "complete", "list": GROCERIES, "item": "Milk", "due": _window(0)}
 
@@ -129,7 +144,12 @@ async def test_remove_respects_the_window_too(
 ) -> None:
     freezer.move_to("2026-10-23 12:00:00")
     fake = FakeTodo(hass, [{"uid": "1", "summary": "Milk", "status": "needs_action"}])
-    step = {"op": "remove", "list": GROCERIES, "item": "Milk", "due": _window(0, undated=False)}
+    step = {
+        "op": "remove",
+        "list": GROCERIES,
+        "item": "Milk",
+        "due": _window(0, undated=False),
+    }
 
     assert await apply_todo_step(hass, step, dry_run=False) == "not_due"
     assert fake.removes == []

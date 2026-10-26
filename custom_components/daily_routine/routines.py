@@ -113,11 +113,15 @@ def parse_delay(value: Any) -> float:
         except ValueError:
             parts = text.split(":")
             if len(parts) not in (2, 3):
-                raise vol.Invalid("Delay must be a number of seconds or HH:MM:SS.") from None
+                raise vol.Invalid(
+                    "Delay must be a number of seconds or HH:MM:SS."
+                ) from None
             try:
                 nums = [int(p) for p in parts]
             except ValueError as err:
-                raise vol.Invalid("Delay must be a number of seconds or HH:MM:SS.") from err
+                raise vol.Invalid(
+                    "Delay must be a number of seconds or HH:MM:SS."
+                ) from err
             seconds = (
                 float(nums[0] * 60 + nums[1])
                 if len(nums) == 2
@@ -225,8 +229,16 @@ def _normalize_action(raw: Any, index: int) -> dict[str, Any]:
     return action
 
 
-def _presence_condition(people: list[str], zone: str, who: str, where: str) -> dict[str, Any]:
-    return {"kind": "presence", "people": people, "zone": zone, "who": who, "where": where}
+def _presence_condition(
+    people: list[str], zone: str, who: str, where: str
+) -> dict[str, Any]:
+    return {
+        "kind": "presence",
+        "people": people,
+        "zone": zone,
+        "who": who,
+        "where": where,
+    }
 
 
 def _sensor_condition(sensors: list[str], mode: str, minutes: int) -> dict[str, Any]:
@@ -253,7 +265,9 @@ def _normalize_condition(raw: Any, index: int) -> dict[str, Any]:
     if kind == "sensors":
         sensors = _entity_list(raw.get("sensors"), f"Condition {index}")
         if not sensors:
-            raise vol.Invalid("Pick the motion or occupancy sensors for this condition.")
+            raise vol.Invalid(
+                "Pick the motion or occupancy sensors for this condition."
+            )
         mode = str(raw.get("mode") or "quiet")
         if mode not in SENSOR_MODES:
             raise vol.Invalid("A sensor condition is quiet or active.")
@@ -297,7 +311,9 @@ def _conditions_from(
     for item in _as_list(raw.get("require_states")):
         if not isinstance(item, dict):
             raise vol.Invalid("Extra conditions must be objects.")
-        conditions.append(_normalize_condition({"kind": "state", **item}, len(conditions) + 1))
+        conditions.append(
+            _normalize_condition({"kind": "state", **item}, len(conditions) + 1)
+        )
     return conditions
 
 
@@ -308,7 +324,9 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
 
     rid = str(raw.get("id") or "").strip()
     if not ROUTINE_ID_RE.fullmatch(rid):
-        raise vol.Invalid("Routine id may only use letters, digits, _ or - (max 64 characters).")
+        raise vol.Invalid(
+            "Routine id may only use letters, digits, _ or - (max 64 characters)."
+        )
     name = str(raw.get("name") or "").strip()
     if not name:
         raise vol.Invalid("Give the routine a name.")
@@ -368,7 +386,10 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         if raw.get("value_threshold") in (None, ""):
             raise vol.Invalid("Set the level to watch for.")
         value_threshold = _number(raw.get("value_threshold"), "The level")
-        if trigger == TRIGGER_VALUE_ABOVE and raw.get("off_threshold") not in (None, ""):
+        if trigger == TRIGGER_VALUE_ABOVE and raw.get("off_threshold") not in (
+            None,
+            "",
+        ):
             off_threshold = _number(raw.get("off_threshold"), "The turn-off level")
             if off_threshold >= value_threshold:
                 raise vol.Invalid("The turn-off level must be below the turn-on level.")
@@ -391,7 +412,9 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
                 raise vol.Invalid("Set the state to watch for.")
             hold_minutes = _int(raw.get("hold_minutes") or 0, 0, 1440, "The hold time")
 
-    active_from = normalize_time(raw.get("active_from")) if raw.get("active_from") else None
+    active_from = (
+        normalize_time(raw.get("active_from")) if raw.get("active_from") else None
+    )
     active_to = normalize_time(raw.get("active_to")) if raw.get("active_to") else None
     if bool(active_from) != bool(active_to):
         raise vol.Invalid("Set both ends of 'only run between', or neither.")
@@ -405,7 +428,9 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         raise vol.Invalid(f"A routine can have at most {MAX_ACTIONS} steps.")
     actions = [_normalize_action(item, i + 1) for i, item in enumerate(actions_raw)]
     if not any("service" in action or "todo" in action for action in actions):
-        raise vol.Invalid("Add at least one service or to-do step (delays alone do nothing).")
+        raise vol.Invalid(
+            "Add at least one service or to-do step (delays alone do nothing)."
+        )
 
     kind = "todo" if raw.get("kind") == "todo" else "routine"
     if kind == "todo" and (
@@ -442,7 +467,9 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "conditions": conditions,
         "conditions_match": conditions_match,
         "repeat": bool(raw.get("repeat", trigger in REPEATING_TRIGGERS)),
-        "catch_up_minutes": _int(raw.get("catch_up_minutes"), 0, MAX_CATCH_UP_MINUTES, "Catch-up"),
+        "catch_up_minutes": _int(
+            raw.get("catch_up_minutes"), 0, MAX_CATCH_UP_MINUTES, "Catch-up"
+        ),
         "retries": _int(raw.get("retries"), 0, MAX_RETRIES, "Retries"),
         "skip_noop": bool(raw.get("skip_noop", True)),
         "notify_on_run": bool(raw.get("notify_on_run", False)),

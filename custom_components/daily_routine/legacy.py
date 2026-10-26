@@ -58,7 +58,9 @@ def legacy_routines(entries: list[ConfigEntry]) -> list[dict[str, Any]]:
             try:
                 parsed = json.loads(str(entry.options[LEGACY_CONF_ROUTINES_JSON]))
             except json.JSONDecodeError:
-                _LOGGER.error("Legacy routines JSON in %s is not valid; skipped.", entry.title)
+                _LOGGER.error(
+                    "Legacy routines JSON in %s is not valid; skipped.", entry.title
+                )
                 continue
             if isinstance(parsed, list):
                 raws.extend(item for item in parsed if isinstance(item, dict))
@@ -67,5 +69,6 @@ def legacy_routines(entries: list[ConfigEntry]) -> list[dict[str, Any]]:
 
 def is_legacy(entry: ConfigEntry) -> bool:
     return bool(
-        entry.data.get(LEGACY_CONF_ROUTINE_ID) or entry.options.get(LEGACY_CONF_ROUTINES_JSON)
+        entry.data.get(LEGACY_CONF_ROUTINE_ID)
+        or entry.options.get(LEGACY_CONF_ROUTINES_JSON)
     )

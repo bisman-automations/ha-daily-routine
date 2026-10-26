@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from homeassistant.core import HomeAssistant
-from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
@@ -15,6 +13,8 @@ from pytest_homeassistant_custom_component.common import (
 from custom_components.daily_routine.const import DOMAIN
 from custom_components.daily_routine.routines import normalize_routine
 from custom_components.daily_routine.schema import vol
+from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from .conftest import make_routine
 
@@ -22,7 +22,9 @@ HALL = "binary_sensor.hall_motion"
 
 
 async def _setup(hass: HomeAssistant):
-    entry = MockConfigEntry(domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN)
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN
+    )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -30,11 +32,19 @@ async def _setup(hass: HomeAssistant):
 
 
 def _person(hass: HomeAssistant, entity: str, place: str) -> None:
-    hass.states.async_set(entity, place, {"source": f"device_tracker.{entity.split('.')[1]}_phone"})
+    hass.states.async_set(
+        entity, place, {"source": f"device_tracker.{entity.split('.')[1]}_phone"}
+    )
 
 
 def _presence(who: str, where: str, zone: str = "zone.home", people=("person.sam",)):
-    return {"kind": "presence", "who": who, "where": where, "people": list(people), "zone": zone}
+    return {
+        "kind": "presence",
+        "who": who,
+        "where": where,
+        "people": list(people),
+        "zone": zone,
+    }
 
 
 def _sensors(mode: str, minutes: int):
@@ -55,9 +65,15 @@ async def test_only_when_everyone_is_home(
         make_routine(
             id="home_lights",
             name="Home lights",
-            conditions=[_presence("everyone", "in", people=("person.sam", "person.riley"))],
+            conditions=[
+                _presence("everyone", "in", people=("person.sam", "person.riley"))
+            ],
             actions=[
-                {"service": "light.turn_on", "target": {"entity_id": ["light.hall"]}, "data": {}}
+                {
+                    "service": "light.turn_on",
+                    "target": {"entity_id": ["light.hall"]},
+                    "data": {},
+                }
             ],
         )
     )
@@ -84,7 +100,12 @@ async def test_only_when_someone_is_at_work(
             id="office",
             name="Office",
             conditions=[
-                _presence("anyone", "in", zone="zone.work", people=("person.sam", "person.riley"))
+                _presence(
+                    "anyone",
+                    "in",
+                    zone="zone.work",
+                    people=("person.sam", "person.riley"),
+                )
             ],
         )
     )
@@ -108,13 +129,17 @@ async def test_an_unknown_person_blocks_a_presence_condition(
         make_routine(
             id="gate",
             name="Gate",
-            conditions=[_presence("everyone", "in", people=("person.sam", "person.ghost"))],
+            conditions=[
+                _presence("everyone", "in", people=("person.sam", "person.ghost"))
+            ],
         )
     )
     await hass.async_block_till_done()
     assert await coordinator.async_run("gate") is True
     _person(hass, "person.ghost", "unavailable")
-    assert await coordinator.async_run("gate") is False  # an unavailable person blocks the run
+    assert (
+        await coordinator.async_run("gate") is False
+    )  # an unavailable person blocks the run
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
 
@@ -180,7 +205,11 @@ async def test_waiting_routine_runs_when_the_quiet_period_ends(
             time="07:00:00",
             conditions=[_sensors("quiet", 10)],
             actions=[
-                {"service": "light.turn_off", "target": {"entity_id": ["light.hall"]}, "data": {}}
+                {
+                    "service": "light.turn_off",
+                    "target": {"entity_id": ["light.hall"]},
+                    "data": {},
+                }
             ],
         )
     )
@@ -227,7 +256,9 @@ async def test_any_of_several_conditions_is_enough_when_chosen(
     hass.states.async_set(HALL, "off")
     assert await coordinator.async_run("either") is True  # motion ended a moment ago
     freezer.tick(timedelta(minutes=10))
-    assert await coordinator.async_run("either") is False  # no motion lately, and someone is home
+    assert (
+        await coordinator.async_run("either") is False
+    )  # no motion lately, and someone is home
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
 
@@ -270,13 +301,25 @@ def test_a_bad_condition_is_rejected() -> None:
         normalize_routine(
             make_routine(
                 conditions=[
-                    {"kind": "presence", "who": "some", "where": "in", "people": ["person.sam"]}
+                    {
+                        "kind": "presence",
+                        "who": "some",
+                        "where": "in",
+                        "people": ["person.sam"],
+                    }
                 ]
             )
         )
     with pytest.raises(vol.Invalid, match="at least 1 minute"):
         normalize_routine(
             make_routine(
-                conditions=[{"kind": "sensors", "mode": "active", "minutes": 0, "sensors": [HALL]}]
+                conditions=[
+                    {
+                        "kind": "sensors",
+                        "mode": "active",
+                        "minutes": 0,
+                        "sensors": [HALL],
+                    }
+                ]
             )
         )

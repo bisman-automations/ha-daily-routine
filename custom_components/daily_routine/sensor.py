@@ -13,11 +13,17 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import DOMAIN, SIGNAL_ROUTINES_CHANGED
-from .devices import async_sync_routine_devices, routine_identifier, routine_subentry_ids
+from .devices import (
+    async_sync_routine_devices,
+    routine_identifier,
+    routine_subentry_ids,
+)
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator = hass.data[DOMAIN]["coordinator"]
     entities: dict[str, RoutineStatusSensor] = {}
@@ -42,7 +48,9 @@ async def async_setup_entry(
         async_sync_routine_devices(hass, entry, coordinator.routines)
 
     _sync()
-    entry.async_on_unload(async_dispatcher_connect(hass, SIGNAL_ROUTINES_CHANGED, _sync))
+    entry.async_on_unload(
+        async_dispatcher_connect(hass, SIGNAL_ROUTINES_CHANGED, _sync)
+    )
 
 
 class RoutineStatusSensor(SensorEntity):

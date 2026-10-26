@@ -5,11 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 
 import pytest
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import area_registry as ar
-from homeassistant.helpers import entity_registry as er
-from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     async_capture_events,
     async_fire_time_changed,
@@ -23,6 +18,10 @@ from custom_components.daily_routine.coordinator import (
     area_entity_ids,
     list_areas,
 )
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import area_registry as ar, entity_registry as er
+from homeassistant.util import dt as dt_util
 
 from .conftest import make_routine
 
@@ -93,7 +92,9 @@ async def test_time_routine_runs_at_its_time(hass: HomeAssistant, freezer) -> No
     assert len(calls) == 1
 
 
-async def test_away_lights_wait_for_sensors_to_clear(hass: HomeAssistant, freezer) -> None:
+async def test_away_lights_wait_for_sensors_to_clear(
+    hass: HomeAssistant, freezer
+) -> None:
     """Lights go off only after everyone has left AND the hall has been quiet for 15 min."""
     freezer.move_to(_at("2026-10-16 21:00:00"))
     calls = async_mock_service(hass, "light", "turn_off")
@@ -150,13 +151,17 @@ async def test_motion_restarts_the_clear_period(hass: HomeAssistant, freezer) ->
     assert len(calls) == 1
 
 
-async def test_repeat_runs_again_on_a_second_departure(hass: HomeAssistant, freezer) -> None:
+async def test_repeat_runs_again_on_a_second_departure(
+    hass: HomeAssistant, freezer
+) -> None:
     freezer.move_to(_at("2026-10-16 18:00:00"))
     calls = async_mock_service(hass, "light", "turn_off")
     _set_home(hass, home=True)
     await _started(
         hass,
-        make_routine(id="away", trigger="everyone_leaves", people=["person.alex", "person.sam"]),
+        make_routine(
+            id="away", trigger="everyone_leaves", people=["person.alex", "person.sam"]
+        ),
     )
 
     freezer.move_to(_at("2026-10-16 18:30:00"))
@@ -174,14 +179,19 @@ async def test_repeat_runs_again_on_a_second_departure(hass: HomeAssistant, free
     assert len(calls) == 2
 
 
-async def test_without_repeat_a_second_departure_is_ignored(hass: HomeAssistant, freezer) -> None:
+async def test_without_repeat_a_second_departure_is_ignored(
+    hass: HomeAssistant, freezer
+) -> None:
     freezer.move_to(_at("2026-10-16 18:00:00"))
     calls = async_mock_service(hass, "light", "turn_off")
     _set_home(hass, home=True)
     await _started(
         hass,
         make_routine(
-            id="away", trigger="everyone_leaves", people=["person.alex", "person.sam"], repeat=False
+            id="away",
+            trigger="everyone_leaves",
+            people=["person.alex", "person.sam"],
+            repeat=False,
         ),
     )
     freezer.move_to(_at("2026-10-16 18:30:00"))
@@ -195,7 +205,9 @@ async def test_without_repeat_a_second_departure_is_ignored(hass: HomeAssistant,
     assert len(calls) == 1
 
 
-async def test_room_clear_runs_once_per_quiet_period(hass: HomeAssistant, freezer) -> None:
+async def test_room_clear_runs_once_per_quiet_period(
+    hass: HomeAssistant, freezer
+) -> None:
     freezer.move_to(_at("2026-10-16 20:00:00"))
     calls = async_mock_service(hass, "light", "turn_off")
     hass.states.async_set("binary_sensor.kitchen_motion", "on")
@@ -228,7 +240,9 @@ async def test_room_clear_runs_once_per_quiet_period(hass: HomeAssistant, freeze
     assert len(calls) == 2
 
 
-async def test_room_clear_does_not_fire_after_a_restart(hass: HomeAssistant, freezer) -> None:
+async def test_room_clear_does_not_fire_after_a_restart(
+    hass: HomeAssistant, freezer
+) -> None:
     """Sensors already quiet when HA starts must not trigger a room-clear run by themselves."""
     freezer.move_to(_at("2026-10-16 02:00:00"))
     calls = async_mock_service(hass, "light", "turn_off")
@@ -247,7 +261,9 @@ async def test_room_clear_does_not_fire_after_a_restart(hass: HomeAssistant, fre
     assert not calls
 
 
-async def test_waiting_routine_expires_at_midnight(hass: HomeAssistant, freezer) -> None:
+async def test_waiting_routine_expires_at_midnight(
+    hass: HomeAssistant, freezer
+) -> None:
     freezer.move_to(_at("2026-10-16 21:00:00"))
     calls = async_mock_service(hass, "light", "turn_off")
     skipped = async_capture_events(hass, EVENT_ROUTINE_SKIPPED)
@@ -266,7 +282,9 @@ async def test_waiting_routine_expires_at_midnight(hass: HomeAssistant, freezer)
     assert any(e.data.get("result") == "conditions_not_met" for e in skipped)
 
 
-async def test_pause_stops_scheduled_runs_but_not_manual(hass: HomeAssistant, freezer) -> None:
+async def test_pause_stops_scheduled_runs_but_not_manual(
+    hass: HomeAssistant, freezer
+) -> None:
     freezer.move_to(_at("2026-10-16 06:59:00"))
     calls = async_mock_service(hass, "light", "turn_off")
     coord = await _started(hass, make_routine())
@@ -299,7 +317,9 @@ async def test_manual_run_ignores_daily_limit(hass: HomeAssistant) -> None:
     assert len(calls) == 2
 
 
-async def test_catch_up_runs_a_missed_time_routine(hass: HomeAssistant, freezer) -> None:
+async def test_catch_up_runs_a_missed_time_routine(
+    hass: HomeAssistant, freezer
+) -> None:
     freezer.move_to(_at("2026-10-16 07:10:00"))
     calls = async_mock_service(hass, "light", "turn_off")
     coord = HomeRoutinesCoordinator(hass)
@@ -328,7 +348,9 @@ async def test_no_op_steps_are_skipped(hass: HomeAssistant) -> None:
     assert not calls
 
 
-async def test_no_op_filter_only_targets_entities_still_to_change(hass: HomeAssistant) -> None:
+async def test_no_op_filter_only_targets_entities_still_to_change(
+    hass: HomeAssistant,
+) -> None:
     hass.states.async_set("light.hall", "off")
     hass.states.async_set("light.kitchen", "on")
     calls = async_mock_service(hass, "light", "turn_off")
@@ -364,7 +386,9 @@ async def test_failed_step_is_retried(hass: HomeAssistant, monkeypatch) -> None:
     assert len(attempts) == 2
 
 
-async def test_failure_after_retries_is_reported(hass: HomeAssistant, monkeypatch) -> None:
+async def test_failure_after_retries_is_reported(
+    hass: HomeAssistant, monkeypatch
+) -> None:
     monkeypatch.setattr(coordinator_module, "RETRY_DELAY_SECONDS", 0)
 
     async def broken(call) -> None:
@@ -380,7 +404,9 @@ async def test_extra_condition_blocks_a_run(hass: HomeAssistant) -> None:
     hass.states.async_set("input_boolean.guest_mode", "on")
     coord = await _started(
         hass,
-        make_routine(require_states=[{"entity_id": "input_boolean.guest_mode", "state": "off"}]),
+        make_routine(
+            require_states=[{"entity_id": "input_boolean.guest_mode", "state": "off"}]
+        ),
     )
     ok, reason = coord._check(coord.routines[0], dt_util.now())  # noqa: SLF001
     assert (ok, reason) == (False, "extra_condition_not_met")
@@ -442,7 +468,9 @@ async def test_clear_timer_is_not_persisted(hass: HomeAssistant, hass_storage) -
     assert "pending_date" not in saved
 
 
-async def test_clear_timer_starts_from_observed_state_after_restart(hass: HomeAssistant) -> None:
+async def test_clear_timer_starts_from_observed_state_after_restart(
+    hass: HomeAssistant,
+) -> None:
     hass.states.async_set("binary_sensor.hall_motion", "on")
     coord = await _started(hass, make_routine(id="away", **ROOM_QUIET))
     assert coord._rt("away")["clear_since"] is None  # noqa: SLF001
@@ -461,7 +489,9 @@ async def test_save_and_delete_routines(hass: HomeAssistant, hass_storage) -> No
         "room": "living_room",
         "trigger": "time",
         "time": "07:00",
-        "actions": [{"service": "cover.open_cover", "target": {"area_id": ["living_room"]}}],
+        "actions": [
+            {"service": "cover.open_cover", "target": {"area_id": ["living_room"]}}
+        ],
     }
     saved = await coord.async_save_routine(raw)
     assert saved["time"] == "07:00:00"

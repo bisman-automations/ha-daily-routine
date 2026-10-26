@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
-from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_mock_service,
+)
 
 from custom_components.daily_routine.const import DOMAIN
+from homeassistant.core import HomeAssistant
 
 from .conftest import make_routine
 
 
 async def _setup(hass: HomeAssistant):
-    entry = MockConfigEntry(domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN)
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN
+    )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -70,7 +75,10 @@ async def test_history_keeps_the_newest_runs_first_and_stops_at_the_limit(
     for _ in range(HISTORY_LENGTH + 5):
         await coordinator.async_run("hall")
     assert len(coordinator.get_history("hall")) == HISTORY_LENGTH
-    assert coordinator.get_history("hall")[0]["at"] >= coordinator.get_history("hall")[-1]["at"]
+    assert (
+        coordinator.get_history("hall")[0]["at"]
+        >= coordinator.get_history("hall")[-1]["at"]
+    )
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
 

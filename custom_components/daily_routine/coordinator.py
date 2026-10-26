@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-import logging
-import re
 from collections import deque
 from collections.abc import Callable
-from datetime import datetime, timedelta
-from datetime import time as dt_time
+from datetime import datetime, time as dt_time, timedelta
+import logging
+import re
 from types import MappingProxyType
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
-from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, SUN_EVENT_SUNRISE, SUN_EVENT_SUNSET
+from homeassistant.const import (
+    EVENT_HOMEASSISTANT_STARTED,
+    SUN_EVENT_SUNRISE,
+    SUN_EVENT_SUNSET,
+)
 from homeassistant.core import (
     Event,
     EventStateChangedData,
@@ -22,10 +25,12 @@ from homeassistant.core import (
     State,
     callback,
 )
-from homeassistant.helpers import area_registry as ar
-from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers import storage
+from homeassistant.helpers import (
+    area_registry as ar,
+    device_registry as dr,
+    entity_registry as er,
+    storage,
+)
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import (
     async_call_later,
@@ -34,8 +39,7 @@ from homeassistant.helpers.event import (
     async_track_time_interval,
 )
 from homeassistant.helpers.sun import get_astral_event_next
-from homeassistant.util import dt as dt_util
-from homeassistant.util import slugify
+from homeassistant.util import dt as dt_util, slugify
 
 from .const import (
     DOMAIN,
@@ -73,7 +77,13 @@ from .routines import (
 )
 from .run_log import RunLog
 from .schema import vol
-from .todo import FAILED_OUTCOMES, TODO_OUTCOME_TEXT, apply_todo_step, item_key, list_items
+from .todo import (
+    FAILED_OUTCOMES,
+    TODO_OUTCOME_TEXT,
+    apply_todo_step,
+    item_key,
+    list_items,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -169,7 +179,9 @@ NOTIFY_SERVICE_RE = re.compile(r"notify\.[a-z0-9_]+")
 
 def person_is_tracked(state: State) -> bool:
     """A person can be checked only when Home Assistant has a location for them (a device tracker)."""
-    return bool(state.attributes.get("source") or state.attributes.get("device_trackers"))
+    return bool(
+        state.attributes.get("source") or state.attributes.get("device_trackers")
+    )
 
 
 def list_people(
@@ -196,7 +208,9 @@ def notify_targets(hass: HomeAssistant) -> list[dict[str, str]]:
     registry = dr.async_get(hass)
     phone_names: dict[str, str] = {}
     for mobile_entry in hass.config_entries.async_entries("mobile_app"):
-        for device in dr.async_entries_for_config_entry(registry, mobile_entry.entry_id):
+        for device in dr.async_entries_for_config_entry(
+            registry, mobile_entry.entry_id
+        ):
             name = device.name_by_user or device.name or ""
             if name:
                 phone_names[slugify(name)] = name
@@ -218,7 +232,9 @@ def _entities_by_area(hass: HomeAssistant) -> dict[str, list[str]]:
     """Same rule as area_entity_ids, for every area at once: one pass over the registries."""
     ent_reg = er.async_get(hass)
     dev_reg = dr.async_get(hass)
-    device_area = {device.id: device.area_id for device in dev_reg.devices if device.area_id}
+    device_area = {
+        device.id: device.area_id for device in dev_reg.devices if device.area_id
+    }
     index: dict[str, set[str]] = {}
     for entry in ent_reg.entities.values():
         if entry.disabled_by is not None:
@@ -234,7 +250,9 @@ def list_areas(hass: HomeAssistant) -> list[dict[str, Any]]:
     """Every area in Home Assistant, with the entities in it. Nothing is set up by hand."""
     areas = []
     by_area = _entities_by_area(hass)
-    for area in sorted(ar.async_get(hass).async_list_areas(), key=lambda a: a.name.lower()):
+    for area in sorted(
+        ar.async_get(hass).async_list_areas(), key=lambda a: a.name.lower()
+    ):
         entities = []
         for entity_id in by_area.get(area.id, []):
             state = hass.states.get(entity_id)
@@ -249,7 +267,9 @@ def list_areas(hass: HomeAssistant) -> list[dict[str, Any]]:
                     "state": state.state,
                 }
             )
-        areas.append({"id": area.id, "name": area.name, "icon": area.icon, "entities": entities})
+        areas.append(
+            {"id": area.id, "name": area.name, "icon": area.icon, "entities": entities}
+        )
     return areas
 
 
@@ -310,7 +330,9 @@ class HomeRoutinesCoordinator:
     def _find(self, routine_id: str) -> dict[str, Any] | None:
         return next((r for r in self.routines if r["id"] == routine_id), None)
 
-    def _set_handle(self, routine_id: str, kind: str, unsub: Callable[[], None]) -> None:
+    def _set_handle(
+        self, routine_id: str, kind: str, unsub: Callable[[], None]
+    ) -> None:
         self._drop_handle(routine_id, kind)
         self._handles[(routine_id, kind)] = unsub
 
@@ -357,7 +379,9 @@ class HomeRoutinesCoordinator:
             data["result"] = result
         self.hass.bus.async_fire(event_type, data)
 
-    def _send_notification(self, message: str, notification_id: str | None = None) -> None:
+    def _send_notification(
+        self, message: str, notification_id: str | None = None
+    ) -> None:
         self.hass.async_create_task(self._notify(message, notification_id))
 
     @staticmethod
@@ -395,7 +419,8 @@ class HomeRoutinesCoordinator:
                 {
                     "message": message,
                     "title": "Daily Routine",
-                    "notification_id": notification_id or f"{DOMAIN}_{dt_util.now().timestamp()}",
+                    "notification_id": notification_id
+                    or f"{DOMAIN}_{dt_util.now().timestamp()}",
                 },
                 blocking=False,
             )
@@ -419,7 +444,9 @@ class HomeRoutinesCoordinator:
 
     def _record(self, routine_id: str, outcome: str, detail: str = "") -> None:
         runs = self._history.setdefault(routine_id, deque(maxlen=HISTORY_LENGTH))
-        runs.append({"at": dt_util.now().isoformat(), "outcome": outcome, "detail": detail})
+        runs.append(
+            {"at": dt_util.now().isoformat(), "outcome": outcome, "detail": detail}
+        )
         routine = self._find(routine_id)
         name = routine["name"] if routine else routine_id
         if outcome == "skipped":
@@ -427,7 +454,9 @@ class HomeRoutinesCoordinator:
         elif outcome == "ran":
             self.run_log.record(routine_id, name, "ran", detail=detail)
         else:
-            self.run_log.record(routine_id, name, "failed", reason=detail, detail=detail)
+            self.run_log.record(
+                routine_id, name, "failed", reason=detail, detail=detail
+            )
 
     def get_history(self, routine_id: str) -> list[dict[str, str]]:
         """Recent runs for a routine, newest first."""
@@ -472,7 +501,9 @@ class HomeRoutinesCoordinator:
         if services is None and saved.get("notify_service"):
             services = [saved["notify_service"]]  # one target before 1.4.0
         self.settings = {
-            "hidden_people": [p for p in saved.get("hidden_people", []) if isinstance(p, str)],
+            "hidden_people": [
+                p for p in saved.get("hidden_people", []) if isinstance(p, str)
+            ],
             "notify_services": [s for s in (services or []) if isinstance(s, str)],
             **{key: _timing_value(saved.get(key), key) for key in TIMING_SETTINGS},
         }
@@ -494,7 +525,8 @@ class HomeRoutinesCoordinator:
         else:
             self._startup_unsubs.append(
                 self.hass.bus.async_listen_once(
-                    EVENT_HOMEASSISTANT_STARTED, lambda _event: self._schedule_startup_catch_up()
+                    EVENT_HOMEASSISTANT_STARTED,
+                    lambda _event: self._schedule_startup_catch_up(),
                 )
             )
 
@@ -507,7 +539,9 @@ class HomeRoutinesCoordinator:
             self._check_states_changed_while_stopped()
             self._check_done_after_startup()
 
-        self._startup_unsubs.append(async_call_later(self.hass, STARTUP_SETTLE_SECONDS, _later))
+        self._startup_unsubs.append(
+            async_call_later(self.hass, STARTUP_SETTLE_SECONDS, _later)
+        )
 
     async def async_unload(self) -> None:
         for unsub in self._startup_unsubs:
@@ -520,7 +554,10 @@ class HomeRoutinesCoordinator:
         await self._async_save()
 
     def _payload(self) -> dict[str, Any]:
-        runtime = {rid: {k: rt.get(k) for k in PERSISTED_KEYS} for rid, rt in self._runtime.items()}
+        runtime = {
+            rid: {k: rt.get(k) for k in PERSISTED_KEYS}
+            for rid, rt in self._runtime.items()
+        }
         return {
             "routines": self.routines,
             "paused": self.paused,
@@ -561,7 +598,9 @@ class HomeRoutinesCoordinator:
             if state is None:
                 untracked.append(person_id)
             elif not person_is_tracked(state):
-                untracked.append(str(state.attributes.get("friendly_name") or person_id))
+                untracked.append(
+                    str(state.attributes.get("friendly_name") or person_id)
+                )
         if untracked:
             names = ", ".join(untracked)
             raise vol.Invalid(
@@ -578,7 +617,9 @@ class HomeRoutinesCoordinator:
         companion = normalize_routine(companion_raw) if companion_raw else None
 
         self._drop_companions(routine["id"])
-        index = next((i for i, r in enumerate(self.routines) if r["id"] == routine["id"]), None)
+        index = next(
+            (i for i, r in enumerate(self.routines) if r["id"] == routine["id"]), None
+        )
         if index is None:
             if len(self.routines) >= MAX_ROUTINES:
                 raise vol.Invalid(f"You can have at most {MAX_ROUTINES} routines.")
@@ -593,7 +634,9 @@ class HomeRoutinesCoordinator:
     def _drop_companions(self, routine_id: str) -> None:
         for r in [r for r in self.routines if r.get("companion_of") == routine_id]:
             self._runtime.pop(r["id"], None)
-        self.routines = [r for r in self.routines if r.get("companion_of") != routine_id]
+        self.routines = [
+            r for r in self.routines if r.get("companion_of") != routine_id
+        ]
 
     async def async_delete_routine(self, routine_id: str) -> None:
         async with self._lock:
@@ -619,7 +662,9 @@ class HomeRoutinesCoordinator:
         problems: list[dict[str, str]] = []
         for item in items:
             if not isinstance(item, dict):
-                problems.append({"id": "?", "reason": "Each routine must be an object."})
+                problems.append(
+                    {"id": "?", "reason": "Each routine must be an object."}
+                )
                 continue
             rid = str(item.get("id") or "?")
             if item.get("companion_of"):
@@ -651,7 +696,11 @@ class HomeRoutinesCoordinator:
         self._entry_id = entry_id
 
     def _entry(self) -> ConfigEntry | None:
-        return self.hass.config_entries.async_get_entry(self._entry_id) if self._entry_id else None
+        return (
+            self.hass.config_entries.async_get_entry(self._entry_id)
+            if self._entry_id
+            else None
+        )
 
     def _routine_subentries(self, entry: ConfigEntry) -> dict[str, ConfigSubentry]:
         return {
@@ -686,7 +735,9 @@ class HomeRoutinesCoordinator:
                     ),
                 )
             elif sub.title != routine["name"]:
-                self.hass.config_entries.async_update_subentry(entry, sub, title=routine["name"])
+                self.hass.config_entries.async_update_subentry(
+                    entry, sub, title=routine["name"]
+                )
         for rid, sub in existing.items():
             if rid not in managed:
                 changed = True
@@ -731,12 +782,20 @@ class HomeRoutinesCoordinator:
             if not isinstance(notify, str) or not NOTIFY_SERVICE_RE.fullmatch(notify):
                 raise vol.Invalid("Choose notification targets from the list.")
             if not self.hass.services.has_service("notify", notify.split(".", 1)[1]):
-                raise vol.Invalid("One of those notification targets is no longer available.")
+                raise vol.Invalid(
+                    "One of those notification targets is no longer available."
+                )
         timing = {}
         for key, (_default, low, high, label) in TIMING_SETTINGS.items():
             value = raw.get(key, self.settings[key])
-            if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
-                raise vol.Invalid(f"{label} must be a whole number from {low} to {high}.")
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not low <= value <= high
+            ):
+                raise vol.Invalid(
+                    f"{label} must be a whole number from {low} to {high}."
+                )
             timing[key] = value
         self.settings = {
             "hidden_people": sorted(set(hidden)),
@@ -833,7 +892,9 @@ class HomeRoutinesCoordinator:
         any_on = any(state.state == "on" for state in states)
         window = cond["minutes"] * 60
         if cond["mode"] == "quiet":
-            since_change = (now - max(state.last_changed for state in states)).total_seconds()
+            since_change = (
+                now - max(state.last_changed for state in states)
+            ).total_seconds()
             return not any_on and since_change >= window
         seen = [self._last_on[eid] for eid in cond["sensors"] if eid in self._last_on]
         recent = bool(seen) and (now - max(seen)).total_seconds() < window
@@ -882,7 +943,9 @@ class HomeRoutinesCoordinator:
         self._arm_clear_timer(routine)
         self._arm_condition_timers(routine)
 
-    def _on_condition_entity_changed(self, routine: dict[str, Any], entity_id: str | None) -> None:
+    def _on_condition_entity_changed(
+        self, routine: dict[str, Any], entity_id: str | None
+    ) -> None:
         rid = routine["id"]
         if routine["trigger"] == TRIGGER_ROOM_CLEAR and entity_id in routine["sensors"]:
             rt = self._rt(rid)
@@ -938,7 +1001,11 @@ class HomeRoutinesCoordinator:
             if cond["mode"] == "quiet":
                 start: datetime | None = max(state.last_changed for state in typed)
             else:
-                seen = [self._last_on[eid] for eid in cond["sensors"] if eid in self._last_on]
+                seen = [
+                    self._last_on[eid]
+                    for eid in cond["sensors"]
+                    if eid in self._last_on
+                ]
                 start = max(seen) if seen else None
             if start is None:
                 continue
@@ -954,7 +1021,9 @@ class HomeRoutinesCoordinator:
             self._evaluate_pending(routine)
             self._notify_listeners()
 
-        self._set_handle(rid, H_COND, async_track_point_in_time(self.hass, _fire, min(due)))
+        self._set_handle(
+            rid, H_COND, async_track_point_in_time(self.hass, _fire, min(due))
+        )
 
     def _on_clear_elapsed(self, routine: dict[str, Any]) -> None:
         if routine["trigger"] == TRIGGER_ROOM_CLEAR:
@@ -980,7 +1049,9 @@ class HomeRoutinesCoordinator:
         def _expire(_fired: datetime) -> None:
             self._expire_pending(routine)
 
-        self._set_handle(rid, H_EXPIRE, async_track_point_in_time(self.hass, _expire, midnight))
+        self._set_handle(
+            rid, H_EXPIRE, async_track_point_in_time(self.hass, _expire, midnight)
+        )
 
     def _clear_pending(self, routine: dict[str, Any]) -> None:
         rid = routine["id"]
@@ -999,7 +1070,10 @@ class HomeRoutinesCoordinator:
         rt["last_result"] = "conditions_not_met"
         rt["state"] = "skipped"
         self._record(rid, "skipped", "conditions_not_met")
-        _LOGGER.info("Routine '%s' skipped: conditions not met before end of day.", routine["name"])
+        _LOGGER.info(
+            "Routine '%s' skipped: conditions not met before end of day.",
+            routine["name"],
+        )
         self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "conditions_not_met")
         if routine["notify_on_skip"]:
             self._send_notification(
@@ -1021,11 +1095,15 @@ class HomeRoutinesCoordinator:
         ok, _reason = self._check(routine, now)
         if ok:
             self._clear_pending(routine)
-            self.hass.async_create_task(self._execute_routine(routine, now, scheduled=True))
+            self.hass.async_create_task(
+                self._execute_routine(routine, now, scheduled=True)
+            )
 
     # ----- time and sun triggers -----
 
-    def _next_run_datetime(self, routine: dict[str, Any], after: datetime) -> datetime | None:
+    def _next_run_datetime(
+        self, routine: dict[str, Any], after: datetime
+    ) -> datetime | None:
         if not routine["enabled"]:
             return None
         trigger = routine["trigger"]
@@ -1037,7 +1115,9 @@ class HomeRoutinesCoordinator:
             target = _parse_time(routine["time"])
             for day_offset in range(8):
                 candidate_date = (after + timedelta(days=day_offset)).date()
-                candidate = datetime.combine(candidate_date, target, tzinfo=after.tzinfo)
+                candidate = datetime.combine(
+                    candidate_date, target, tzinfo=after.tzinfo
+                )
                 if candidate > after and self._allowed_day(routine, candidate):
                     return candidate
             return None
@@ -1070,9 +1150,13 @@ class HomeRoutinesCoordinator:
         @callback
         def _fire(fired: datetime) -> None:
             self._schedule_one(routine, fired + timedelta(seconds=2))
-            self.hass.async_create_task(self._execute_routine(routine, fired, scheduled=True))
+            self.hass.async_create_task(
+                self._execute_routine(routine, fired, scheduled=True)
+            )
 
-        self._set_handle(rid, H_TIME, async_track_point_in_time(self.hass, _fire, next_dt))
+        self._set_handle(
+            rid, H_TIME, async_track_point_in_time(self.hass, _fire, next_dt)
+        )
 
     def _maybe_catch_up(self, routine: dict[str, Any], now: datetime) -> None:
         """After a restart, run a time routine that was missed by a few minutes."""
@@ -1080,7 +1164,9 @@ class HomeRoutinesCoordinator:
             return
         if not routine["enabled"] or not self._allowed_day(routine, now):
             return
-        target = datetime.combine(now.date(), _parse_time(routine["time"]), tzinfo=now.tzinfo)
+        target = datetime.combine(
+            now.date(), _parse_time(routine["time"]), tzinfo=now.tzinfo
+        )
         window_end = target + timedelta(minutes=routine["catch_up_minutes"])
         if (
             target <= now < window_end
@@ -1089,11 +1175,16 @@ class HomeRoutinesCoordinator:
             _LOGGER.info("Catching up missed routine '%s'", routine["name"])
             self.hass.async_create_task(self._run_catch_up(routine, window_end))
 
-    async def _run_catch_up(self, routine: dict[str, Any], window_end: datetime) -> None:
+    async def _run_catch_up(
+        self, routine: dict[str, Any], window_end: datetime
+    ) -> None:
         """Try a missed run, and keep trying each minute while a condition blocks it, until the window closes."""
         rid = routine["id"]
         now = dt_util.now()
-        if not routine["enabled"] or self._rt(rid)["last_run_date"] == now.date().isoformat():
+        if (
+            not routine["enabled"]
+            or self._rt(rid)["last_run_date"] == now.date().isoformat()
+        ):
             return
         ran = await self._execute_routine(routine, now, scheduled=True)
         if ran or not uses_conditions(routine):
@@ -1101,7 +1192,8 @@ class HomeRoutinesCoordinator:
         retry_at = now + timedelta(minutes=1)
         if retry_at >= window_end:
             _LOGGER.warning(
-                "Routine '%s' was still blocked when its catch-up window closed.", routine["name"]
+                "Routine '%s' was still blocked when its catch-up window closed.",
+                routine["name"],
             )
             return
 
@@ -1109,7 +1201,9 @@ class HomeRoutinesCoordinator:
         def _again(_fired: datetime) -> None:
             self.hass.async_create_task(self._run_catch_up(routine, window_end))
 
-        self._set_handle(rid, H_CATCH_UP, async_track_point_in_time(self.hass, _again, retry_at))
+        self._set_handle(
+            rid, H_CATCH_UP, async_track_point_in_time(self.hass, _again, retry_at)
+        )
 
     # ----- presence triggers -----
 
@@ -1140,7 +1234,9 @@ class HomeRoutinesCoordinator:
             leaves = trigger == TRIGGER_EVERYONE_LEAVES and is_away and not was_away
             arrives = trigger == TRIGGER_SOMEONE_ARRIVES and was_away and not is_away
             if leaves or arrives:
-                self.hass.async_create_task(self._execute_routine(routine, now, scheduled=True))
+                self.hass.async_create_task(
+                    self._execute_routine(routine, now, scheduled=True)
+                )
 
         unsub = async_track_state_change_event(self.hass, people, _on_change)
         self._set_handle(rid, H_PRESENCE, unsub)
@@ -1168,7 +1264,9 @@ class HomeRoutinesCoordinator:
             arrives = trigger == TRIGGER_PERSON_ARRIVES and is_in and not was_in
             now = dt_util.now()
             if (leaves or arrives) and self._allowed_day(routine, now):
-                self.hass.async_create_task(self._execute_routine(routine, now, scheduled=True))
+                self.hass.async_create_task(
+                    self._execute_routine(routine, now, scheduled=True)
+                )
 
         unsub = async_track_state_change_event(self.hass, people, _changed)
         self._set_handle(rid, H_PRESENCE, unsub)
@@ -1193,9 +1291,13 @@ class HomeRoutinesCoordinator:
                 crossed = new < threshold and (old is None or old >= threshold)
             now = dt_util.now()
             if crossed and self._allowed_day(routine, now):
-                self.hass.async_create_task(self._execute_routine(routine, now, scheduled=True))
+                self.hass.async_create_task(
+                    self._execute_routine(routine, now, scheduled=True)
+                )
 
-        unsub = async_track_state_change_event(self.hass, [routine["value_entity"]], _changed)
+        unsub = async_track_state_change_event(
+            self.hass, [routine["value_entity"]], _changed
+        )
         self._set_handle(rid, H_VALUE, unsub)
 
     def _watch_state(self, routine: dict[str, Any]) -> None:
@@ -1251,7 +1353,9 @@ class HomeRoutinesCoordinator:
     def _run_state_routine(self, routine: dict[str, Any]) -> None:
         now = dt_util.now()
         if self._allowed_day(routine, now):
-            self.hass.async_create_task(self._execute_routine(routine, now, scheduled=True))
+            self.hass.async_create_task(
+                self._execute_routine(routine, now, scheduled=True)
+            )
 
     def _check_states_changed_while_stopped(self) -> None:
         """A device that changed into a chosen state while Home Assistant was stopped runs its routine once."""
@@ -1267,7 +1371,11 @@ class HomeRoutinesCoordinator:
             if seen != state.state:
                 rt["seen_state"] = state.state
                 changed = True
-            if seen is not None and seen != state.state and state.state in routine["watch_states"]:
+            if (
+                seen is not None
+                and seen != state.state
+                and state.state in routine["watch_states"]
+            ):
                 self._start_state_run(routine)
         if changed:
             self.hass.async_create_task(self._async_save())
@@ -1288,7 +1396,9 @@ class HomeRoutinesCoordinator:
             if event.data.get("new_state") is not None:
                 self.hass.async_create_task(self._check_done(routine))
 
-        unsub = async_track_state_change_event(self.hass, [routine["watch_entity"]], _changed)
+        unsub = async_track_state_change_event(
+            self.hass, [routine["watch_entity"]], _changed
+        )
         self._set_handle(rid, H_DONE, unsub)
 
     async def _check_done(self, routine: dict[str, Any]) -> None:
@@ -1299,7 +1409,9 @@ class HomeRoutinesCoordinator:
             if items is None:
                 return
             done = list(
-                dict.fromkeys(key for key in (item_key(i.get("summary")) for i in items) if key)
+                dict.fromkeys(
+                    key for key in (item_key(i.get("summary")) for i in items) if key
+                )
             )
             previous = rt.get("seen_done")
             rt["seen_done"] = done[-SEEN_DONE_LIMIT:]
@@ -1343,7 +1455,9 @@ class HomeRoutinesCoordinator:
         problems = self.health(routine)
         if not problems:
             rt["health_alerted"] = False
-            self.hass.async_create_task(self._dismiss_health_notification(routine["id"]))
+            self.hass.async_create_task(
+                self._dismiss_health_notification(routine["id"])
+            )
         elif not rt.get("health_alerted"):
             rt["health_alerted"] = True
             if routine["notify_on_health"]:
@@ -1487,7 +1601,9 @@ class HomeRoutinesCoordinator:
             if scheduled and uses_conditions(routine):
                 if rt["pending_date"] is None:
                     self._arm_pending(routine, now)
-                    self._fire_event(EVENT_ROUTINE_SKIPPED, routine, f"waiting:{reason}")
+                    self._fire_event(
+                        EVENT_ROUTINE_SKIPPED, routine, f"waiting:{reason}"
+                    )
                 self._notify_listeners()
                 return False
             rt["last_result"] = reason
@@ -1516,7 +1632,9 @@ class HomeRoutinesCoordinator:
             ok, reason = self._check(routine, dt_util.now())
             if not ok:
                 _LOGGER.warning(
-                    "Routine '%s' stopped: conditions no longer pass (%s).", routine["name"], reason
+                    "Routine '%s' stopped: conditions no longer pass (%s).",
+                    routine["name"],
+                    reason,
                 )
                 result = f"conditions_failed_mid_run:{reason}"
                 break
@@ -1549,14 +1667,18 @@ class HomeRoutinesCoordinator:
             outcome, override, _entities = self._plan_action(routine, action)
             if outcome == "already_in_state":
                 _LOGGER.debug(
-                    "Routine '%s': %s already done, skipped", routine["name"], action["service"]
+                    "Routine '%s': %s already done, skipped",
+                    routine["name"],
+                    action["service"],
                 )
                 continue
 
             domain, service = action["service"].split(".", 1)
             if not self.hass.services.has_service(domain, service):
                 _LOGGER.error(
-                    "Routine '%s': service %s does not exist.", routine["name"], action["service"]
+                    "Routine '%s': service %s does not exist.",
+                    routine["name"],
+                    action["service"],
                 )
                 result = f"missing_service:{action['service']}"
                 break
@@ -1566,7 +1688,9 @@ class HomeRoutinesCoordinator:
                     routine, domain, service, dict(action.get("data") or {}), target
                 )
             except Exception:  # noqa: BLE001
-                _LOGGER.exception("Routine '%s': %s failed.", routine["name"], action["service"])
+                _LOGGER.exception(
+                    "Routine '%s': %s failed.", routine["name"], action["service"]
+                )
                 result = f"error:{action['service']}"
                 break
 
@@ -1689,7 +1813,11 @@ OPPOSITE_SERVICES = {
 def _timing_value(value: Any, key: str) -> int:
     """A saved timing setting, or its default when the saved value is missing or out of range."""
     default, low, high, _label = TIMING_SETTINGS[key]
-    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not low <= value <= high
+    ):
         return default
     return value
 
@@ -1734,7 +1862,7 @@ def _as_float(state: State | None) -> float | None:
         return None
     try:
         return float(state.state)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
 

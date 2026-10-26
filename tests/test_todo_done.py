@@ -6,8 +6,6 @@ from datetime import timedelta
 from typing import Any
 
 import pytest
-from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
-from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
@@ -17,9 +15,15 @@ from pytest_homeassistant_custom_component.common import (
 from custom_components.daily_routine.const import DOMAIN
 from custom_components.daily_routine.routines import normalize_routine
 from custom_components.daily_routine.schema import vol
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.util import dt as dt_util
 
 GROCERIES = "todo.groceries"
-LIGHT_STEP = {"service": "light.turn_on", "target": {"entity_id": ["light.hall"]}, "data": {}}
+LIGHT_STEP = {
+    "service": "light.turn_on",
+    "target": {"entity_id": ["light.hall"]},
+    "data": {},
+}
 
 
 def _checked(**overrides: Any) -> dict[str, Any]:
@@ -57,7 +61,9 @@ class FakeList:
 
 async def _setup(hass: HomeAssistant, *, quiet_minutes: int = 0):
     """Start the integration. Tests end the startup quiet period unless told otherwise."""
-    entry = MockConfigEntry(domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN)
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN
+    )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()

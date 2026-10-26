@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from custom_components.daily_routine.routines import normalize_routine, parse_delay, uses_conditions
+from custom_components.daily_routine.routines import (
+    normalize_routine,
+    parse_delay,
+    uses_conditions,
+)
 from custom_components.daily_routine.schema import vol
 
 from .conftest import make_routine
@@ -20,15 +24,21 @@ def test_defaults_are_filled_in() -> None:
 
 
 def test_repeat_defaults_on_for_presence_and_room_triggers() -> None:
-    assert make_routine(trigger="everyone_leaves", people=["person.a"])["repeat"] is True
     assert (
-        make_routine(trigger="room_clear", sensors=["binary_sensor.m"], clear_minutes=5)["repeat"]
+        make_routine(trigger="everyone_leaves", people=["person.a"])["repeat"] is True
+    )
+    assert (
+        make_routine(
+            trigger="room_clear", sensors=["binary_sensor.m"], clear_minutes=5
+        )["repeat"]
         is True
     )
 
 
 def test_room_trigger_forces_sensor_clear() -> None:
-    routine = make_routine(trigger="room_clear", sensors=["binary_sensor.m"], clear_minutes=5)
+    routine = make_routine(
+        trigger="room_clear", sensors=["binary_sensor.m"], clear_minutes=5
+    )
     assert routine["clear_minutes"] == 5
     assert routine["sensors"] == ["binary_sensor.m"]
     assert uses_conditions(routine)
@@ -71,7 +81,9 @@ def test_invalid_routines_are_rejected(overrides: dict) -> None:
     raw = {
         "id": "r1",
         "name": "R1",
-        "actions": [{"service": "light.turn_off", "target": {"entity_id": ["light.a"]}}],
+        "actions": [
+            {"service": "light.turn_off", "target": {"entity_id": ["light.a"]}}
+        ],
     }
     raw.update(overrides)
     with pytest.raises(vol.Invalid):

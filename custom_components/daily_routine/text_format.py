@@ -51,7 +51,9 @@ def _due_from_text(text: str, number: int) -> dict[str, Any]:
         try:
             within = int(values["due"])
         except ValueError as err:
-            raise vol.Invalid(f"Line {number}: due must be a number of days, or any.") from err
+            raise vol.Invalid(
+                f"Line {number}: due must be a number of days, or any."
+            ) from err
     return {
         "within": within,
         "overdue": yes_no("overdue", "yes"),
@@ -132,7 +134,9 @@ def parse_steps_text(text: str) -> list[dict[str, Any]]:
         parts = [part.strip() for part in line.split("|", 2)]
         service = parts[0]
         if not service:
-            raise vol.Invalid(f"Line {number}: name the action, for example light.turn_off.")
+            raise vol.Invalid(
+                f"Line {number}: name the action, for example light.turn_off."
+            )
         action: dict[str, Any] = {"service": service}
         target: dict[str, list[str]] = {}
         if len(parts) > 1 and parts[1]:
@@ -153,7 +157,9 @@ def parse_steps_text(text: str) -> list[dict[str, Any]]:
                     f'Line {number}: extra settings must be JSON, for example {{"brightness": 128}}.'
                 ) from err
             if not isinstance(data, dict):
-                raise vol.Invalid(f"Line {number}: extra settings must be a JSON object.")
+                raise vol.Invalid(
+                    f"Line {number}: extra settings must be a JSON object."
+                )
             action["data"] = data
         actions.append(action)
     return actions
@@ -167,7 +173,9 @@ def conditions_to_text(conditions: list[dict[str, Any]]) -> str:
                 f"presence {cond['who']} {cond['where']} | {', '.join(cond['people'])} | {cond['zone']}"
             )
         elif cond["kind"] == "sensors":
-            lines.append(f"sensors {cond['mode']} {cond['minutes']} | {', '.join(cond['sensors'])}")
+            lines.append(
+                f"sensors {cond['mode']} {cond['minutes']} | {', '.join(cond['sensors'])}"
+            )
         else:
             lines.append(f"{cond['entity_id']} = {cond['state']}")
     return "\n".join(lines)
@@ -221,7 +229,11 @@ def parse_conditions_text(text: str) -> list[dict[str, Any]]:
         elif "=" in line and not sep:
             entity_id, _, state = line.partition("=")
             conditions.append(
-                {"kind": "state", "entity_id": entity_id.strip(), "state": state.strip()}
+                {
+                    "kind": "state",
+                    "entity_id": entity_id.strip(),
+                    "state": state.strip(),
+                }
             )
         else:
             raise vol.Invalid(

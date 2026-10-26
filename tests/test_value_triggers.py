@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 
 import pytest
-from homeassistant.core import HomeAssistant
-from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_mock_service,
+)
 
 from custom_components.daily_routine.const import DOMAIN
 from custom_components.daily_routine.coordinator import (
@@ -18,6 +19,8 @@ from custom_components.daily_routine.coordinator import (
 )
 from custom_components.daily_routine.routines import normalize_routine
 from custom_components.daily_routine.schema import vol
+from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from .conftest import make_routine
 
@@ -35,7 +38,11 @@ def _humidity(**overrides):
         "value_threshold": 60,
         "off_threshold": 50,
         "actions": [
-            {"service": "fan.turn_on", "target": {"entity_id": ["fan.bathroom_fan"]}, "data": {}}
+            {
+                "service": "fan.turn_on",
+                "target": {"entity_id": ["fan.bathroom_fan"]},
+                "data": {},
+            }
         ],
     }
     raw.update(overrides)
@@ -108,7 +115,9 @@ def test_check_reports_outside_hours() -> None:
 
 
 async def _setup(hass: HomeAssistant):
-    entry = MockConfigEntry(domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN)
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN
+    )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -136,7 +145,9 @@ async def test_companion_name_clash_is_refused(
     hass: HomeAssistant, enable_custom_integrations, hass_storage
 ) -> None:
     entry, coordinator = await _setup(hass)
-    await coordinator.async_save_routine(make_routine(id="bath_fan_off", name="Something else"))
+    await coordinator.async_save_routine(
+        make_routine(id="bath_fan_off", name="Something else")
+    )
     with pytest.raises(vol.Invalid):
         await coordinator.async_save_routine(_humidity())
 
@@ -147,17 +158,23 @@ async def test_companion_name_clash_is_refused(
 async def test_crossing_the_level_runs_the_fan_service(
     hass: HomeAssistant, enable_custom_integrations, hass_storage
 ) -> None:
-    hass.states.async_set("sensor.bathroom_humidity", "48", {"unit_of_measurement": "%"})
+    hass.states.async_set(
+        "sensor.bathroom_humidity", "48", {"unit_of_measurement": "%"}
+    )
     calls = async_mock_service(hass, "fan", "turn_on")
     entry, coordinator = await _setup(hass)
     await coordinator.async_save_routine(_humidity(off_threshold=None))
     await hass.async_block_till_done()
 
-    hass.states.async_set("sensor.bathroom_humidity", "62", {"unit_of_measurement": "%"})
+    hass.states.async_set(
+        "sensor.bathroom_humidity", "62", {"unit_of_measurement": "%"}
+    )
     await hass.async_block_till_done()
     assert len(calls) == 1
 
-    hass.states.async_set("sensor.bathroom_humidity", "63", {"unit_of_measurement": "%"})
+    hass.states.async_set(
+        "sensor.bathroom_humidity", "63", {"unit_of_measurement": "%"}
+    )
     await hass.async_block_till_done()
     assert len(calls) == 1, "staying above the level must not run it again"
 
@@ -165,13 +182,17 @@ async def test_crossing_the_level_runs_the_fan_service(
     await hass.async_block_till_done()
 
 
-def test_notify_targets_are_named_and_generic_services_hidden(hass: HomeAssistant) -> None:
+def test_notify_targets_are_named_and_generic_services_hidden(
+    hass: HomeAssistant,
+) -> None:
     async_mock_service(hass, "notify", "mobile_app_alex_phone")
     async_mock_service(hass, "notify", "send_message")
     async_mock_service(hass, "notify", "notify")
     targets = notify_targets(hass)
     assert {"entity": "notify.mobile_app_alex_phone", "name": "Alex Phone"} in targets
-    assert all(t["entity"] not in {"notify.send_message", "notify.notify"} for t in targets)
+    assert all(
+        t["entity"] not in {"notify.send_message", "notify.notify"} for t in targets
+    )
 
 
 def test_phone_names_come_from_the_mobile_app_device(hass: HomeAssistant) -> None:
@@ -186,6 +207,7 @@ def test_phone_names_come_from_the_mobile_app_device(hass: HomeAssistant) -> Non
         name="Alex's iPhone",
     )
     async_mock_service(hass, "notify", "mobile_app_alex_s_iphone")
-    assert {"entity": "notify.mobile_app_alex_s_iphone", "name": "Alex's iPhone"} in notify_targets(
-        hass
-    )
+    assert {
+        "entity": "notify.mobile_app_alex_s_iphone",
+        "name": "Alex's iPhone",
+    } in notify_targets(hass)

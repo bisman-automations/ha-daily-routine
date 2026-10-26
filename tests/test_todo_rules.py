@@ -6,8 +6,6 @@ import asyncio
 from datetime import timedelta
 
 import pytest
-from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
-from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_fire_time_changed,
@@ -18,6 +16,8 @@ from custom_components.daily_routine.routines import normalize_routine
 from custom_components.daily_routine.schema import vol
 from custom_components.daily_routine.text_format import parse_steps_text, steps_to_text
 from custom_components.daily_routine.todo import apply_todo_step, normalize_todo_step
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.util import dt as dt_util
 
 GROCERIES = "todo.groceries"
 CLEAN = "binary_sensor.dishwasher_clean"
@@ -61,10 +61,14 @@ class FakeTodo:
     async def _remove(self, call: ServiceCall) -> None:
         self.removes.append(dict(call.data))
         entity = call.data["entity_id"]
-        self.items[entity] = [i for i in self.items[entity] if i["uid"] != call.data["item"]]
+        self.items[entity] = [
+            i for i in self.items[entity] if i["uid"] != call.data["item"]
+        ]
 
     def open_summaries(self) -> list[str]:
-        return [i["summary"] for i in self.items[GROCERIES] if i["status"] == "needs_action"]
+        return [
+            i["summary"] for i in self.items[GROCERIES] if i["status"] == "needs_action"
+        ]
 
 
 def _rule(**overrides):
@@ -75,14 +79,18 @@ def _rule(**overrides):
         "trigger": "state_is",
         "watch_entity": CLEAN,
         "watch_states": ["on"],
-        "actions": [{"todo": {"op": "add", "list": GROCERIES, "item": "Empty dishwasher"}}],
+        "actions": [
+            {"todo": {"op": "add", "list": GROCERIES, "item": "Empty dishwasher"}}
+        ],
     }
     raw.update(overrides)
     return raw
 
 
 async def _setup(hass: HomeAssistant):
-    entry = MockConfigEntry(domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN)
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN
+    )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -106,7 +114,9 @@ def test_a_to_do_step_needs_an_action_a_list_and_an_item() -> None:
         normalize_todo_step({"op": "add", "list": GROCERIES, "item": "   "}, 1)
     with pytest.raises(vol.Invalid):
         normalize_todo_step({"op": "add", "list": GROCERIES, "item": "x" * 300}, 1)
-    assert normalize_todo_step({"op": "ADD", "list": GROCERIES, "item": "  Buy   milk "}, 1) == {
+    assert normalize_todo_step(
+        {"op": "ADD", "list": GROCERIES, "item": "  Buy   milk "}, 1
+    ) == {
         "op": "add",
         "list": GROCERIES,
         "item": "Buy milk",
@@ -115,7 +125,11 @@ def test_a_to_do_step_needs_an_action_a_list_and_an_item() -> None:
 
 def test_a_to_do_step_round_trips_through_the_text_form() -> None:
     routine = normalize_routine(
-        _rule(actions=[{"todo": {"op": "complete", "list": GROCERIES, "item": "Buy milk"}}])
+        _rule(
+            actions=[
+                {"todo": {"op": "complete", "list": GROCERIES, "item": "Buy milk"}}
+            ]
+        )
     )
     text = steps_to_text(routine["actions"])
     assert text == "todo complete | todo.groceries | Buy milk"
@@ -163,7 +177,15 @@ async def test_a_to_do_rule_adds_once_and_completes_when_the_state_changes(
             id="finish_dishwasher",
             name="Finish dishwasher",
             watch_states=["off"],
-            actions=[{"todo": {"op": "complete", "list": GROCERIES, "item": "Empty dishwasher"}}],
+            actions=[
+                {
+                    "todo": {
+                        "op": "complete",
+                        "list": GROCERIES,
+                        "item": "Empty dishwasher",
+                    }
+                }
+            ],
         )
     )
     await hass.async_block_till_done()
@@ -201,7 +223,10 @@ async def test_several_states_count_once_each_move_between_them_does_not_rerun(
     await hass.async_block_till_done()
     # The item from the first run is still open, so the second run finds it and adds nothing.
     details = [run["detail"] for run in coordinator.get_history("empty_dishwasher")]
-    assert details == ["Empty dishwasher: already on the list", "Empty dishwasher: added"]
+    assert details == [
+        "Empty dishwasher: already on the list",
+        "Empty dishwasher: added",
+    ]
     assert len(todo.adds) == 1
     await _teardown(hass, entry)
 
@@ -230,7 +255,9 @@ async def test_a_hold_time_runs_only_if_the_state_is_still_there(
     await hass.async_block_till_done()
     async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=10))
     await hass.async_block_till_done()
-    assert len(todo.adds) == 1, "a flicker that goes back before the hold time adds nothing"
+    assert len(todo.adds) == 1, (
+        "a flicker that goes back before the hold time adds nothing"
+    )
     await _teardown(hass, entry)
 
 
@@ -281,7 +308,9 @@ async def test_run_history_says_what_the_list_already_had(
     hass: HomeAssistant, enable_custom_integrations, hass_storage
 ) -> None:
     hass.states.async_set(CLEAN, "off")
-    todo = FakeTodo(hass, [{"uid": "x", "summary": "Empty dishwasher", "status": "needs_action"}])
+    todo = FakeTodo(
+        hass, [{"uid": "x", "summary": "Empty dishwasher", "status": "needs_action"}]
+    )
     entry, coordinator = await _setup(hass)
     await coordinator.async_save_routine(_rule())
     await hass.async_block_till_done()
@@ -300,7 +329,9 @@ async def test_a_list_that_cannot_be_read_fails_the_run(
 ) -> None:
     hass.states.async_set(CLEAN, "off")
     entry, coordinator = await _setup(hass)
-    await coordinator.async_set_settings({**coordinator.settings, "list_wait_seconds": 0})
+    await coordinator.async_set_settings(
+        {**coordinator.settings, "list_wait_seconds": 0}
+    )
     await coordinator.async_save_routine(
         _rule(actions=[{"todo": {"op": "add", "list": "todo.missing", "item": "x"}}])
     )
@@ -309,7 +340,8 @@ async def test_a_list_that_cannot_be_read_fails_the_run(
     hass.states.async_set(CLEAN, "on")
     await hass.async_block_till_done()
     assert (
-        coordinator.get_status("empty_dishwasher")["last_result"] == "error:todo_list_unavailable"
+        coordinator.get_status("empty_dishwasher")["last_result"]
+        == "error:todo_list_unavailable"
     )
     assert coordinator.get_history("empty_dishwasher")[0]["outcome"] == "failed"
     await _teardown(hass, entry)
@@ -321,7 +353,9 @@ async def test_a_list_that_loads_late_is_used_within_the_wait(
     """A cloud list (iCloud) can load a little after startup: the step waits for it."""
     step = {"op": "add", "list": GROCERIES, "item": "Empty dishwasher"}
     hass.loop.call_later(0.1, lambda: FakeTodo(hass))
-    result = await apply_todo_step(hass, step, dry_run=False, wait_seconds=5, poll_seconds=0.02)
+    result = await apply_todo_step(
+        hass, step, dry_run=False, wait_seconds=5, poll_seconds=0.02
+    )
     assert result == "added"
 
 
@@ -329,7 +363,9 @@ async def test_a_list_that_never_loads_gives_up_at_the_wait_limit(
     hass: HomeAssistant, enable_custom_integrations, hass_storage
 ) -> None:
     step = {"op": "add", "list": GROCERIES, "item": "Empty dishwasher"}
-    result = await apply_todo_step(hass, step, dry_run=False, wait_seconds=0.1, poll_seconds=0.02)
+    result = await apply_todo_step(
+        hass, step, dry_run=False, wait_seconds=0.1, poll_seconds=0.02
+    )
     assert result == "list_unavailable"
 
 
@@ -348,13 +384,17 @@ async def test_remove_takes_an_open_item_off_the_list(
     hass: HomeAssistant, enable_custom_integrations, hass_storage
 ) -> None:
     hass.states.async_set(CLEAN, "off")
-    todo = FakeTodo(hass, [{"uid": "w", "summary": "Water plants", "status": "needs_action"}])
+    todo = FakeTodo(
+        hass, [{"uid": "w", "summary": "Water plants", "status": "needs_action"}]
+    )
     entry, coordinator = await _setup(hass)
     await coordinator.async_save_routine(
         _rule(
             id="rain",
             watch_entity=CLEAN,
-            actions=[{"todo": {"op": "remove", "list": GROCERIES, "item": "water plants"}}],
+            actions=[
+                {"todo": {"op": "remove", "list": GROCERIES, "item": "water plants"}}
+            ],
         )
     )
     await hass.async_block_till_done()
@@ -395,7 +435,9 @@ async def test_health_names_what_will_stop_the_rule(
         _rule(actions=[{"todo": {"op": "add", "list": "todo.gone", "item": "x"}}])
     )
     assert "CLEAN" not in " ".join(coordinator.health(routine))
-    assert any("todo.gone is not in Home Assistant" in p for p in coordinator.health(routine))
+    assert any(
+        "todo.gone is not in Home Assistant" in p for p in coordinator.health(routine)
+    )
     hass.states.async_set(GROCERIES, "0", {"friendly_name": "Groceries"})
     hass.states.async_set(CLEAN, "unavailable", {"friendly_name": "Dishwasher clean"})
     assert coordinator.health(normalize_routine(_rule())) == [

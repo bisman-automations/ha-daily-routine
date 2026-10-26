@@ -72,7 +72,11 @@ def async_sync_routine_devices(
         if subentry_id is None:
             # Made once the routine's entry exists; the routines-changed signal runs this again then.
             continue
-        target = registry.async_get(routine["device_id"]) if routine.get("device_id") else None
+        target = (
+            registry.async_get(routine["device_id"])
+            if routine.get("device_id")
+            else None
+        )
         _link_routine_device(registry, hub, target, routine, entry, subentry_id)
 
 

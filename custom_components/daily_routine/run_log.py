@@ -44,7 +44,12 @@ class RunLog:
         self._prune(dt_util.now())
 
     def record(
-        self, routine_id: str, name: str, outcome: str, reason: str = "", detail: str = ""
+        self,
+        routine_id: str,
+        name: str,
+        outcome: str,
+        reason: str = "",
+        detail: str = "",
     ) -> None:
         now = dt_util.now()
         self._events.append(
@@ -122,7 +127,9 @@ def summarize(
     for routine in routines:
         mine = [e for e in in_window if e.get("routine_id") == routine["id"]]
         everything = [e for e in events if e.get("routine_id") == routine["id"]]
-        last_failure = next((e for e in reversed(mine) if e["outcome"] == "failed"), None)
+        last_failure = next(
+            (e for e in reversed(mine) if e["outcome"] == "failed"), None
+        )
         last = mine[-1] if mine else None
         by_routine.append(
             {
@@ -143,7 +150,9 @@ def summarize(
             }
         )
 
-    failure_reasons = Counter(e["reason"] for e in in_window if e["outcome"] == "failed")
+    failure_reasons = Counter(
+        e["reason"] for e in in_window if e["outcome"] == "failed"
+    )
     skip_reasons = Counter(e["reason"] for e in in_window if e["outcome"] == "skipped")
 
     days: dict[str, dict[str, int]] = {}
@@ -153,7 +162,10 @@ def summarize(
         bucket[event["outcome"]] += 1
 
     recent = [
-        {k: e.get(k, "") for k in ("at", "routine_id", "name", "outcome", "reason", "detail")}
+        {
+            k: e.get(k, "")
+            for k in ("at", "routine_id", "name", "outcome", "reason", "detail")
+        }
         for e in reversed(in_window[-RECENT_LIMIT:])
     ]
 
@@ -185,4 +197,6 @@ def summarize(
 
 
 def _ranked(counter: Counter[str]) -> list[dict[str, Any]]:
-    return [{"reason": reason, "count": count} for reason, count in counter.most_common()]
+    return [
+        {"reason": reason, "count": count} for reason, count in counter.most_common()
+    ]

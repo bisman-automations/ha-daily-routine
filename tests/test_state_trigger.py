@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import pytest
-from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_mock_service,
+)
 
 from custom_components.daily_routine.const import DOMAIN
 from custom_components.daily_routine.routines import normalize_routine
 from custom_components.daily_routine.schema import vol
+from homeassistant.core import HomeAssistant
 
 from .conftest import make_routine
 
@@ -47,13 +50,17 @@ def test_state_fields_are_kept_only_for_the_state_trigger() -> None:
     kept = normalize_routine(_dinner_done())
     assert kept["watch_entity"] == "input_boolean.dinner_done"
     assert kept["watch_states"] == ["on"]
-    other = normalize_routine(make_routine(watch_entity="input_boolean.x", watch_state="on"))
+    other = normalize_routine(
+        make_routine(watch_entity="input_boolean.x", watch_state="on")
+    )
     assert other["watch_entity"] is None
     assert other["watch_states"] == []
 
 
 async def _setup(hass: HomeAssistant):
-    entry = MockConfigEntry(domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN)
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN
+    )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -91,7 +98,9 @@ async def test_staying_in_the_state_does_not_run_again_but_coming_back_does(
 
     hass.states.async_set("input_boolean.dinner_done", "on")
     await hass.async_block_till_done()
-    hass.states.async_set("input_boolean.dinner_done", "on", {"friendly_name": "Changed"})
+    hass.states.async_set(
+        "input_boolean.dinner_done", "on", {"friendly_name": "Changed"}
+    )
     await hass.async_block_till_done()
     assert len(calls) == 1, "an attribute change while already on must not run it again"
 

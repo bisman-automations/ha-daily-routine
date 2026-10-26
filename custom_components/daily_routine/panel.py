@@ -9,12 +9,16 @@ from typing import Any
 from homeassistant.components import frontend, panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import area_registry as ar
-from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import area_registry as ar, device_registry as dr
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .coordinator import HomeRoutinesCoordinator, list_areas, list_people, notify_targets
+from .coordinator import (
+    HomeRoutinesCoordinator,
+    list_areas,
+    list_people,
+    notify_targets,
+)
 from .routines import normalize_routine
 from .run_log import WINDOWS, summarize
 from .schema import vol
@@ -62,7 +66,7 @@ def _devices(hass: HomeAssistant) -> list[dict[str, Any]]:
 def _is_number(value: str) -> bool:
     try:
         float(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
     return True
 
@@ -80,7 +84,9 @@ def _zones(hass: HomeAssistant) -> list[dict[str, str]]:
     return zones
 
 
-def _overview(hass: HomeAssistant, coordinator: HomeRoutinesCoordinator) -> dict[str, Any]:
+def _overview(
+    hass: HomeAssistant, coordinator: HomeRoutinesCoordinator
+) -> dict[str, Any]:
     sensors = [
         {
             "entity_id": s.entity_id,
@@ -88,7 +94,9 @@ def _overview(hass: HomeAssistant, coordinator: HomeRoutinesCoordinator) -> dict
             "device_class": s.attributes.get("device_class"),
             "state": s.state,
         }
-        for s in sorted(hass.states.async_all("binary_sensor"), key=lambda s: s.entity_id)
+        for s in sorted(
+            hass.states.async_all("binary_sensor"), key=lambda s: s.entity_id
+        )
     ]
     numeric = [
         {
@@ -100,7 +108,9 @@ def _overview(hass: HomeAssistant, coordinator: HomeRoutinesCoordinator) -> dict
         for s in sorted(hass.states.async_all("sensor"), key=lambda s: s.entity_id)
         if s.attributes.get("unit_of_measurement") and _is_number(s.state)
     ]
-    statuses = {r["id"]: coordinator.get_status(r["id"]) or {} for r in coordinator.routines}
+    statuses = {
+        r["id"]: coordinator.get_status(r["id"]) or {} for r in coordinator.routines
+    }
     # Every entity, not only the ones in an area, so a to-do link can watch any device.
     all_entities = sorted(
         (
@@ -181,7 +191,9 @@ async def ws_activity(
         connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
         return
     now = dt_util.now()
-    summary = summarize(coordinator.run_log.events(), msg["window"], now, coordinator.routines)
+    summary = summarize(
+        coordinator.run_log.events(), msg["window"], now, coordinator.routines
+    )
     summary["health"] = [
         {"id": r["id"], "name": r["name"], "problems": problems}
         for r in coordinator.routines
@@ -206,7 +218,8 @@ async def ws_status(
             "revision": coordinator.revision,
             "paused": coordinator.paused,
             "statuses": {
-                r["id"]: coordinator.get_status(r["id"]) or {} for r in coordinator.routines
+                r["id"]: coordinator.get_status(r["id"]) or {}
+                for r in coordinator.routines
             },
         },
     )
@@ -247,7 +260,9 @@ async def ws_import(
     if coordinator is None:
         connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
         return
-    connection.send_result(msg["id"], await coordinator.async_import_routines(msg["routines"]))
+    connection.send_result(
+        msg["id"], await coordinator.async_import_routines(msg["routines"])
+    )
 
 
 @websocket_api.websocket_command(
@@ -369,7 +384,9 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         await hass.http.async_register_static_paths(
             [
                 StaticPathConfig(STATIC_URL, str(FRONTEND_DIR), cache_headers=False),
-                StaticPathConfig(f"{STATIC_URL}/brand", str(BRAND_DIR), cache_headers=True),
+                StaticPathConfig(
+                    f"{STATIC_URL}/brand", str(BRAND_DIR), cache_headers=True
+                ),
             ]
         )
         hass.data[_STATIC_REGISTERED] = True

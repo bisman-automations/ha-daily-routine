@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import pytest
-from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.daily_routine.const import DOMAIN
 from custom_components.daily_routine.coordinator import TIMING_SETTINGS
 from custom_components.daily_routine.schema import vol
+from homeassistant.core import HomeAssistant
 
 
 async def _setup(hass: HomeAssistant):
-    entry = MockConfigEntry(domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN)
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN
+    )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -42,7 +44,11 @@ async def test_timing_settings_start_at_their_defaults(
     ],
 )
 async def test_timing_settings_reject_values_outside_their_limits(
-    hass: HomeAssistant, enable_custom_integrations, hass_storage, key: str, value: object
+    hass: HomeAssistant,
+    enable_custom_integrations,
+    hass_storage,
+    key: str,
+    value: object,
 ) -> None:
     coord = await _setup(hass)
     before = dict(coord.settings)
@@ -77,4 +83,6 @@ async def test_saving_timing_settings_restarts_the_health_check(
     first = coord._health_unsub
     await coord.async_set_settings({**coord.settings, "health_check_minutes": 20})
     assert coord._health_unsub is not None
-    assert coord._health_unsub is not first, "the interval is scheduled again at the new value"
+    assert coord._health_unsub is not first, (
+        "the interval is scheduled again at the new value"
+    )

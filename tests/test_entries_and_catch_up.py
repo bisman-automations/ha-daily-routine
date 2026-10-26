@@ -4,11 +4,6 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import area_registry as ar
-from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers import entity_registry as er
-from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_mock_service,
@@ -19,13 +14,24 @@ from custom_components.daily_routine.coordinator import (
     _entities_by_area,
     area_entity_ids,
 )
-from custom_components.daily_routine.diagnostics import async_get_config_entry_diagnostics
+from custom_components.daily_routine.diagnostics import (
+    async_get_config_entry_diagnostics,
+)
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import (
+    area_registry as ar,
+    device_registry as dr,
+    entity_registry as er,
+)
+from homeassistant.util import dt as dt_util
 
 from .conftest import make_routine
 
 
 async def _setup(hass: HomeAssistant):
-    entry = MockConfigEntry(domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN)
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN
+    )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -34,7 +40,9 @@ async def _setup(hass: HomeAssistant):
 
 def _subentries(entry):
     return {
-        s.unique_id: s for s in entry.subentries.values() if s.subentry_type == ROUTINE_SUBENTRY
+        s.unique_id: s
+        for s in entry.subentries.values()
+        if s.subentry_type == ROUTINE_SUBENTRY
     }
 
 
@@ -56,7 +64,9 @@ async def test_each_dashboard_routine_gets_an_entry_and_companions_do_not(
     hass: HomeAssistant, enable_custom_integrations, hass_storage
 ) -> None:
     entry, coordinator = await _setup(hass)
-    await coordinator.async_save_routine(make_routine(id="kitchen", name="Kitchen lights"))
+    await coordinator.async_save_routine(
+        make_routine(id="kitchen", name="Kitchen lights")
+    )
     await coordinator.async_save_routine(
         make_routine(
             id="bath_fan",
@@ -65,7 +75,13 @@ async def test_each_dashboard_routine_gets_an_entry_and_companions_do_not(
             value_entity="sensor.bathroom_humidity",
             value_threshold=60,
             off_threshold=50,
-            actions=[{"service": "fan.turn_on", "target": {"entity_id": ["fan.bath"]}, "data": {}}],
+            actions=[
+                {
+                    "service": "fan.turn_on",
+                    "target": {"entity_id": ["fan.bath"]},
+                    "data": {},
+                }
+            ],
         )
     )
     await hass.async_block_till_done()
@@ -82,7 +98,9 @@ async def test_deleting_a_routine_removes_its_entry(
     hass: HomeAssistant, enable_custom_integrations, hass_storage
 ) -> None:
     entry, coordinator = await _setup(hass)
-    await coordinator.async_save_routine(make_routine(id="kitchen", name="Kitchen lights"))
+    await coordinator.async_save_routine(
+        make_routine(id="kitchen", name="Kitchen lights")
+    )
     await coordinator.async_delete_routine("kitchen")
     await hass.async_block_till_done()
     assert _subentries(entry) == {}
@@ -94,7 +112,9 @@ async def test_removing_an_entry_in_home_assistant_deletes_the_routine(
     hass: HomeAssistant, enable_custom_integrations, hass_storage
 ) -> None:
     entry, coordinator = await _setup(hass)
-    await coordinator.async_save_routine(make_routine(id="kitchen", name="Kitchen lights"))
+    await coordinator.async_save_routine(
+        make_routine(id="kitchen", name="Kitchen lights")
+    )
     await hass.async_block_till_done()
     sub = _subentries(entry)["kitchen"]
 
@@ -109,7 +129,9 @@ async def test_editing_an_entry_in_home_assistant_updates_the_routine(
     hass: HomeAssistant, enable_custom_integrations, hass_storage
 ) -> None:
     entry, coordinator = await _setup(hass)
-    await coordinator.async_save_routine(make_routine(id="kitchen", name="Kitchen lights"))
+    await coordinator.async_save_routine(
+        make_routine(id="kitchen", name="Kitchen lights")
+    )
     await hass.async_block_till_done()
     sub = _subentries(entry)["kitchen"]
 
@@ -148,7 +170,9 @@ async def test_bad_steps_in_the_entry_form_show_an_error(
     hass: HomeAssistant, enable_custom_integrations, hass_storage
 ) -> None:
     entry, coordinator = await _setup(hass)
-    await coordinator.async_save_routine(make_routine(id="kitchen", name="Kitchen lights"))
+    await coordinator.async_save_routine(
+        make_routine(id="kitchen", name="Kitchen lights")
+    )
     await hass.async_block_till_done()
     sub = _subentries(entry)["kitchen"]
 
@@ -222,7 +246,9 @@ async def test_diagnostics_include_routines_and_redact_phones(
 ) -> None:
     async_mock_service(hass, "notify", "mobile_app_alex_phone")
     entry, coordinator = await _setup(hass)
-    await coordinator.async_save_routine(make_routine(id="kitchen", name="Kitchen lights"))
+    await coordinator.async_save_routine(
+        make_routine(id="kitchen", name="Kitchen lights")
+    )
     await coordinator.async_set_settings(
         {"hidden_people": [], "notify_services": ["notify.mobile_app_alex_phone"]}
     )

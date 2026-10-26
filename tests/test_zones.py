@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import pytest
-from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_mock_service,
+)
 
 from custom_components.daily_routine.const import DOMAIN
 from custom_components.daily_routine.routines import normalize_routine
 from custom_components.daily_routine.schema import vol
+from homeassistant.core import HomeAssistant
 
 
 def _leave(zone: str | None = None, **overrides):
@@ -17,7 +20,13 @@ def _leave(zone: str | None = None, **overrides):
         "name": "Leave work",
         "trigger": "everyone_leaves",
         "people": ["person.alex"],
-        "actions": [{"service": "lock.lock", "target": {"entity_id": ["lock.front"]}, "data": {}}],
+        "actions": [
+            {
+                "service": "lock.lock",
+                "target": {"entity_id": ["lock.front"]},
+                "data": {},
+            }
+        ],
     }
     if zone is not None:
         raw["zone"] = zone
@@ -35,7 +44,9 @@ def test_zone_must_be_a_zone_entity() -> None:
 
 
 async def _setup(hass: HomeAssistant):
-    entry = MockConfigEntry(domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN)
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN
+    )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -47,12 +58,16 @@ async def test_leaving_work_runs_when_the_last_person_goes(
 ) -> None:
     calls = async_mock_service(hass, "lock", "lock")
     hass.states.async_set("zone.work", "0", {"friendly_name": "Work"})
-    hass.states.async_set("person.alex", "Work", {"source": "device_tracker.alex_phone"})
+    hass.states.async_set(
+        "person.alex", "Work", {"source": "device_tracker.alex_phone"}
+    )
     entry, coordinator = await _setup(hass)
     await coordinator.async_save_routine(_leave("zone.work"))
     await hass.async_block_till_done()
 
-    hass.states.async_set("person.alex", "home", {"source": "device_tracker.alex_phone"})
+    hass.states.async_set(
+        "person.alex", "home", {"source": "device_tracker.alex_phone"}
+    )
     await hass.async_block_till_done()
     assert len(calls) == 1
 
@@ -65,12 +80,16 @@ async def test_leaving_home_does_not_fire_for_someone_at_work(
 ) -> None:
     calls = async_mock_service(hass, "lock", "lock")
     hass.states.async_set("zone.work", "0", {"friendly_name": "Work"})
-    hass.states.async_set("person.alex", "home", {"source": "device_tracker.alex_phone"})
+    hass.states.async_set(
+        "person.alex", "home", {"source": "device_tracker.alex_phone"}
+    )
     entry, coordinator = await _setup(hass)
     await coordinator.async_save_routine(_leave())
     await hass.async_block_till_done()
 
-    hass.states.async_set("person.alex", "Work", {"source": "device_tracker.alex_phone"})
+    hass.states.async_set(
+        "person.alex", "Work", {"source": "device_tracker.alex_phone"}
+    )
     await hass.async_block_till_done()
     assert len(calls) == 1, "leaving home should count someone at work as away"
 

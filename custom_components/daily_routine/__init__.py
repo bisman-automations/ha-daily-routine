@@ -47,10 +47,15 @@ async def _async_migrate(
         if other.entry_id != entry.entry_id and is_legacy(other):
             # Its routines now live in storage. Leave the empty entry for the user to delete.
             hass.config_entries.async_update_entry(
-                other, title="Daily Routine (migrated – safe to delete)", data={}, options={}
+                other,
+                title="Daily Routine (migrated – safe to delete)",
+                data={},
+                options={},
             )
     if is_legacy(entry):
-        hass.config_entries.async_update_entry(entry, title="Daily Routine", data={}, options={})
+        hass.config_entries.async_update_entry(
+            entry, title="Daily Routine", data={}, options={}
+        )
 
 
 async def _async_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:

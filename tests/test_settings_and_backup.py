@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry, async_mock_service
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_mock_service,
+)
 
 from custom_components.daily_routine.const import DOMAIN, ROUTINE_SUBENTRY
 from custom_components.daily_routine.routines import normalize_routine
@@ -15,6 +17,7 @@ from custom_components.daily_routine.text_format import (
     parse_steps_text,
     steps_to_text,
 )
+from homeassistant.core import HomeAssistant
 
 from .conftest import make_routine
 
@@ -30,7 +33,11 @@ def test_steps_round_trip_through_text() -> None:
                 "data": {},
             },
             {"delay": 30.0},
-            {"service": "cover.open_cover", "target": {"area_id": ["living_room"]}, "data": {}},
+            {
+                "service": "cover.open_cover",
+                "target": {"area_id": ["living_room"]},
+                "data": {},
+            },
             {
                 "service": "light.turn_on",
                 "target": {"entity_id": ["light.kitchen"]},
@@ -52,7 +59,9 @@ def test_steps_round_trip_through_text() -> None:
 
 
 def test_step_lines_accept_wait_in_clock_form_and_skip_comments() -> None:
-    actions = parse_steps_text("# bedtime\n\nwait 00:01:30\nlight.turn_off | light.hall\n")
+    actions = parse_steps_text(
+        "# bedtime\n\nwait 00:01:30\nlight.turn_off | light.hall\n"
+    )
     assert actions == [
         {"delay": "00:01:30"},
         {"service": "light.turn_off", "target": {"entity_id": ["light.hall"]}},
@@ -111,7 +120,9 @@ def test_condition_line_without_equals_is_rejected() -> None:
 
 
 async def _setup(hass: HomeAssistant):
-    entry = MockConfigEntry(domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN)
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN
+    )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -130,14 +141,21 @@ async def test_settings_editor_saves_people_sensors_conditions_and_options(
     hass: HomeAssistant, enable_custom_integrations, hass_storage
 ) -> None:
     hass.states.async_set("person.sam", "home", {"source": "device_tracker.sam_phone"})
-    hass.states.async_set("binary_sensor.hall_motion", "off", {"device_class": "motion"})
+    hass.states.async_set(
+        "binary_sensor.hall_motion", "off", {"device_class": "motion"}
+    )
     entry, coordinator = await _setup(hass)
-    await coordinator.async_save_routine(make_routine(id="kitchen", name="Kitchen lights"))
+    await coordinator.async_save_routine(
+        make_routine(id="kitchen", name="Kitchen lights")
+    )
     await hass.async_block_till_done()
 
     result = await hass.config_entries.subentries.async_init(
         (entry.entry_id, ROUTINE_SUBENTRY),
-        context={"source": "reconfigure", "subentry_id": _sub(entry, "kitchen").subentry_id},
+        context={
+            "source": "reconfigure",
+            "subentry_id": _sub(entry, "kitchen").subentry_id,
+        },
     )
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
@@ -207,11 +225,16 @@ async def test_settings_editor_reports_a_bad_condition_line(
     hass: HomeAssistant, enable_custom_integrations, hass_storage
 ) -> None:
     entry, coordinator = await _setup(hass)
-    await coordinator.async_save_routine(make_routine(id="kitchen", name="Kitchen lights"))
+    await coordinator.async_save_routine(
+        make_routine(id="kitchen", name="Kitchen lights")
+    )
     await hass.async_block_till_done()
     result = await hass.config_entries.subentries.async_init(
         (entry.entry_id, ROUTINE_SUBENTRY),
-        context={"source": "reconfigure", "subentry_id": _sub(entry, "kitchen").subentry_id},
+        context={
+            "source": "reconfigure",
+            "subentry_id": _sub(entry, "kitchen").subentry_id,
+        },
     )
     result = await hass.config_entries.subentries.async_configure(
         result["flow_id"],
@@ -242,7 +265,11 @@ def _person_routine(trigger: str, **overrides):
         "zone": "zone.work",
         "people": ["person.sam"],
         "actions": [
-            {"service": "light.turn_off", "target": {"entity_id": ["light.hall"]}, "data": {}}
+            {
+                "service": "light.turn_off",
+                "target": {"entity_id": ["light.hall"]},
+                "data": {},
+            }
         ],
     }
     raw.update(overrides)
@@ -255,18 +282,24 @@ async def test_one_person_leaving_a_place_runs_even_when_others_stay(
     calls = async_mock_service(hass, "light", "turn_off")
     hass.states.async_set("zone.work", "0", {"friendly_name": "Work"})
     hass.states.async_set("person.sam", "Work", {"source": "device_tracker.sam_phone"})
-    hass.states.async_set("person.riley", "home", {"source": "device_tracker.riley_phone"})
+    hass.states.async_set(
+        "person.riley", "home", {"source": "device_tracker.riley_phone"}
+    )
     entry, coordinator = await _setup(hass)
     await coordinator.async_save_routine(
         _person_routine("person_leaves", people=["person.sam", "person.riley"])
     )
     await hass.async_block_till_done()
 
-    hass.states.async_set("person.riley", "Work", {"source": "device_tracker.riley_phone"})
+    hass.states.async_set(
+        "person.riley", "Work", {"source": "device_tracker.riley_phone"}
+    )
     await hass.async_block_till_done()
     assert calls == []  # arriving at work is not leaving work
 
-    hass.states.async_set("person.riley", "home", {"source": "device_tracker.riley_phone"})
+    hass.states.async_set(
+        "person.riley", "home", {"source": "device_tracker.riley_phone"}
+    )
     await hass.async_block_till_done()
     assert len(calls) == 1  # Riley left work; Sam was not involved
 
@@ -287,20 +320,28 @@ async def test_arriving_at_a_place_runs_for_the_chosen_person_only(
     calls = async_mock_service(hass, "light", "turn_on")
     hass.states.async_set("zone.work", "0", {"friendly_name": "Work"})
     hass.states.async_set("person.sam", "home", {"source": "device_tracker.sam_phone"})
-    hass.states.async_set("person.riley", "home", {"source": "device_tracker.riley_phone"})
+    hass.states.async_set(
+        "person.riley", "home", {"source": "device_tracker.riley_phone"}
+    )
     entry, coordinator = await _setup(hass)
     await coordinator.async_save_routine(
         _person_routine(
             "person_arrives",
             id="sam_arrives",
             actions=[
-                {"service": "light.turn_on", "target": {"entity_id": ["light.hall"]}, "data": {}}
+                {
+                    "service": "light.turn_on",
+                    "target": {"entity_id": ["light.hall"]},
+                    "data": {},
+                }
             ],
         )
     )
     await hass.async_block_till_done()
 
-    hass.states.async_set("person.riley", "Work", {"source": "device_tracker.riley_phone"})
+    hass.states.async_set(
+        "person.riley", "Work", {"source": "device_tracker.riley_phone"}
+    )
     await hass.async_block_till_done()
     assert calls == []  # not a person on this routine
 
@@ -321,7 +362,9 @@ async def test_an_unavailable_person_does_not_trigger_a_leave(
     await coordinator.async_save_routine(_person_routine("person_leaves"))
     await hass.async_block_till_done()
 
-    hass.states.async_set("person.sam", "unavailable", {"source": "device_tracker.sam_phone"})
+    hass.states.async_set(
+        "person.sam", "unavailable", {"source": "device_tracker.sam_phone"}
+    )
     await hass.async_block_till_done()
     assert calls == []
     assert await hass.config_entries.async_unload(entry.entry_id)
@@ -340,7 +383,9 @@ async def test_export_leaves_out_turn_off_routines_and_import_restores_them(
     hass: HomeAssistant, enable_custom_integrations, hass_storage
 ) -> None:
     hass.states.async_set(
-        "sensor.hall_humidity", "40", {"unit_of_measurement": "%", "device_class": "humidity"}
+        "sensor.hall_humidity",
+        "40",
+        {"unit_of_measurement": "%", "device_class": "humidity"},
     )
     entry, coordinator = await _setup(hass)
     await coordinator.async_save_routine(
@@ -351,7 +396,13 @@ async def test_export_leaves_out_turn_off_routines_and_import_restores_them(
             value_entity="sensor.hall_humidity",
             value_threshold=60,
             off_threshold=50,
-            actions=[{"service": "fan.turn_on", "target": {"entity_id": ["fan.hall"]}, "data": {}}],
+            actions=[
+                {
+                    "service": "fan.turn_on",
+                    "target": {"entity_id": ["fan.hall"]},
+                    "data": {},
+                }
+            ],
         )
     )
     await hass.async_block_till_done()

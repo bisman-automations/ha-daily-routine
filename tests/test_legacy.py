@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.daily_routine.const import (
@@ -15,6 +13,8 @@ from custom_components.daily_routine.const import (
 )
 from custom_components.daily_routine.legacy import legacy_routines
 from custom_components.daily_routine.routines import normalize_routine
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 
 
 def test_per_routine_entry_converts() -> None:
@@ -43,7 +43,12 @@ def test_per_routine_entry_converts() -> None:
     assert routine["trigger"] == "everyone_leaves"
     # Leaving triggers already check that everyone is away, so no extra condition is added.
     assert routine["conditions"] == [
-        {"kind": "sensors", "sensors": ["binary_sensor.hall"], "mode": "quiet", "minutes": 15}
+        {
+            "kind": "sensors",
+            "sensors": ["binary_sensor.hall"],
+            "mode": "quiet",
+            "minutes": 15,
+        }
     ]
     assert routine["actions"][0] == {
         "service": "light.turn_off",
@@ -80,7 +85,10 @@ def test_json_option_converts() -> None:
         ]
     )
     entry = MockConfigEntry(
-        domain=DOMAIN, title="Daily Routine", data={}, options={LEGACY_CONF_ROUTINES_JSON: raw_json}
+        domain=DOMAIN,
+        title="Daily Routine",
+        data={},
+        options={LEGACY_CONF_ROUTINES_JSON: raw_json},
     )
     raws = legacy_routines([entry])
     assert [normalize_routine(r)["id"] for r in raws] == ["morning_covers"]
@@ -119,7 +127,10 @@ async def test_setup_migrates_and_removes_extra_entries(
     await hass.async_block_till_done()
 
     coordinator = hass.data[DOMAIN]["coordinator"]
-    assert {r["id"] for r in coordinator.routines} == {"morning_covers", "bedroom_covers"}
+    assert {r["id"] for r in coordinator.routines} == {
+        "morning_covers",
+        "bedroom_covers",
+    }
     assert coordinator.migrated is True
     assert hass.config_entries.async_get_entry(first.entry_id).data == {}
     leftover = hass.config_entries.async_get_entry(second.entry_id)

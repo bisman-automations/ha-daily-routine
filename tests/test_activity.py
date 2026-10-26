@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from homeassistant.core import HomeAssistant
-from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.daily_routine.const import DOMAIN
 from custom_components.daily_routine.run_log import summarize
+from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 NOW = datetime(2026, 10, 25, 15, 0, tzinfo=dt_util.UTC)
 ROUTINES = [
@@ -68,10 +68,17 @@ def test_per_routine_rows_include_the_last_failure_and_failure_streak() -> None:
         _event("lights", "ran", NOW - timedelta(days=3)),
         _event("lights", "failed", NOW - timedelta(days=2), "error:light.turn_on"),
         _event("lights", "failed", NOW - timedelta(days=1), "error:light.turn_on"),
-        _event("lights", "failed", NOW - timedelta(hours=1), "missing_service:light.turn_on"),
+        _event(
+            "lights",
+            "failed",
+            NOW - timedelta(hours=1),
+            "missing_service:light.turn_on",
+        ),
     ]
     row = next(
-        r for r in summarize(events, "30d", NOW, ROUTINES)["by_routine"] if r["id"] == "lights"
+        r
+        for r in summarize(events, "30d", NOW, ROUTINES)["by_routine"]
+        if r["id"] == "lights"
     )
     assert row["failed"] == 3 and row["ran"] == 1
     assert row["last_failure"]["reason"] == "missing_service:light.turn_on"
@@ -79,7 +86,10 @@ def test_per_routine_rows_include_the_last_failure_and_failure_streak() -> None:
 
 
 def test_repeated_failures_and_quiet_routines_are_called_out() -> None:
-    events = [_event("lights", "failed", NOW - timedelta(hours=i), "error:x") for i in range(3)]
+    events = [
+        _event("lights", "failed", NOW - timedelta(hours=i), "error:x")
+        for i in range(3)
+    ]
     result = summarize(events, "7d", NOW, ROUTINES)
     assert result["repeated_failures"] == [{"name": "Lights off", "count": 3}]
     assert result["quiet_routines"] == ["Lock up", "Idle routine"]
@@ -88,11 +98,15 @@ def test_repeated_failures_and_quiet_routines_are_called_out() -> None:
 def test_by_day_groups_by_local_date_and_recent_is_newest_first() -> None:
     events = [
         _event("lights", "ran", NOW - timedelta(days=2)),
-        _event("lock", "skipped", NOW - timedelta(days=2) + timedelta(minutes=5), "Paused"),
+        _event(
+            "lock", "skipped", NOW - timedelta(days=2) + timedelta(minutes=5), "Paused"
+        ),
         _event("lights", "failed", NOW - timedelta(hours=1), "error:x"),
     ]
     result = summarize(events, "7d", NOW, ROUTINES)
-    assert [d["day"] for d in result["by_day"]] == sorted(d["day"] for d in result["by_day"])
+    assert [d["day"] for d in result["by_day"]] == sorted(
+        d["day"] for d in result["by_day"]
+    )
     assert sum(d["ran"] + d["failed"] + d["skipped"] for d in result["by_day"]) == 3
     assert [r["outcome"] for r in result["recent"]] == ["failed", "skipped", "ran"]
 
@@ -100,7 +114,9 @@ def test_by_day_groups_by_local_date_and_recent_is_newest_first() -> None:
 async def test_runs_and_skips_are_recorded_and_served_to_the_tab(
     hass: HomeAssistant, enable_custom_integrations, hass_storage, hass_ws_client
 ) -> None:
-    entry = MockConfigEntry(domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN)
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN
+    )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
@@ -110,7 +126,9 @@ async def test_runs_and_skips_are_recorded_and_served_to_the_tab(
             "id": "hall",
             "name": "Hall lights off",
             "trigger": "manual",
-            "actions": [{"service": "light.turn_off", "target": {"entity_id": ["light.hall"]}}],
+            "actions": [
+                {"service": "light.turn_off", "target": {"entity_id": ["light.hall"]}}
+            ],
         }
     )
     await hass.async_block_till_done()
@@ -136,7 +154,9 @@ async def test_runs_and_skips_are_recorded_and_served_to_the_tab(
 async def test_deleting_a_routine_removes_its_events(
     hass: HomeAssistant, enable_custom_integrations, hass_storage
 ) -> None:
-    entry = MockConfigEntry(domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN)
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN
+    )
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
