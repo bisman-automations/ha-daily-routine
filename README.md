@@ -159,6 +159,7 @@ The history is saved with Home Assistant, keeps the last 30 days, and is removed
 
 - **People in routines.** Turn off the profiles that aren't people, such as a shared display, so they don't appear when you build a routine. A routine that already uses someone keeps them.
 - **Notifications.** Routine runs, skips and failures always appear in Home Assistant's notifications. Tick any phones or devices, shown by name, to send them there too. Any number can be selected.
+- **Who can see Daily Routine.** Admins always can. Routines show who's home and when, so anyone else only sees them once an admin checks their name here. Home Assistant can't show a sidebar entry to only some people, so once anyone who isn't an admin is checked, everyone sees Daily Routine in the sidebar, and people who aren't checked get a page saying they don't have access. Only admins can change routines and settings.
 - **Timing.** Four values apply to every routine: how long a to-do step waits for a list that is still loading (default 30 seconds), how often the health check runs (default every 15 minutes), how long a problem must last before it is announced (default 60 seconds), and a startup quiet period with no health alerts (default 5 minutes). Raise the list wait if a cloud list such as iCloud takes a while to load after a restart.
 
 ## Routine reference
@@ -200,6 +201,8 @@ The history is saved with Home Assistant, keeps the last 30 days, and is removed
 | `daily_routine.run_routine` | Run a routine by id. Conditions still apply; the once-a-day rule does not. |
 | `daily_routine.reload_routines` | Restart all schedules and watchers. |
 
+Both are open to automations, admins and the people allowed to see Daily Routine. They report an error when Daily Routine isn't running or the routine id is unknown.
+
 ```yaml
 service: daily_routine.run_routine
 data:
@@ -208,7 +211,7 @@ data:
 
 Entities:
 
-- `switch.pause_all_routines`: on = all automatic routines paused.
+- `switch.pause_all_routines`: on = all automatic routines paused. Admins, the people allowed to see Daily Routine, and automations can switch it.
 - Routine status sensors: one per routine, on that routine's service device. The entity id is set by Home Assistant. Routines created on Home Assistant 2026.10 or later include the device name in it (for example `sensor.daily_routine_<routine>_status`). Upgraded routines keep their existing id. The state is `idle`, `waiting`, `running`, `skipped`, or `error`. Attributes include `last_run`, `last_result`, `next_run`, `block_reason`, `waiting`, and `repeat`.
 
 ## Events

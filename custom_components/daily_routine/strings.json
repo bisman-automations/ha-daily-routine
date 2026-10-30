@@ -64,13 +64,25 @@
       "abort": {
         "updated": "Routine saved.",
         "use_sidebar": "Routines are made in the Daily Routine sidebar.",
-        "routine_missing": "This routine no longer exists."
+        "routine_missing": "This routine no longer exists.",
+        "not_loaded": "Daily Routine isn't running. Turn it on, or restart Home Assistant, then try again."
       },
       "error": {
         "invalid_steps": "{reason}",
         "invalid_conditions": "{reason}",
         "invalid_routine": "This routine can't be saved: {reason}"
       }
+    }
+  },
+  "exceptions": {
+    "not_loaded": {
+      "message": "Daily Routine isn't running. Turn it on, or restart Home Assistant, then try again."
+    },
+    "run_failed": {
+      "message": "Couldn't run the routine: {error}"
+    },
+    "not_allowed": {
+      "message": "You don't have access to Daily Routine. An admin can give you access in Daily Routine, under Settings."
     }
   }
 }

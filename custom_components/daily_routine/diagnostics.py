@@ -8,7 +8,7 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
+from .runtime import get_coordinator
 
 # Phone names and hidden profiles are personal, so they are redacted from the download.
 TO_REDACT = {"notify_services", "hidden_people"}
@@ -31,7 +31,7 @@ def _redact_people(value: Any) -> Any:
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> dict[str, Any]:
-    coordinator = hass.data.get(DOMAIN, {}).get("coordinator")
+    coordinator = get_coordinator(hass)
     if coordinator is None:
         return {"loaded": False}
     routines = [dict(r) for r in coordinator.routines]

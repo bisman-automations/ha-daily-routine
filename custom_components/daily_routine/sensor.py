@@ -25,7 +25,7 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    coordinator = hass.data[DOMAIN]["coordinator"]
+    coordinator = entry.runtime_data
     entities: dict[str, RoutineStatusSensor] = {}
 
     @callback

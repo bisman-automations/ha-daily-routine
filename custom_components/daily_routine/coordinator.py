@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from datetime import datetime, time as dt_time, timedelta
 import logging
 import re
@@ -21,7 +21,6 @@ from homeassistant.core import (
     Event,
     EventStateChangedData,
     HomeAssistant,
-    ServiceCall,
     State,
     callback,
 )
@@ -382,7 +381,7 @@ class HomeRoutinesCoordinator:
     def _send_notification(
         self, message: str, notification_id: str | None = None
     ) -> None:
-        self.hass.async_create_task(self._notify(message, notification_id))
+        self._spawn(self._notify(message, notification_id))
 
     @staticmethod
     def _health_notification_id(routine_id: str) -> str:
@@ -543,7 +542,7 @@ class HomeRoutinesCoordinator:
             async_call_later(self.hass, STARTUP_SETTLE_SECONDS, _later)
         )
 
-    async def async_unload(self) -> None:
+    async def async_unload(self, *, save: bool = True) -> None:
         for unsub in self._startup_unsubs:
             unsub()
         self._startup_unsubs.clear()
@@ -551,7 +550,8 @@ class HomeRoutinesCoordinator:
             self._health_unsub()
             self._health_unsub = None
         self._drop_all_handles()
-        await self._async_save()
+        if save:
+            await self._async_save()
 
     def _payload(self) -> dict[str, Any]:
         runtime = {
@@ -641,7 +641,7 @@ class HomeRoutinesCoordinator:
     async def async_delete_routine(self, routine_id: str) -> None:
         async with self._lock:
             self._drop_companions(routine_id)
-            self.hass.async_create_task(self._dismiss_health_notification(routine_id))
+            self._spawn(self._dismiss_health_notification(routine_id))
             self.routines = [r for r in self.routines if r["id"] != routine_id]
             self._runtime.pop(routine_id, None)
             self._history.pop(routine_id, None)
@@ -694,6 +694,14 @@ class HomeRoutinesCoordinator:
 
     def attach_entry(self, entry_id: str) -> None:
         self._entry_id = entry_id
+
+    @callback
+    def _spawn(self, coro: Coroutine[Any, Any, Any]) -> None:
+        """Run work the entry owns: unloading waits for it to finish."""
+        if (entry := self._entry()) is not None:
+            entry.async_create_task(self.hass, coro)
+        else:
+            self.hass.async_create_task(coro)
 
     def _entry(self) -> ConfigEntry | None:
         return (
@@ -1030,7 +1038,7 @@ class HomeRoutinesCoordinator:
             rt = self._rt(routine["id"])
             if rt["armed"]:
                 rt["armed"] = False  # once per quiet period
-                self.hass.async_create_task(
+                self._spawn(
                     self._execute_routine(routine, dt_util.now(), scheduled=True)
                 )
             return
@@ -1095,9 +1103,7 @@ class HomeRoutinesCoordinator:
         ok, _reason = self._check(routine, now)
         if ok:
             self._clear_pending(routine)
-            self.hass.async_create_task(
-                self._execute_routine(routine, now, scheduled=True)
-            )
+            self._spawn(self._execute_routine(routine, now, scheduled=True))
 
     # ----- time and sun triggers -----
 
@@ -1150,9 +1156,7 @@ class HomeRoutinesCoordinator:
         @callback
         def _fire(fired: datetime) -> None:
             self._schedule_one(routine, fired + timedelta(seconds=2))
-            self.hass.async_create_task(
-                self._execute_routine(routine, fired, scheduled=True)
-            )
+            self._spawn(self._execute_routine(routine, fired, scheduled=True))
 
         self._set_handle(
             rid, H_TIME, async_track_point_in_time(self.hass, _fire, next_dt)
@@ -1173,7 +1177,7 @@ class HomeRoutinesCoordinator:
             and self._rt(routine["id"])["last_run_date"] != now.date().isoformat()
         ):
             _LOGGER.info("Catching up missed routine '%s'", routine["name"])
-            self.hass.async_create_task(self._run_catch_up(routine, window_end))
+            self._spawn(self._run_catch_up(routine, window_end))
 
     async def _run_catch_up(
         self, routine: dict[str, Any], window_end: datetime
@@ -1199,7 +1203,7 @@ class HomeRoutinesCoordinator:
 
         @callback
         def _again(_fired: datetime) -> None:
-            self.hass.async_create_task(self._run_catch_up(routine, window_end))
+            self._spawn(self._run_catch_up(routine, window_end))
 
         self._set_handle(
             rid, H_CATCH_UP, async_track_point_in_time(self.hass, _again, retry_at)
@@ -1234,9 +1238,7 @@ class HomeRoutinesCoordinator:
             leaves = trigger == TRIGGER_EVERYONE_LEAVES and is_away and not was_away
             arrives = trigger == TRIGGER_SOMEONE_ARRIVES and was_away and not is_away
             if leaves or arrives:
-                self.hass.async_create_task(
-                    self._execute_routine(routine, now, scheduled=True)
-                )
+                self._spawn(self._execute_routine(routine, now, scheduled=True))
 
         unsub = async_track_state_change_event(self.hass, people, _on_change)
         self._set_handle(rid, H_PRESENCE, unsub)
@@ -1264,9 +1266,7 @@ class HomeRoutinesCoordinator:
             arrives = trigger == TRIGGER_PERSON_ARRIVES and is_in and not was_in
             now = dt_util.now()
             if (leaves or arrives) and self._allowed_day(routine, now):
-                self.hass.async_create_task(
-                    self._execute_routine(routine, now, scheduled=True)
-                )
+                self._spawn(self._execute_routine(routine, now, scheduled=True))
 
         unsub = async_track_state_change_event(self.hass, people, _changed)
         self._set_handle(rid, H_PRESENCE, unsub)
@@ -1291,9 +1291,7 @@ class HomeRoutinesCoordinator:
                 crossed = new < threshold and (old is None or old >= threshold)
             now = dt_util.now()
             if crossed and self._allowed_day(routine, now):
-                self.hass.async_create_task(
-                    self._execute_routine(routine, now, scheduled=True)
-                )
+                self._spawn(self._execute_routine(routine, now, scheduled=True))
 
         unsub = async_track_state_change_event(
             self.hass, [routine["value_entity"]], _changed
@@ -1353,9 +1351,7 @@ class HomeRoutinesCoordinator:
     def _run_state_routine(self, routine: dict[str, Any]) -> None:
         now = dt_util.now()
         if self._allowed_day(routine, now):
-            self.hass.async_create_task(
-                self._execute_routine(routine, now, scheduled=True)
-            )
+            self._spawn(self._execute_routine(routine, now, scheduled=True))
 
     def _check_states_changed_while_stopped(self) -> None:
         """A device that changed into a chosen state while Home Assistant was stopped runs its routine once."""
@@ -1378,7 +1374,7 @@ class HomeRoutinesCoordinator:
             ):
                 self._start_state_run(routine)
         if changed:
-            self.hass.async_create_task(self._async_save())
+            self._spawn(self._async_save())
 
     # ----- starting everything -----
 
@@ -1389,12 +1385,12 @@ class HomeRoutinesCoordinator:
         if routine["trigger"] not in TODO_DONE_TRIGGERS or not routine["enabled"]:
             return
         if self._rt(rid).get("seen_done") is None:
-            self.hass.async_create_task(self._check_done(routine))
+            self._spawn(self._check_done(routine))
 
         @callback
         def _changed(event: Event[EventStateChangedData]) -> None:
             if event.data.get("new_state") is not None:
-                self.hass.async_create_task(self._check_done(routine))
+                self._spawn(self._check_done(routine))
 
         unsub = async_track_state_change_event(
             self.hass, [routine["watch_entity"]], _changed
@@ -1455,9 +1451,7 @@ class HomeRoutinesCoordinator:
         problems = self.health(routine)
         if not problems:
             rt["health_alerted"] = False
-            self.hass.async_create_task(
-                self._dismiss_health_notification(routine["id"])
-            )
+            self._spawn(self._dismiss_health_notification(routine["id"]))
         elif not rt.get("health_alerted"):
             rt["health_alerted"] = True
             if routine["notify_on_health"]:
@@ -1499,7 +1493,7 @@ class HomeRoutinesCoordinator:
         """Items checked off while Home Assistant was stopped run their routine once, after startup."""
         for routine in self.routines:
             if routine["trigger"] in TODO_DONE_TRIGGERS and routine["enabled"]:
-                self.hass.async_create_task(self._check_done(routine))
+                self._spawn(self._check_done(routine))
 
     def _start_all(self, *, catch_up: bool) -> None:
         now = dt_util.now()
@@ -1787,12 +1781,6 @@ class HomeRoutinesCoordinator:
         return problems
 
     # ----- service handlers -----
-
-    async def async_run_routine(self, call: ServiceCall) -> None:
-        try:
-            await self.async_run(call.data["routine_id"])
-        except vol.Invalid as err:
-            _LOGGER.error("%s", err)
 
 
 # Turning a step off again: the opposite service for each service a routine can use.

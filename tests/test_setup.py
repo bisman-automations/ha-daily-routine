@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.daily_routine.const import DOMAIN
+from custom_components.daily_routine.coordinator import HomeRoutinesCoordinator
+from custom_components.daily_routine.runtime import get_coordinator
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 
@@ -26,7 +33,92 @@ async def test_entry_sets_up_with_services_and_pause_switch(
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()
-    assert not hass.services.has_service(DOMAIN, "run_routine")
+    assert get_coordinator(hass) is None
+    # The actions stay registered, and say Daily Routine isn't running.
+    with pytest.raises(ServiceValidationError) as err:
+        await hass.services.async_call(
+            DOMAIN, "run_routine", {"routine_id": "x"}, blocking=True
+        )
+    assert err.value.translation_key == "not_loaded"
+
+
+async def test_run_routine_unknown_id_raises(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    with pytest.raises(ServiceValidationError) as err:
+        await hass.services.async_call(
+            DOMAIN, "run_routine", {"routine_id": "nope"}, blocking=True
+        )
+    assert err.value.translation_key == "run_failed"
+
+
+async def test_failed_setup_leaves_nothing_behind(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    """A setup that fails part way stops what it started, and the retry works."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN
+    )
+    entry.add_to_hass(hass)
+    with (
+        patch(
+            "custom_components.daily_routine.HomeRoutinesCoordinator.async_sync_subentries",
+            side_effect=RuntimeError("boom"),
+        ),
+        patch(
+            "custom_components.daily_routine.HomeRoutinesCoordinator.async_unload",
+            autospec=True,
+            side_effect=HomeRoutinesCoordinator.async_unload,
+        ) as unload,
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert unload.call_count == 1
+    assert get_coordinator(hass) is None
+
+    await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+    assert get_coordinator(hass) is entry.runtime_data
+    assert hass.states.get("switch.pause_all_routines") is not None
+
+
+async def test_edit_routine_while_not_loaded_aborts(
+    hass: HomeAssistant, enable_custom_integrations
+) -> None:
+    """Editing a routine's entry while Daily Routine is off used to raise KeyError."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Daily Routine", data={}, unique_id=DOMAIN
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    await get_coordinator(hass).async_save_routine(
+        {
+            "id": "covers",
+            "name": "Morning covers",
+            "trigger": "time",
+            "time": "07:00:00",
+            "actions": [
+                {"service": "cover.open_cover", "target": {"entity_id": ["cover.a"]}}
+            ],
+        }
+    )
+    await hass.async_block_till_done()
+    subentry = next(iter(entry.subentries.values()))
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    result = await entry.start_subentry_reconfigure_flow(hass, subentry.subentry_id)
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "not_loaded"
 
 
 async def test_saved_routine_gets_a_status_sensor_and_removal_drops_it(
@@ -38,7 +130,7 @@ async def test_saved_routine_gets_a_status_sensor_and_removal_drops_it(
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    coordinator = hass.data[DOMAIN]["coordinator"]
+    coordinator = get_coordinator(hass)
 
     await coordinator.async_save_routine(
         {
@@ -83,7 +175,7 @@ async def test_pause_switch_drives_the_coordinator(
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    coordinator = hass.data[DOMAIN]["coordinator"]
+    coordinator = get_coordinator(hass)
 
     await hass.services.async_call(
         "switch", "turn_on", {"entity_id": "switch.pause_all_routines"}, blocking=True
@@ -107,7 +199,7 @@ async def test_routines_are_service_devices_linked_to_their_device(
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    coordinator = hass.data[DOMAIN]["coordinator"]
+    coordinator = get_coordinator(hass)
     registry = dr.async_get(hass)
     entities = er.async_get(hass)
 
@@ -199,7 +291,7 @@ async def test_routines_only_use_people_with_location_tracking(
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    coordinator = hass.data[DOMAIN]["coordinator"]
+    coordinator = get_coordinator(hass)
     hass.states.async_set(
         "person.alex",
         "not_home",

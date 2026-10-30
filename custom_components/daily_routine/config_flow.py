@@ -15,6 +15,7 @@ from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr, selector
 
 from .const import DOMAIN, ROUTINE_SUBENTRY, TRIGGERS, WEEKDAYS
+from .runtime import get_coordinator
 from .schema import vol
 from .text_format import (
     conditions_to_text,
@@ -296,7 +297,10 @@ class RoutineSubentryFlow(ConfigSubentryFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         subentry: ConfigSubentry = self._get_reconfigure_subentry()
-        coordinator = self.hass.data[DOMAIN]["coordinator"]
+        coordinator = get_coordinator(self.hass)
+        if coordinator is None:
+            # The entry isn't loaded (it failed to start, or it's turned off).
+            return self.async_abort(reason="not_loaded")
         routine = coordinator.get_routine(subentry.unique_id or "")
         if routine is None:
             return self.async_abort(reason="routine_missing")

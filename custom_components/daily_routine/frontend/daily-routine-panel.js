@@ -316,6 +316,18 @@ class DailyRoutinePanel extends HTMLElement {
     // The thin progress bar shows through the host class, so no redraw is needed to start it.
     this.classList.toggle("busy", !silent);
     let changed = true;
+    if (!this._me) {
+      try {
+        this._me = await this._call({ type: `${DOMAIN}/access/me` });
+      } catch (_err) {
+        this._me = { allowed: true, is_admin: !!this._hass.user?.is_admin };
+      }
+    }
+    if (this._me.allowed === false) {
+      this.classList.remove("busy");
+      this._render();
+      return;
+    }
     try {
       const data = await this._call({ type: `${DOMAIN}/overview` });
       const json = JSON.stringify(data);
@@ -837,6 +849,7 @@ class DailyRoutinePanel extends HTMLElement {
         }
         case "tab": {
           const tab = el.dataset.tab;
+          if (tab === "settings") { this._access = null; this._accessFailed = false; }
           this._view = { name: tab === "routines" ? "all" : tab === "todos" ? "todos" : tab === "settings" ? "settings" : tab === "activity" ? "activity" : "rooms" };
           this._draft = null;
           this._preview = null;
@@ -927,6 +940,10 @@ class DailyRoutinePanel extends HTMLElement {
     }
     if (!live && el.dataset.setting !== undefined) {
       if (el.value !== "") this._saveSettings({ [el.dataset.setting]: Number(el.value) });
+      return;
+    }
+    if (!live && el.dataset.accessUser !== undefined) {
+      this._saveAccess();
       return;
     }
     if (!live && (el.dataset.showPerson !== undefined || el.dataset.notifyTarget !== undefined)) {
@@ -1052,6 +1069,13 @@ class DailyRoutinePanel extends HTMLElement {
   _render() {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     this._rendered = true;
+    if (this._me?.allowed === false) {
+      this.shadowRoot.innerHTML = `${STYLES}<main><section class="card">
+        <h2>You don't have access to Daily Routine</h2>
+        <p class="muted">Ask an admin to give you access. They can do it in Daily Routine, under Settings.</p>
+      </section></main>`;
+      return;
+    }
     let body;
     if (!this._data) body = `<div class="skeleton-grid" aria-busy="true" aria-label="Loading">${'<div class="skeleton-card"></div>'.repeat(4)}</div>`;
     else if (this._view.name === "room") body = this._renderRoom();
@@ -1547,11 +1571,63 @@ class DailyRoutinePanel extends HTMLElement {
         <p class="muted small">Routine runs, skips and failures always appear in Home Assistant. Pick any phones or devices to send them there too.</p>
         <div class="checks">${targets}</div>
       </section>
+      ${this._renderAccess()}
       <section class="card">
         <h3>Timing</h3>
         <p class="muted small">How patiently Daily Routine waits on slow devices and cloud lists, such as an iCloud to-do list after a restart. Changes are saved when you leave a box.</p>
         <div class="timing">${timing}</div>
       </section>`;
+  }
+
+  _renderAccess() {
+    const a = this._access;
+    if (!a) {
+      if (!this._accessLoading && !this._accessFailed) {
+        this._accessLoading = true;
+        this._call({ type: `${DOMAIN}/access/get` })
+          .then((res) => {
+            this._access = { people: res?.people || [], ids: new Set(res?.user_ids || []) };
+          })
+          .catch((err) => {
+            // Don't ask again on every redraw; leaving Settings and coming back retries.
+            this._accessFailed = true;
+            this._showNotice(err.message || String(err), true);
+          })
+          .finally(() => {
+            this._accessLoading = false;
+            if (this._view.name === "settings") this._render();
+          });
+      }
+      const text = this._accessFailed ? "Couldn't load the list of people." : "Loading…";
+      return `<section class="card"><h3>Who can see Daily Routine</h3><p class="muted small">${text}</p></section>`;
+    }
+    const others = a.people.filter((p) => !p.is_admin);
+    const people = others.length
+      ? others
+          .map((p) => `<label class="check"><input type="checkbox" data-access-user="${esc(p.id)}" ${a.ids.has(p.id) ? "checked" : ""}> ${esc(p.name)}</label>`)
+          .join("")
+      : `<p class="muted small">Everyone with a Home Assistant login is an admin.</p>`;
+    const everyone = [...a.ids].some((id) => others.some((p) => p.id === id));
+    return `<section class="card">
+        <h3>Who can see Daily Routine</h3>
+        <p class="muted small">Admins always can. Routines show who's home and when, so anyone else only sees them if you check them here. Only admins can change routines and settings.</p>
+        <div class="checks">${people}</div>
+        ${everyone ? `<p class="muted small">Home Assistant can't show a sidebar entry to only some people, so everyone sees Daily Routine in the sidebar. People who aren't checked get a page saying they don't have access.</p>` : ""}
+      </section>`;
+  }
+
+  async _saveAccess() {
+    const ids = [...this.shadowRoot.querySelectorAll("[data-access-user]")]
+      .filter((box) => box.checked)
+      .map((box) => box.dataset.accessUser);
+    try {
+      const res = await this._call({ type: `${DOMAIN}/access/set`, user_ids: ids });
+      this._access = { people: res?.people || [], ids: new Set(res?.user_ids || []) };
+      this._showNotice("Access saved");
+    } catch (err) {
+      this._showNotice(err.message || String(err), true);
+    }
+    this._render();
   }
 
   _roomName(roomId) {

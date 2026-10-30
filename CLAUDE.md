@@ -9,7 +9,9 @@ Home Assistant custom integration (`daily_routine`) for scheduled household rout
   - `routines.py`: validation and normalisation of routine data (`normalize_routine`). Every stored routine goes through here.
   - `const.py`: trigger names, storage key, limits.
   - `schema.py`: the only place that imports the schema library. Always `from .schema import vol`, never `voluptuous` or `probatio` directly.
-  - `panel.py`: sidebar websocket API (`daily_routine/...` commands) and the overview payload.
+  - `panel.py`: sidebar websocket API (`daily_routine/...` commands) and the overview payload. Reads use `@require_access`, changes `require_admin`.
+  - `access.py`: who may see Daily Routine (admins plus the people an admin picks), the same model as TV Mgmt. The pause switch and the actions call `async_ensure_allowed`.
+  - `runtime.py`: the coordinator is the primary entry's `runtime_data`; use `get_coordinator(hass)` outside the entry. Actions are registered once in `async_setup`. Background work goes through the coordinator's `_spawn` (entry-owned tasks).
   - `devices.py`: hub device and one service device per routine.
   - `sensor.py`, `switch.py`: per-routine status sensors and the pause switch.
   - `frontend/daily-routine-panel.js`: the whole sidebar UI, one file, no build step.

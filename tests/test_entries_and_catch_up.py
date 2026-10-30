@@ -17,6 +17,7 @@ from custom_components.daily_routine.coordinator import (
 from custom_components.daily_routine.diagnostics import (
     async_get_config_entry_diagnostics,
 )
+from custom_components.daily_routine.runtime import get_coordinator
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import (
     area_registry as ar,
@@ -35,7 +36,7 @@ async def _setup(hass: HomeAssistant):
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    return entry, hass.data[DOMAIN]["coordinator"]
+    return entry, get_coordinator(hass)
 
 
 def _subentries(entry):

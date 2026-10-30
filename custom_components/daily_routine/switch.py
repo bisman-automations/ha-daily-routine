@@ -9,13 +9,14 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .access import async_ensure_allowed
 from .const import DOMAIN
 
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
-    async_add_entities([RoutinesPausedSwitch(hass.data[DOMAIN]["coordinator"])])
+    async_add_entities([RoutinesPausedSwitch(entry.runtime_data)])
 
 
 class RoutinesPausedSwitch(SwitchEntity):
@@ -35,9 +36,11 @@ class RoutinesPausedSwitch(SwitchEntity):
         return bool(self.coordinator.paused)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
+        await async_ensure_allowed(self.hass, self._context)
         await self.coordinator.async_set_paused(True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
+        await async_ensure_allowed(self.hass, self._context)
         await self.coordinator.async_set_paused(False)
 
     async def async_added_to_hass(self) -> None:

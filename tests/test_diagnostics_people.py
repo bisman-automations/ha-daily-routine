@@ -13,6 +13,7 @@ from custom_components.daily_routine.const import DOMAIN
 from custom_components.daily_routine.diagnostics import (
     async_get_config_entry_diagnostics,
 )
+from custom_components.daily_routine.runtime import get_coordinator
 from homeassistant.core import HomeAssistant
 
 from .conftest import make_routine
@@ -31,7 +32,7 @@ async def test_person_and_phone_ids_are_not_in_the_download(
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    coordinator = hass.data[DOMAIN]["coordinator"]
+    coordinator = get_coordinator(hass)
     await coordinator.async_save_routine(
         make_routine(
             id="tell_alex",

@@ -7,6 +7,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.daily_routine.const import DOMAIN
 from custom_components.daily_routine.coordinator import TIMING_SETTINGS
+from custom_components.daily_routine.runtime import get_coordinator
 from custom_components.daily_routine.schema import vol
 from homeassistant.core import HomeAssistant
 
@@ -18,7 +19,7 @@ async def _setup(hass: HomeAssistant):
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    return hass.data[DOMAIN]["coordinator"]
+    return get_coordinator(hass)
 
 
 async def test_timing_settings_start_at_their_defaults(

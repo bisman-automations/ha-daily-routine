@@ -77,6 +77,7 @@ function makePanel() {
   const panel = new (defined.get("daily-routine-panel"))();
   panel.attachShadow();
   panel._data = structuredClone(overview);
+  panel._me = { allowed: true, is_admin: false };
   return panel;
 }
 
@@ -1109,4 +1110,45 @@ test("activity tab says it is loading until the first answer arrives", () => {
   panel._activity = null;
   panel._render();
   assert.match(panel.shadowRoot.innerHTML, /Loading activity/);
+});
+
+test("someone without access gets a page that says so, and no routines", async () => {
+  const panel = makePanel();
+  panel._data = null;
+  panel._me = null;
+  const calls = [];
+  panel._hass = {
+    user: { is_admin: false },
+    callWS: async (msg) => {
+      calls.push(msg.type);
+      if (msg.type === "daily_routine/access/me") return { allowed: false, is_admin: false };
+      throw new Error("not expected");
+    },
+  };
+  await panel._load();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /You don(&#39;|')t have access to Daily Routine/);
+  assert.deepEqual(calls, ["daily_routine/access/me"]);
+});
+
+test("admins pick who else can see Daily Routine in Settings, by name", async () => {
+  const panel = makePanel();
+  panel._view = { name: "settings" };
+  panel._hass = { user: { is_admin: true } };
+  panel._access = {
+    people: [
+      { id: "u1", name: "Parent", is_admin: true },
+      { id: "u2", name: "Teen <3", is_admin: false },
+      { id: "u3", name: "Guest", is_admin: false },
+    ],
+    ids: new Set(["u2"]),
+  };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Who can see Daily Routine/);
+  assert.match(html, /data-access-user="u2" checked/);
+  assert.match(html, /data-access-user="u3"\s+>/);
+  assert.doesNotMatch(html, /data-access-user="u1"/); // admins always can
+  assert.match(html, /Teen &lt;3/);
+  assert.match(html, /everyone sees Daily Routine in the sidebar/);
 });

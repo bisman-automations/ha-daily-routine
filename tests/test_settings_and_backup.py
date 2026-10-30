@@ -10,6 +10,7 @@ from pytest_homeassistant_custom_component.common import (
 
 from custom_components.daily_routine.const import DOMAIN, ROUTINE_SUBENTRY
 from custom_components.daily_routine.routines import normalize_routine
+from custom_components.daily_routine.runtime import get_coordinator
 from custom_components.daily_routine.schema import vol
 from custom_components.daily_routine.text_format import (
     conditions_to_text,
@@ -126,7 +127,7 @@ async def _setup(hass: HomeAssistant):
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    return entry, hass.data[DOMAIN]["coordinator"]
+    return entry, get_coordinator(hass)
 
 
 def _sub(entry, routine_id: str):

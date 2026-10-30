@@ -13,6 +13,7 @@ from custom_components.daily_routine.const import (
 )
 from custom_components.daily_routine.legacy import legacy_routines
 from custom_components.daily_routine.routines import normalize_routine
+from custom_components.daily_routine.runtime import get_coordinator
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
@@ -126,7 +127,7 @@ async def test_setup_migrates_and_removes_extra_entries(
     assert await hass.config_entries.async_setup(first.entry_id)
     await hass.async_block_till_done()
 
-    coordinator = hass.data[DOMAIN]["coordinator"]
+    coordinator = get_coordinator(hass)
     assert {r["id"] for r in coordinator.routines} == {
         "morning_covers",
         "bedroom_covers",
