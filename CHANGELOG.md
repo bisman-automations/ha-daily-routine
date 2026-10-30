@@ -5,9 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.13.1] - 2026-10-26
+## [1.14.0] - 2026-10-30
+
+### Added
+
+- **Who can see Daily Routine,** under **Settings** in the sidebar. Admins always can; an admin checks anyone else who should. Someone who isn't allowed gets a page saying so.
 
 ### Changed
+
+- **Only admins see routines until an admin lets someone else in.** Routines show who's home and when, and before this release anyone with a Home Assistant login could read them in the sidebar. If people who aren't admins used the sidebar, check their names under **Settings → Who can see Daily Routine**.
+- **The pause switch and the actions need access too.** Admins, the people allowed in, and automations can use them.
+- **The Run routine and Reload routines actions say what went wrong:** when Daily Routine isn't running, or the routine id is unknown, the action fails with a message instead of only writing to the log. They stay available while Daily Routine is turned off.
 
 - The README follows the same layout as the other bisman-automations integrations: a button that opens it in HACS, a button that starts setup, and troubleshooting steps for debug logs and diagnostics.
 - Each release now includes `daily_routine.zip` for installing without HACS.
@@ -17,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Setup and options screens show their labels and descriptions instead of raw keys: the English text is now shipped where Home Assistant reads it.
 - Linking a routine to a child device on newer Home Assistant no longer reads that device's connections, which Home Assistant deprecates.
+- **A failed start no longer leaves routines half running.** If setup stopped part way, schedules and watchers it had started kept going and the next attempt couldn't start. Now everything is stopped, and the retry starts clean.
+- **Editing a routine's entry while Daily Routine is turned off** shows a message instead of an error.
+- Work a routine starts in the background (notifications, catch-up runs, saving) now finishes or stops when Daily Routine is unloaded, instead of running on afterwards.
 
 ## [1.13.0] - 2026-10-25
 
@@ -237,7 +248,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
-[1.13.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.13.0...v1.13.1
+[1.14.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.12.1...v1.13.0
 [1.12.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.11.0...v1.12.0
