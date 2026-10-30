@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Only admins see routines until an admin lets someone else in.** Routines show who's home and when, and before this release anyone with a Home Assistant login could read them in the sidebar. If people who aren't admins used the sidebar, check their names under **Settings → Who can see Daily Routine**.
 - **The pause switch and the actions need access too.** Admins, the people allowed in, and automations can use them.
 - **The Run routine and Reload routines actions say what went wrong:** when Daily Routine isn't running, or the routine id is unknown, the action fails with a message instead of only writing to the log. They stay available while Daily Routine is turned off.
-
+- The integration icon has a dark-mode version.
 - The README follows the same layout as the other bisman-automations integrations: a button that opens it in HACS, a button that starts setup, and troubleshooting steps for debug logs and diagnostics.
 - Each release now includes `daily_routine.zip` for installing without HACS.
 - The changelog no longer keeps an Unreleased section, and the agent notes follow the updated shared release rules.
