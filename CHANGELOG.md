@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.1] - 2026-10-30
+
+### Changed
+
+- **Install from the Marketplace.** The README now explains how to install from the Marketplace that replaces HACS in Home Assistant 2026.11, with its own button. The HACS steps stay for Home Assistant 2026.10 and older, and an install you already have moves over by itself.
+
 ## [1.14.0] - 2026-10-30
 
 ### Added
@@ -248,6 +254,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.14.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.14.0...v1.14.1
 [1.14.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.12.1...v1.13.0
 [1.12.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.12.0...v1.12.1
