@@ -5,7 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.14.1] - 2026-10-30
+## [1.15.0] - 2026-10-30
+
+### Added
+
+- **Wait for an unavailable list or device**, a new option on each routine (off by default). When the to-do list a routine changes is unavailable, for example while iCloud is having trouble, the run waits instead of failing, and goes ahead as soon as the list is back. The card shows **Waiting for list**. You're only told the routine needs attention if the list stays unavailable for a whole day.
+
+### Fixed
+
+- Each Daily Routine message showed up twice under **Notifications** when **Show a Home Assistant notification** was one of the notify targets. It now shows once, and the "needs attention" message still goes away by itself when the problem clears.
 
 ### Changed
 
@@ -254,7 +262,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
-[1.14.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.14.0...v1.14.1
+[1.15.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.12.1...v1.13.0
 [1.12.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.12.0...v1.12.1

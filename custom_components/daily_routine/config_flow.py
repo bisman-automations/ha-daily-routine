@@ -106,6 +106,7 @@ def _form_from_routine(routine: dict[str, Any]) -> dict[str, Any]:
         "notify_on_skip": routine["notify_on_skip"],
         "notify_on_error": routine["notify_on_error"],
         "notify_on_health": routine["notify_on_health"],
+        "wait_when_unavailable": routine["wait_when_unavailable"],
         "actions": steps_to_text(routine["actions"]),
     }
 
@@ -152,6 +153,7 @@ def _routine_from_form(
         "notify_on_skip": bool(values.get("notify_on_skip")),
         "notify_on_error": bool(values.get("notify_on_error")),
         "notify_on_health": bool(values.get("notify_on_health")),
+        "wait_when_unavailable": bool(values.get("wait_when_unavailable")),
         "actions": actions,
     }
 
@@ -277,6 +279,10 @@ def _form_schema(hass: Any, values: dict[str, Any]) -> vol.Schema:
             ): bool,
             vol.Required(
                 "notify_on_health", default=bool(values.get("notify_on_health"))
+            ): bool,
+            vol.Required(
+                "wait_when_unavailable",
+                default=bool(values.get("wait_when_unavailable")),
             ): bool,
             vol.Required(
                 "actions", default=values.get("actions", "")

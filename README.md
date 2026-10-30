@@ -190,8 +190,9 @@ The history is saved with Home Assistant, keeps the last 30 days, and is removed
 | Skip steps already done | Skip a step whose devices are already in the target state (default on) |
 | Catch up | If Home Assistant was restarting when a time routine was due, still run it once it is back, within a window of up to 3 hours ("Don't run it late" turns this off). Home Assistant gets about 30 seconds to load, then the routine runs as soon as it can. If a condition blocks it, it is retried each minute until the window closes |
 | Retry | Retry a failed step up to 3 times |
+| Wait for an unavailable list or device | Off by default. When a to-do list (or the device the routine watches) is unavailable when the routine should run, for example while iCloud is having trouble, the run waits instead of failing. The card shows **Waiting for list**, and the routine runs as soon as the list is back. You aren't told it needs attention unless the list stays unavailable for a whole day; then the waiting run is dropped (and you're told it was skipped, if **On skip** is on). A list that is gone from Home Assistant altogether is still announced right away. A waiting run is forgotten if Home Assistant restarts |
 | Steps | Actions chosen by name, such as "Turn off lights" (with a room, specific devices, or no target), or any service under "Other (advanced)", plus waits |
-| Notify | On run, on skip, on failure, and when it needs attention (a device or list is missing or unavailable). The attention message is sent once a problem has lasted a minute, and again only after it clears and returns |
+| Notify | On run, on skip, on failure, and when it needs attention (a device or list is missing or unavailable). The attention message is sent once a problem has lasted a minute, and again only after it clears and returns. Choosing **Show a Home Assistant notification** as a notify target doesn't add a second copy: the Home Assistant notification is always shown |
 
 ### Trigger notes
 

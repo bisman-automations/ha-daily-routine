@@ -967,6 +967,20 @@ test("the notify-on-health choice is shown under Options and saved with the rout
   assert.equal(loaded.notify_on_health, true);
 });
 
+test("the wait-for-list option is off for a new routine, shown, and saved", () => {
+  const panel = makePanel();
+  panel._draft = panel._newDraft(null);
+  assert.equal(panel._draft.wait_when_unavailable, false);
+  panel._draft.actions = [{ kind: "service", service: "light.turn_on", targetMode: "none", area: "", entities: [], data: "" }];
+  panel._view = { name: "editor", room: null };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /data-f="wait_when_unavailable"/);
+  panel._onField({ target: { dataset: { f: "wait_when_unavailable" }, type: "checkbox", checked: true, value: "on" } });
+  assert.equal(panel._draftToRaw(panel._draft).wait_when_unavailable, true);
+  const loaded = panel._draftFromRoutine({ ...overview.routines[0], wait_when_unavailable: true });
+  assert.equal(loaded.wait_when_unavailable, true);
+});
+
 test("a complete step offers the due-date choices, and a add step does not", () => {
   const panel = todoPanel();
   panel._draft = panel._newDraft(null);

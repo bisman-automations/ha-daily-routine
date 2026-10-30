@@ -56,6 +56,7 @@
             "notify_on_skip": "Notify me when it is skipped",
             "notify_on_error": "Notify me when it fails",
             "notify_on_health": "Notify me when it needs attention (a device or list is missing or unavailable)",
+            "wait_when_unavailable": "Wait for an unavailable to-do list or device to come back, then run",
             "actions": "Steps (one per line)",
             "conditions": "Extra conditions (one per line)"
           }

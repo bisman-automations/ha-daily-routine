@@ -476,5 +476,6 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "notify_on_skip": bool(raw.get("notify_on_skip", False)),
         "notify_on_error": bool(raw.get("notify_on_error", True)),
         "notify_on_health": bool(raw.get("notify_on_health", False)),
+        "wait_when_unavailable": bool(raw.get("wait_when_unavailable", False)),
         "actions": actions,
     }

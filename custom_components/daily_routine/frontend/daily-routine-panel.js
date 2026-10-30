@@ -68,7 +68,7 @@ const TODO_OUTCOME_LABELS = {
   would_remove: "would be removed",
   not_due: "not due in the chosen window",
 };
-const STATE_LABELS = { idle: "Ready", waiting: "Waiting", running: "Running", skipped: "Skipped", error: "Error" };
+const STATE_LABELS = { idle: "Ready", waiting: "Waiting", held: "Waiting for list", running: "Running", skipped: "Skipped", error: "Error" };
 const REASON_LABELS = {
   someone_home: "someone is still in that place",
   sensors_active: "motion right now",
@@ -590,7 +590,7 @@ class DailyRoutinePanel extends HTMLElement {
       trigger: "time", time: "07:00:00", offset_minutes: 0, days: [...WEEKDAYS],
       people: [], sensors: [], clear_minutes: 0,
       conditions: [], conditions_match: "all", repeat: false, catch_up_minutes: 0, retries: 0, skip_noop: true,
-      notify_on_run: false, notify_on_skip: false, notify_on_error: true, notify_on_health: false,
+      notify_on_run: false, notify_on_skip: false, notify_on_error: true, notify_on_health: false, wait_when_unavailable: false,
       actions: [{ kind: "service", service: "", targetMode: roomId ? "area" : "entities", area: roomId || "", entities: [], data: "" }],
       isNew: true,
     };
@@ -632,6 +632,7 @@ class DailyRoutinePanel extends HTMLElement {
       catch_up_minutes: routine.catch_up_minutes, retries: routine.retries, skip_noop: routine.skip_noop,
       notify_on_run: routine.notify_on_run, notify_on_skip: routine.notify_on_skip, notify_on_error: routine.notify_on_error,
       notify_on_health: Boolean(routine.notify_on_health),
+      wait_when_unavailable: Boolean(routine.wait_when_unavailable),
       actions: routine.actions.map((a) => {
         if ("todo" in a) return {
           kind: "todo", todoOp: a.todo.op, todoList: a.todo.list, todoItem: a.todo.item,
@@ -725,6 +726,7 @@ class DailyRoutinePanel extends HTMLElement {
       notify_on_skip: draft.notify_on_skip,
       notify_on_error: draft.notify_on_error,
       notify_on_health: Boolean(draft.notify_on_health),
+      wait_when_unavailable: Boolean(draft.wait_when_unavailable),
       actions,
     };
   }
@@ -987,7 +989,7 @@ class DailyRoutinePanel extends HTMLElement {
       const field = el.dataset.f;
       if (field === "watch_entity" && !live) this._loadStateHints(value);
       if (field === "time") d.time = value.length === 5 ? `${value}:00` : value;
-      else if (field === "enabled" || field === "repeat" || field === "skip_noop" || field === "notify_on_run" || field === "notify_on_skip" || field === "notify_on_error" || field === "notify_on_health") d[field] = Boolean(value);
+      else if (field === "enabled" || field === "repeat" || field === "skip_noop" || field === "notify_on_run" || field === "notify_on_skip" || field === "notify_on_error" || field === "notify_on_health" || field === "wait_when_unavailable") d[field] = Boolean(value);
       else d[field] = value;
       if (el.dataset.rerender !== undefined && !live) this._render();
       return;
@@ -1203,7 +1205,7 @@ class DailyRoutinePanel extends HTMLElement {
           ${this._historyHtml(status)}
           ${this._healthHtml(routine)}
         </div>
-        <span class="pill ${state === "error" ? "error" : state === "waiting" ? "warn" : ""}">${esc(STATE_LABELS[state] || state)}</span>
+        <span class="pill ${state === "error" ? "error" : state === "waiting" || state === "held" ? "warn" : ""}">${esc(STATE_LABELS[state] || state)}</span>
       </div>
       <div class="row-actions">
         <button class="ghost" data-act="run" data-id="${esc(routine.id)}">Run now</button>
@@ -1310,7 +1312,7 @@ class DailyRoutinePanel extends HTMLElement {
           ${this._historyHtml(status)}
           ${this._healthHtml(rule)}
         </div>
-        <span class="pill ${state === "error" ? "error" : state === "waiting" ? "warn" : ""}">${esc(STATE_LABELS[state] || state)}</span>
+        <span class="pill ${state === "error" ? "error" : state === "waiting" || state === "held" ? "warn" : ""}">${esc(STATE_LABELS[state] || state)}</span>
       </div>
       <div class="row-actions">
         <button class="ghost" data-act="run" data-id="${esc(rule.id)}">Run now</button>
@@ -1780,6 +1782,7 @@ class DailyRoutinePanel extends HTMLElement {
         <label class="check"><input type="checkbox" data-f="skip_noop" ${d.skip_noop ? "checked" : ""}> Skip steps that are already done</label>
         ${this._catchUpField(d.catch_up_minutes)}
         <label>Retry a failed step (times)<input type="number" min="0" max="3" data-f="retries" value="${esc(d.retries)}"></label>
+        <label class="check"><input type="checkbox" data-f="wait_when_unavailable" ${d.wait_when_unavailable ? "checked" : ""}> If a to-do list or device is unavailable, wait for it to come back, then run (up to a day)</label>
         <h4>Notify me</h4>
         <label class="check"><input type="checkbox" data-f="notify_on_run" ${d.notify_on_run ? "checked" : ""}> When it runs</label>
         <label class="check"><input type="checkbox" data-f="notify_on_skip" ${d.notify_on_skip ? "checked" : ""}> When it is skipped</label>

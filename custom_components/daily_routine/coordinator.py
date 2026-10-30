@@ -153,6 +153,9 @@ TIMING_SETTINGS = {
     "startup_quiet_minutes": (5, 0, 60, "The startup quiet period"),
 }
 # A device or list that is unavailable only briefly (for example while Home Assistant starts) is not announced.
+# With "wait when unavailable": how long a run is held for a list or device to come back, and how
+# long it may stay unavailable before the routine is announced as needing attention after all.
+WAIT_UNAVAILABLE_HOURS = 24
 # How many completed item names to remember, so a long list does not grow forever.
 SEEN_DONE_LIMIT = 200
 
@@ -285,6 +288,8 @@ def _blank_runtime() -> dict[str, Any]:
         "all_away": None,  # last known "everyone away" for presence triggers
         "seen_done": None,  # in memory: names of completed items already seen
         "health_alerted": False,  # in memory: a problem was already announced
+        "unavailable_since": None,  # in memory: when a needed list or device went unavailable
+        "held_run": None,  # in memory: a run waiting for a list or device to come back
     }
 
 
@@ -402,6 +407,8 @@ class HomeRoutinesCoordinator:
 
     async def _notify(self, message: str, notification_id: str | None = None) -> None:
         for service in self.settings.get("notify_services") or []:
+            if service == "notify.persistent_notification":
+                continue  # the Home Assistant notification below is always created
             try:
                 await self.hass.services.async_call(
                     "notify",
@@ -446,6 +453,8 @@ class HomeRoutinesCoordinator:
         runs.append(
             {"at": dt_util.now().isoformat(), "outcome": outcome, "detail": detail}
         )
+        if outcome == "held":
+            return  # shown on the card only; the run is logged when it runs or is dropped
         routine = self._find(routine_id)
         name = routine["name"] if routine else routine_id
         if outcome == "skipped":
@@ -481,6 +490,8 @@ class HomeRoutinesCoordinator:
             "conditions_ok": ok,
             "block_reason": reason,
             "waiting": rt["pending_date"] is not None,
+            "held": rt["held_run"] is not None,
+            "waiting_for": self._unavailable_names(routine),
             "trigger": routine["trigger"],
             "days": routine["days"],
             "time": routine["time"],
@@ -1451,8 +1462,20 @@ class HomeRoutinesCoordinator:
         problems = self.health(routine)
         if not problems:
             rt["health_alerted"] = False
+            rt["unavailable_since"] = None
             self._spawn(self._dismiss_health_notification(routine["id"]))
-        elif not rt.get("health_alerted"):
+            self._release_held(routine)
+            return
+        if self._expire_held(routine):
+            self._notify_listeners()
+        if routine["wait_when_unavailable"] and not self._missing_entities(routine):
+            # Only unavailable, not gone: wait quietly for a day before asking for attention.
+            now = dt_util.utcnow()
+            since = rt["unavailable_since"] or now
+            rt["unavailable_since"] = since
+            if now - since < timedelta(hours=WAIT_UNAVAILABLE_HOURS):
+                return
+        if not rt.get("health_alerted"):
             rt["health_alerted"] = True
             if routine["notify_on_health"]:
                 self._send_notification(
@@ -1466,11 +1489,19 @@ class HomeRoutinesCoordinator:
         self._drop_handle(rid, H_HEALTH)
         self._drop_handle(rid, H_HEALTH_TIMER)
         entities = self._health_entities(routine)
-        if not routine["enabled"] or not routine["notify_on_health"] or not entities:
+        watched = routine["notify_on_health"] or routine["wait_when_unavailable"]
+        if not routine["enabled"] or not watched or not entities:
             return
 
         @callback
         def _changed(_event: Event[EventStateChangedData]) -> None:
+            current = self._find(rid)
+            if (
+                current is not None
+                and self._rt(rid)["held_run"] is not None
+                and not self.health(current)
+            ):
+                self._release_held(current)
             self._schedule_health_check(rid)
 
         unsub = async_track_state_change_event(self.hass, entities, _changed)
@@ -1589,6 +1620,8 @@ class HomeRoutinesCoordinator:
         if scheduled and not routine["repeat"] and rt["last_run_date"] == today:
             self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "already_ran_today")
             return False
+        if scheduled and self._hold_if_unavailable(routine, now):
+            return False
 
         ok, reason = self._check(routine, now)
         if not ok:
@@ -1622,6 +1655,7 @@ class HomeRoutinesCoordinator:
 
         result = "success"
         details: list[str] = []
+        acted = False
         for action in routine["actions"]:
             ok, reason = self._check(routine, dt_util.now())
             if not ok:
@@ -1645,6 +1679,15 @@ class HomeRoutinesCoordinator:
                     dry_run=False,
                     wait_seconds=self.settings["list_wait_seconds"],
                 )
+                if (
+                    outcome == "list_unavailable"
+                    and scheduled
+                    and not acted
+                    and routine["wait_when_unavailable"]
+                    and self._hold_if_unavailable(routine, now, force=True)
+                ):
+                    return False
+                acted = True
                 if outcome in FAILED_OUTCOMES:
                     _LOGGER.warning(
                         "Routine '%s': to-do %s on %s failed (%s).",
@@ -1677,6 +1720,7 @@ class HomeRoutinesCoordinator:
                 result = f"missing_service:{action['service']}"
                 break
             target = override if override is not None else action.get("target")
+            acted = True
             try:
                 await self._call_with_retries(
                     routine, domain, service, dict(action.get("data") or {}), target
@@ -1768,6 +1812,79 @@ class HomeRoutinesCoordinator:
                 entities.append(action["todo"]["list"])
         return list(dict.fromkeys(entities))
 
+    def _missing_entities(self, routine: dict[str, Any]) -> list[str]:
+        """Lists and devices the routine needs that are not in Home Assistant at all."""
+        return [
+            entity_id
+            for entity_id in self._health_entities(routine)
+            if self.hass.states.get(entity_id) is None
+        ]
+
+    def _unavailable_names(self, routine: dict[str, Any]) -> list[str]:
+        """Names of the lists and devices the routine needs that are there but unavailable."""
+        names: list[str] = []
+        for entity_id in self._health_entities(routine):
+            state = self.hass.states.get(entity_id)
+            if state is not None and state.state in UNKNOWN_STATES:
+                names.append(state.attributes.get("friendly_name") or entity_id)
+        return names
+
+    def _hold_if_unavailable(
+        self, routine: dict[str, Any], now: datetime, *, force: bool = False
+    ) -> bool:
+        """Hold this run until its lists and devices are back. True when it was held."""
+        if not routine["wait_when_unavailable"] or self._missing_entities(routine):
+            return False
+        names = self._unavailable_names(routine)
+        if not names and not force:
+            return False
+        rt = self._rt(routine["id"])
+        if rt["held_run"] is None:
+            rt["held_run"] = {"at": dt_util.utcnow()}
+            rt["state"] = "held"
+            waiting = ", ".join(names) or "a to-do list"
+            _LOGGER.info(
+                "Routine '%s' is waiting for %s to come back.", routine["name"], waiting
+            )
+            self._record(routine["id"], "held", f"waiting for {waiting}")
+            self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "waiting:unavailable")
+        self._notify_listeners()
+        if force:
+            # The list went away after the check above; look again when it changes.
+            self._schedule_health_check(routine["id"])
+        return True
+
+    def _release_held(self, routine: dict[str, Any]) -> None:
+        """Everything is back: run the held run now."""
+        rt = self._rt(routine["id"])
+        if rt["held_run"] is None or self._expire_held(routine):
+            return
+        rt["held_run"] = None
+        rt["state"] = "idle"
+        _LOGGER.info(
+            "Routine '%s' is running now that its list is back.", routine["name"]
+        )
+        self._spawn(self._execute_routine(routine, dt_util.now(), scheduled=True))
+
+    def _expire_held(self, routine: dict[str, Any]) -> bool:
+        """Drop a held run that waited too long. True when it was dropped."""
+        rt = self._rt(routine["id"])
+        held = rt["held_run"]
+        if held is None or dt_util.utcnow() - held["at"] < timedelta(
+            hours=WAIT_UNAVAILABLE_HOURS
+        ):
+            return False
+        rt["held_run"] = None
+        rt["state"] = "skipped"
+        rt["last_result"] = "unavailable_too_long"
+        self._record(routine["id"], "skipped", "unavailable_too_long")
+        self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "unavailable_too_long")
+        if routine["notify_on_skip"]:
+            self._send_notification(
+                f"Routine '{routine['name']}' skipped – its list or device did not come back within {WAIT_UNAVAILABLE_HOURS} hours."
+            )
+        return True
+
     def health(self, routine: dict[str, Any]) -> list[str]:
         """Things that will stop this routine from working, shown on its card."""
         problems: list[str] = []
@@ -1777,7 +1894,12 @@ class HomeRoutinesCoordinator:
                 problems.append(f"{entity_id} is not in Home Assistant.")
             elif state.state in UNKNOWN_STATES:
                 name = state.attributes.get("friendly_name") or entity_id
-                problems.append(f"{name} is unavailable right now.")
+                if routine.get("wait_when_unavailable"):
+                    problems.append(
+                        f"{name} is unavailable right now. Waiting for it to come back."
+                    )
+                else:
+                    problems.append(f"{name} is unavailable right now.")
         return problems
 
     # ----- service handlers -----
