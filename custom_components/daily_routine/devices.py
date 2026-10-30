@@ -15,6 +15,8 @@ from homeassistant.helpers import device_registry as dr
 from .const import DOMAIN, ROUTINE_SUBENTRY
 
 HUB_NAME = "Daily Routine"
+# Shown as the manufacturer of the hub and routine devices (instead of "unknown").
+MANUFACTURER = "Daily Routine"
 ROUTINE_PREFIX = "routine_"
 
 
@@ -39,6 +41,7 @@ def async_ensure_hub(hass: HomeAssistant, entry: ConfigEntry) -> dr.DeviceEntry:
         config_entry_id=entry.entry_id,
         identifiers={hub_identifier(entry.entry_id)},
         name=HUB_NAME,
+        manufacturer=MANUFACTURER,
         model="Routines",
         entry_type=dr.DeviceEntryType.SERVICE,
     )
@@ -104,6 +107,8 @@ def _link_routine_device(
         config_subentry_id=subentry_id,
         identifiers={routine_identifier(routine["id"])},
         name=routine["name"],
+        manufacturer=MANUFACTURER,
+        model="Routine",
         entry_type=dr.DeviceEntryType.SERVICE,
     )
     own = {routine_identifier(routine["id"])}

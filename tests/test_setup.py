@@ -215,6 +215,7 @@ async def test_routines_are_service_devices_linked_to_their_device(
     )
     assert hub is not None
     assert hub.entry_type == dr.DeviceEntryType.SERVICE
+    assert hub.manufacturer == "Daily Routine"
 
     linked = {
         "id": "hall",
@@ -233,6 +234,9 @@ async def test_routines_are_service_devices_linked_to_their_device(
     assert routine_device is not None
     assert routine_device.entry_type == dr.DeviceEntryType.SERVICE
     assert routine_device.name == "Hall lights off"
+    # A manufacturer and model, so the device list doesn't say "unknown".
+    assert routine_device.manufacturer == "Daily Routine"
+    assert routine_device.model == "Routine"
     # Shares the lamp's identifiers where Home Assistant allows it, otherwise is connected via it.
     assert (
         routine_device.via_device_id == lamp.id

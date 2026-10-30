@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.1] - 2026-10-30
+
+### Fixed
+
+- **Routines no longer show "unknown" as their manufacturer and model.** In the device list, each routine now shows Daily Routine as its manufacturer and Routine as its model, and the Daily Routine device shows Daily Routine too.
+
 ## [1.15.0] - 2026-10-30
 
 ### Added
@@ -262,6 +268,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.15.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.15.0...v1.15.1
 [1.15.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.12.1...v1.13.0
