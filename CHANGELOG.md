@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.15.2] - 2026-10-31
+
+### Changed
+
+- **Linked device** in the routine editor, and *Linked to* on each routine, now show which integration each device comes from, such as *Office Curtains (SwitchBot Cloud)*. Devices with the same name, like a Bluetooth and a Cloud copy of one fan, can now be told apart.
+- **Linked device** offers only real devices now, not services such as Music Assistant players or another integration's service. A routine already linked to a service keeps it until you pick something else.
+
 ## [1.15.1] - 2026-10-30
 
 ### Fixed
@@ -268,6 +275,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.15.2]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.15.1...v1.15.2
 [1.15.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.15.0...v1.15.1
 [1.15.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.13.0...v1.14.0

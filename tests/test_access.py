@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from pytest_homeassistant_custom_component.common import CLIENT_ID, MockConfigEntry
 
 from custom_components.daily_routine.const import DOMAIN
+from custom_components.daily_routine.panel import _devices
 from homeassistant.auth.models import User
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
+from homeassistant.loader import async_get_integration
 
 
 async def _setup(hass: HomeAssistant) -> MockConfigEntry:
@@ -134,3 +139,55 @@ async def test_pause_switch_and_actions_need_access(
         "switch", "turn_off", {"entity_id": "switch.pause_all_routines"}, blocking=True
     )
     assert hass.states.get("switch.pause_all_routines").state == "off"
+
+
+async def test_devices_name_the_integration_they_come_from(hass: HomeAssistant) -> None:
+    """Linked device choices say which integration each device comes from."""
+    from custom_components.daily_routine.panel import _devices
+    from homeassistant.helpers import device_registry as dr
+    from homeassistant.loader import async_get_integration
+
+    await async_get_integration(hass, "hue")
+    registry = dr.async_get(hass)
+    for domain in ("hue", "made_up_cloud"):
+        source = MockConfigEntry(domain=domain)
+        source.add_to_hass(hass)
+        registry.async_get_or_create(
+            config_entry_id=source.entry_id,
+            identifiers={(domain, "curtains")},
+            name="Office Curtains",
+        )
+    assert sorted(d["integration"] for d in _devices(hass)) == [
+        "Philips Hue",
+        "made_up_cloud",
+    ]
+    assert not any(d["service"] for d in _devices(hass))
+
+
+async def test_services_are_marked_so_only_devices_are_offered(
+    hass: HomeAssistant,
+) -> None:
+    """A service device, or any device of a service integration, is a service."""
+    await async_get_integration(hass, "hue")
+    registry = dr.async_get(hass)
+    source = MockConfigEntry(domain="made_up_hub")
+    source.add_to_hass(hass)
+    registry.async_get_or_create(
+        config_entry_id=source.entry_id,
+        identifiers={("made_up_hub", "routine")},
+        name="A routine",
+        entry_type=dr.DeviceEntryType.SERVICE,
+    )
+    registry.async_get_or_create(
+        config_entry_id=source.entry_id,
+        identifiers={("made_up_hub", "lamp")},
+        name="A lamp",
+    )
+    service = {d["name"]: d["service"] for d in _devices(hass)}
+    assert service == {"A lamp": False, "A routine": True}
+    with patch(
+        "custom_components.daily_routine.panel.async_get_loaded_integration"
+    ) as loaded:
+        loaded.return_value.name = "Music Assistant"
+        loaded.return_value.integration_type = "service"
+        assert all(d["service"] for d in _devices(hass))

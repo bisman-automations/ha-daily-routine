@@ -415,21 +415,29 @@ class DailyRoutinePanel extends HTMLElement {
 
   _defaultDevice(roomId) {
     if (!roomId) return "";
-    return this._devices().find((d) => d.area_id === roomId)?.id || "";
+    return this._devices().find((d) => d.area_id === roomId && !d.service)?.id || "";
   }
 
   _linkedName(deviceId) {
     const device = this._devices().find((d) => d.id === deviceId);
-    return device ? device.name : "Daily Routine (no device)";
+    return device ? this._deviceLabel(device) : "Daily Routine (no device)";
+  }
+
+  // "Office Curtains (SwitchBot Cloud)": which integration the device comes
+  // from, so devices with the same name can be told apart.
+  _deviceLabel(device) {
+    return device.integration ? `${device.name} (${device.integration})` : device.name;
   }
 
   _deviceOptions(selected, roomId) {
-    const devices = [...this._devices()].sort((a, b) =>
+    // Only real devices, not services; a routine already linked to a service
+    // keeps it listed so saving doesn't unlink it.
+    const devices = this._devices().filter((d) => !d.service || d.id === selected).sort((a, b) =>
       Number(roomId && b.area_id === roomId) - Number(roomId && a.area_id === roomId) || a.name.localeCompare(b.name));
     const none = `<option value="" ${selected ? "" : "selected"}>Daily Routine (no device)</option>`;
     const options = devices.map((d) => {
       const place = d.area_name ? ` · ${d.area_name}` : "";
-      return `<option value="${esc(d.id)}" ${d.id === selected ? "selected" : ""}>${esc(d.name)}${esc(place)}</option>`;
+      return `<option value="${esc(d.id)}" ${d.id === selected ? "selected" : ""}>${esc(this._deviceLabel(d))}${esc(place)}</option>`;
     });
     return [none, ...options].join("");
   }

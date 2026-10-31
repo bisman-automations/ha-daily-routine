@@ -13,6 +13,7 @@ from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers import area_registry as ar, device_registry as dr
+from homeassistant.loader import LoaderError, async_get_loaded_integration
 from homeassistant.util import dt as dt_util
 
 from .access import async_get_access, get_access
@@ -62,14 +63,21 @@ def _coordinator(hass: HomeAssistant) -> HomeRoutinesCoordinator | None:
 
 
 def _devices(hass: HomeAssistant) -> list[dict[str, Any]]:
-    """Devices a routine can be linked to. Our own routine and hub devices are left out."""
+    """Devices a routine can be linked to. Our own routine and hub devices are left out.
+
+    Services (software such as a Music Assistant player or another
+    integration's service) are marked ``service`` so the editor offers only
+    real devices, while a routine already linked to one still shows it.
+    """
     registry = dr.async_get(hass)
     areas = ar.async_get(hass)
     devices = []
+    sources: dict[str, tuple[str, bool]] = {}
     for device in registry.devices:
         if device.disabled or any(domain == DOMAIN for domain, _ in device.identifiers):
             continue
         area = areas.async_get_area(device.area_id) if device.area_id else None
+        integration, service_integration = _source(hass, device, sources)
         devices.append(
             {
                 "id": device.id,
@@ -77,9 +85,32 @@ def _devices(hass: HomeAssistant) -> list[dict[str, Any]]:
                 "area_id": device.area_id,
                 "area_name": area.name if area else None,
                 "model": device.model,
+                "integration": integration,
+                "service": device.entry_type is dr.DeviceEntryType.SERVICE
+                or service_integration,
             }
         )
     return sorted(devices, key=lambda d: str(d["name"]).lower())
+
+
+def _source(
+    hass: HomeAssistant, device: dr.DeviceEntry, cache: dict[str, tuple[str, bool]]
+) -> tuple[str | None, bool]:
+    """The integration a device comes from (such as SwitchBot Cloud), and
+    whether that integration is a service rather than hardware."""
+    entry = hass.config_entries.async_get_entry(device.config_entry_id or "")
+    if entry is None:
+        return None, False
+    if entry.domain not in cache:
+        try:
+            integration = async_get_loaded_integration(hass, entry.domain)
+            cache[entry.domain] = (
+                integration.name,
+                integration.integration_type == "service",
+            )
+        except LoaderError:
+            cache[entry.domain] = (entry.domain, False)
+    return cache[entry.domain]
 
 
 def _is_number(value: str) -> bool:

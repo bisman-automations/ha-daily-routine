@@ -44,8 +44,9 @@ const overview = {
     },
   ],
   devices: [
-    { id: "lamp_1", name: "Kitchen lamp", area_id: "kitchen", area_name: "Kitchen", model: "Lamp" },
+    { id: "lamp_1", name: "Kitchen lamp", area_id: "kitchen", area_name: "Kitchen", model: "Lamp", integration: "Philips Hue" },
     { id: "tv_1", name: "Living room TV", area_id: null, area_name: null, model: "TV" },
+    { id: "player_1", name: "Kitchen player", area_id: "kitchen", area_name: "Kitchen", model: null, integration: "Music Assistant", service: true },
   ],
   people: [
     { entity_id: "person.alex", name: "Alex", state: "home", tracked: true },
@@ -174,7 +175,7 @@ test("room view shows the linked device and a delete button on each routine", ()
   panel._view = { name: "room", room: "kitchen" };
   panel._render();
   const html = panel.shadowRoot.innerHTML;
-  assert.match(html, /Linked to: Kitchen lamp/);
+  assert.match(html, /Linked to: Kitchen lamp \(Philips Hue\)/);
   assert.match(html, /data-act="delete" data-id="kitchen_lights"/);
 });
 
@@ -192,7 +193,15 @@ test("editor offers a linked device picker and delete only for saved routines", 
   panel._render();
   let html = panel.shadowRoot.innerHTML;
   assert.match(html, /data-f="device_id"/);
-  assert.match(html, /<option value="lamp_1" selected>Kitchen lamp/);
+  assert.match(html, /<option value="lamp_1" selected>Kitchen lamp \(Philips Hue\) · Kitchen</);
+  // A device without a known integration shows its name alone.
+  assert.match(html, /<option value="tv_1" >Living room TV</);
+  // Services aren't offered, unless the routine is already linked to one.
+  assert.doesNotMatch(html, /player_1/);
+  panel._draft.device_id = "player_1";
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /<option value="player_1" selected>Kitchen player/);
+  panel._draft.device_id = "lamp_1";
   assert.match(html, /data-act="delete">Delete</);
 
   panel._draft = panel._applyTemplate({ title: "Blank routine", draft: {} }, "kitchen");
