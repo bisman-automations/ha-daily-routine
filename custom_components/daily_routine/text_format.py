@@ -176,6 +176,9 @@ def conditions_to_text(conditions: list[dict[str, Any]]) -> str:
             lines.append(
                 f"sensors {cond['mode']} {cond['minutes']} | {', '.join(cond['sensors'])}"
             )
+        elif cond["kind"] == "calendar":
+            match = f" | {cond['match']}" if cond["match"] else ""
+            lines.append(f"calendar {cond['when']} | {cond['entity_id']}{match}")
         else:
             lines.append(f"{cond['entity_id']} = {cond['state']}")
     return "\n".join(lines)
@@ -192,6 +195,7 @@ def parse_conditions_text(text: str) -> list[dict[str, Any]]:
     presence anyone in | person.a | zone.work
     sensors quiet 10 | binary_sensor.hall_motion
     sensors active 5 | binary_sensor.hall_motion
+    calendar no_event | calendar.school | No school
     lock.front_door = unlocked
     """
     conditions: list[dict[str, Any]] = []
@@ -226,6 +230,20 @@ def parse_conditions_text(text: str) -> list[dict[str, Any]]:
                     "sensors": _split_names(rest),
                 }
             )
+        elif sep and words and words[0] == "calendar":
+            if len(words) != 2:
+                raise vol.Invalid(
+                    f"Line {number}: write it as calendar event|no_event | calendar | event name."
+                )
+            entity_id, _, match = rest.partition("|")
+            conditions.append(
+                {
+                    "kind": "calendar",
+                    "when": words[1],
+                    "entity_id": entity_id.strip(),
+                    "match": match.strip(),
+                }
+            )
         elif "=" in line and not sep:
             entity_id, _, state = line.partition("=")
             conditions.append(
@@ -237,6 +255,6 @@ def parse_conditions_text(text: str) -> list[dict[str, Any]]:
             )
         else:
             raise vol.Invalid(
-                f"Line {number}: write a condition as entity = state, or as presence or sensors (see the help)."
+                f"Line {number}: write a condition as entity = state, or as presence, sensors or calendar (see the help)."
             )
     return conditions

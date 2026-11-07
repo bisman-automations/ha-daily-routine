@@ -79,6 +79,9 @@ const REASON_LABELS = {
   extra_condition_not_met: "an extra condition is not met",
   conditions_not_met: "conditions were not met",
   outside_hours: "outside its hours",
+  calendar_not_met: "the calendar doesn't allow it today",
+  paused_until: "paused for a while",
+  skipped_once: "skipped once, as asked",
 };
 // What a step can do, in plain words. The service id is only used under the hood.
 const ACTIONS = [
@@ -96,8 +99,58 @@ const ACTIONS = [
   { service: "scene.turn_on", label: "Activate a scene" },
   { service: "script.turn_on", label: "Run a script" },
   { service: "media_player.media_pause", label: "Pause media" },
+  { service: "media_player.media_play", label: "Play media" },
+  { service: "media_player.volume_set", label: "Set speaker volume", fields: [{ key: "volume_level", label: "Volume", type: "percent" }] },
+  { service: "tts.speak", label: "Say something on a speaker", voice: true, fields: [
+    { key: "message", label: "What to say", type: "text", placeholder: "for example Time to get ready for school" },
+    { key: "media_player_entity_id", label: "Speaker", type: "entity", domain: "media_player" },
+  ] },
+  { service: "climate.set_temperature", label: "Set the thermostat", fields: [{ key: "temperature", label: "Temperature", type: "number", step: 0.5 }] },
+  { service: "climate.turn_off", label: "Turn off the thermostat" },
+  { service: "vacuum.start", label: "Start the vacuum" },
+  { service: "vacuum.return_to_base", label: "Send the vacuum home" },
   { service: "notify.persistent_notification", label: "Show a Home Assistant notification" },
 ];
+const actionSpec = (service) => ACTIONS.find((a) => a.service === service);
+
+// Fields an action asks for, turned into its data.
+function fieldsToData(spec, values, index) {
+  const data = {};
+  for (const f of spec?.fields || []) {
+    const raw = values?.[f.key];
+    if (raw === undefined || raw === null || String(raw).trim() === "") throw new Error(`Step ${index + 1}: fill in ${f.label.toLowerCase()}.`);
+    if (f.type === "percent" || f.type === "number") {
+      const n = Number(raw);
+      if (Number.isNaN(n)) throw new Error(`Step ${index + 1}: ${f.label.toLowerCase()} must be a number.`);
+      data[f.key] = f.type === "percent" ? Math.max(0, Math.min(100, n)) / 100 : n;
+    } else {
+      data[f.key] = String(raw).trim();
+    }
+  }
+  return data;
+}
+
+function dataToFields(spec, data) {
+  const fields = {};
+  const rest = { ...(data || {}) };
+  for (const f of spec?.fields || []) {
+    if (!(f.key in rest)) continue;
+    fields[f.key] = f.type === "percent" ? Math.round(Number(rest[f.key]) * 100) : rest[f.key];
+    delete rest[f.key];
+  }
+  return { fields, rest };
+}
+
+function formatDay(day) {
+  if (!day) return "";
+  const date = new Date(`${day}T12:00:00`);
+  return isNaN(date) ? day : date.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+}
+
+function todayIso() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
 const CUSTOM_ACTION = "__custom";
 
 // States a condition can check, by kind of device. Anything else is typed in under "Other".
@@ -305,6 +358,10 @@ class DailyRoutinePanel extends HTMLElement {
     this.shadowRoot.addEventListener("click", (e) => this._onClick(e));
     this.shadowRoot.addEventListener("change", (e) => this._onField(e));
     this.shadowRoot.addEventListener("input", (e) => this._onField(e, true));
+    // Remember whether "Going away?" is open across redraws (toggle doesn't bubble).
+    this.shadowRoot.addEventListener("toggle", (e) => {
+      if (e.target?.classList?.contains("away")) this._awayOpen = e.target.open;
+    }, true);
   }
 
   async _call(message) {
@@ -509,10 +566,11 @@ class DailyRoutinePanel extends HTMLElement {
         : "";
       return `${when} (${this._zoneName(routine.zone)})${who}${windowText}`;
     }
-    if (routine.trigger === "time") return `${when} ${hhmm(routine.time)}${windowText}`;
+    const vary = routine.random_minutes ? ` ± ${routine.random_minutes} min` : "";
+    if (routine.trigger === "time") return `${when} ${hhmm(routine.time)}${vary}${windowText}`;
     if (routine.trigger === "sunrise" || routine.trigger === "sunset") {
       const offset = routine.offset_minutes ? ` ${routine.offset_minutes > 0 ? "+" : ""}${routine.offset_minutes} min` : "";
-      return `${when}${offset}${windowText}`;
+      return `${when}${offset}${vary}${windowText}`;
     }
     return `${when}${windowText}`;
   }
@@ -595,7 +653,7 @@ class DailyRoutinePanel extends HTMLElement {
     return {
       id: "", name: "", room: roomId || null, device_id: this._defaultDevice(roomId), enabled: true, zone: "zone.home",
       value_entity: "", value_threshold: "", off_threshold: "", watch_entity: "", watch_states: "", hold_minutes: 0, watch_item: "", active_from: "", active_to: "",
-      trigger: "time", time: "07:00:00", offset_minutes: 0, days: [...WEEKDAYS],
+      trigger: "time", time: "07:00:00", offset_minutes: 0, random_minutes: 0, paused_until: "", skip_next: false, days: [...WEEKDAYS],
       people: [], sensors: [], clear_minutes: 0,
       conditions: [], conditions_match: "all", repeat: false, catch_up_minutes: 0, retries: 0, skip_noop: true,
       notify_on_run: false, notify_on_skip: false, notify_on_error: true, notify_on_health: false, wait_when_unavailable: false,
@@ -634,6 +692,7 @@ class DailyRoutinePanel extends HTMLElement {
       value_entity: routine.value_entity || "", watch_entity: routine.watch_entity || "", watch_states: (routine.watch_states || []).join(", "), hold_minutes: routine.hold_minutes || 0, watch_item: routine.watch_item || "", value_threshold: routine.value_threshold ?? "", off_threshold: routine.off_threshold ?? "",
       active_from: routine.active_from ? hhmm(routine.active_from) : "", active_to: routine.active_to ? hhmm(routine.active_to) : "",
       trigger: routine.trigger, time: routine.time, offset_minutes: routine.offset_minutes || 0, days: [...routine.days],
+      random_minutes: routine.random_minutes || 0, paused_until: routine.paused_until || "", skip_next: Boolean(routine.skip_next),
       people: [...routine.people], sensors: [...routine.sensors], clear_minutes: routine.clear_minutes,
       conditions: (routine.conditions || []).map((c) => ({ ...c, people: [...(c.people || [])], sensors: [...(c.sensors || [])] })),
       conditions_match: routine.conditions_match || "all", repeat: routine.repeat,
@@ -656,9 +715,12 @@ class DailyRoutinePanel extends HTMLElement {
         if (areas.length > 1 && areas.length >= areaIds.length) targetMode = "all_areas";
         else if (areas.length) targetMode = "area";
         else if (entities.length) targetMode = "entities";
+        const spec = actionSpec(a.service);
+        const { fields, rest } = dataToFields(spec, a.data);
         return {
           kind: "service", service: a.service, targetMode, area: areas[0] || "", entities: [...entities],
-          data: Object.keys(a.data || {}).length ? JSON.stringify(a.data, null, 2) : "",
+          voice: spec?.voice ? entities[0] || "" : "", fields,
+          data: Object.keys(rest).length ? JSON.stringify(rest, null, 2) : "",
         };
       }),
       isNew: false,
@@ -679,8 +741,12 @@ class DailyRoutinePanel extends HTMLElement {
         return { todo };
       }
       if (!step.service.trim()) throw new Error(`Step ${index + 1}: choose a service.`);
+      const spec = actionSpec(step.service.trim());
       let target = {};
-      if (step.targetMode === "area" && step.area) target = { area_id: [step.area] };
+      if (spec?.voice) {
+        if (!step.voice) throw new Error(`Step ${index + 1}: choose a voice.`);
+        target = { entity_id: [step.voice] };
+      } else if (step.targetMode === "area" && step.area) target = { area_id: [step.area] };
       else if (step.targetMode === "all_areas") target = { area_id: areaIds };
       else if (step.targetMode === "entities" && step.entities.length) target = { entity_id: [...step.entities] };
       let data = {};
@@ -691,6 +757,7 @@ class DailyRoutinePanel extends HTMLElement {
           throw new Error(`Step ${index + 1}: extra data must be JSON, for example {"brightness": 128}.`);
         }
       }
+      Object.assign(data, fieldsToData(spec, step.fields, index));
       const raw = { service: step.service.trim(), data };
       if (Object.keys(target).length) raw.target = target;
       return raw;
@@ -714,6 +781,9 @@ class DailyRoutinePanel extends HTMLElement {
       trigger: draft.trigger,
       time: draft.time,
       offset_minutes: Number(draft.offset_minutes) || 0,
+      random_minutes: Number(draft.random_minutes) || 0,
+      paused_until: draft.paused_until || null,
+      skip_next: Boolean(draft.skip_next),
       days: draft.days,
       people: draft.people,
       sensors: draft.sensors,
@@ -722,9 +792,10 @@ class DailyRoutinePanel extends HTMLElement {
         .map((c) => {
           if (c.kind === "presence") return { kind: "presence", who: c.who, where: c.where, people: [...c.people], zone: c.zone || "zone.home" };
           if (c.kind === "sensors") return { kind: "sensors", mode: c.mode, minutes: Number(c.minutes) || 0, sensors: [...c.sensors] };
+          if (c.kind === "calendar") return { kind: "calendar", entity_id: c.entity_id, when: c.when === "event" ? "event" : "no_event", match: (c.match || "").trim() };
           return { kind: "state", entity_id: c.entity_id, state: c.state };
         })
-        .filter((c) => c.kind !== "state" || (c.entity_id && c.state)),
+        .filter((c) => (c.kind !== "state" && c.kind !== "calendar") || (c.entity_id && (c.kind === "calendar" || c.state))),
       conditions_match: draft.conditions_match === "any" ? "any" : "all",
       repeat: draft.repeat,
       catch_up_minutes: Number(draft.catch_up_minutes) || 0,
@@ -803,6 +874,32 @@ class DailyRoutinePanel extends HTMLElement {
         case "import":
           this.shadowRoot.querySelector("[data-import-file]").click();
           return;
+        case "skip-next":
+          await this._call({ type: `${DOMAIN}/routine/skip_next`, routine_id: el.dataset.id, skip: el.dataset.skip === "1" });
+          this._showNotice(el.dataset.skip === "1" ? "The next run will be skipped." : "The next run will go ahead.");
+          await this._load();
+          return;
+        case "resume":
+          await this._call({ type: `${DOMAIN}/routines/pause_until`, routine_ids: [el.dataset.id], until: null });
+          await this._load();
+          return;
+        case "away-pause": {
+          const until = this._awayUntil;
+          if (!until) throw new Error("Pick the last day to skip.");
+          const ids = [...(this._awayPicks || new Set((this._data.routines || []).filter((r) => r.kind !== "todo" && !r.companion_of).map((r) => r.id)))];
+          if (!ids.length) throw new Error("Pick at least one routine.");
+          await this._call({ type: `${DOMAIN}/routines/pause_until`, routine_ids: ids, until });
+          this._showNotice(`Paused ${ids.length} routine${ids.length === 1 ? "" : "s"} until ${formatDay(until)}.`);
+          await this._load();
+          return;
+        }
+        case "away-resume": {
+          const ids = (this._data.routines || []).filter((r) => this._pausedDay(r)).map((r) => r.id);
+          await this._call({ type: `${DOMAIN}/routines/pause_until`, routine_ids: ids, until: null });
+          this._showNotice("Routines resumed.");
+          await this._load();
+          return;
+        }
         case "toggle-enabled": {
           const routine = this._data.routines.find((r) => r.id === el.dataset.id);
           if (!routine) return;
@@ -908,6 +1005,7 @@ class DailyRoutinePanel extends HTMLElement {
           const zone = this._draft.zone || "zone.home";
           if (kind === "presence") this._draft.conditions.push({ kind, who: "everyone", where: "away", people: [], zone });
           else if (kind === "sensors") this._draft.conditions.push({ kind, mode: "quiet", minutes: 10, sensors: [] });
+          else if (kind === "calendar") this._draft.conditions.push({ kind, entity_id: this._calendars()[0]?.entity_id || "", when: "no_event", match: "" });
           else this._draft.conditions.push({ kind: "state", entity_id: "", state: "on" });
           break;
         }
@@ -975,6 +1073,18 @@ class DailyRoutinePanel extends HTMLElement {
       if (count) count.textContent = this._countText();
       return;
     }
+    if (el.dataset.awayUntil !== undefined) {
+      this._awayUntil = el.value;
+      this._awayOpen = true;
+      return;
+    }
+    if (el.dataset.away !== undefined) {
+      const all = (this._data.routines || []).filter((r) => r.kind !== "todo" && !r.companion_of).map((r) => r.id);
+      this._awayPicks = this._awayPicks || new Set(all);
+      el.checked ? this._awayPicks.add(el.dataset.away) : this._awayPicks.delete(el.dataset.away);
+      this._awayOpen = true;
+      return;
+    }
     if (!this._draft) return;
     const value = el.type === "checkbox" ? el.checked : el.value;
     const d = this._draft;
@@ -997,9 +1107,15 @@ class DailyRoutinePanel extends HTMLElement {
       const field = el.dataset.f;
       if (field === "watch_entity" && !live) this._loadStateHints(value);
       if (field === "time") d.time = value.length === 5 ? `${value}:00` : value;
-      else if (field === "enabled" || field === "repeat" || field === "skip_noop" || field === "notify_on_run" || field === "notify_on_skip" || field === "notify_on_error" || field === "notify_on_health" || field === "wait_when_unavailable") d[field] = Boolean(value);
+      else if (field === "enabled" || field === "skip_next" || field === "repeat" || field === "skip_noop" || field === "notify_on_run" || field === "notify_on_skip" || field === "notify_on_error" || field === "notify_on_health" || field === "wait_when_unavailable") d[field] = Boolean(value);
       else d[field] = value;
       if (el.dataset.rerender !== undefined && !live) this._render();
+      return;
+    }
+    if (el.dataset.sfield !== undefined) {
+      const step = d.actions[Number(el.dataset.sfi)];
+      if (!step) return;
+      step.fields = { ...(step.fields || {}), [el.dataset.sfield]: value };
       return;
     }
     if (el.dataset.si !== undefined) {
@@ -1209,6 +1325,7 @@ class DailyRoutinePanel extends HTMLElement {
           ${options.showRoom ? `<div class="muted small">${esc(this._roomName(routine.room))}</div>` : ""}
           <div class="muted small">${esc(this._describeTrigger(routine))} · ${routine.days.length === 7 ? "every day" : routine.days.join(", ")}</div>
           <div class="muted small">Next: ${esc(formatTime(status.next_run))}${esc(reason)}${detail}</div>
+          ${this._skipHtml(routine)}
           <div class="muted small">Linked to: ${esc(this._linkedName(routine.device_id))}</div>
           ${this._historyHtml(status)}
           ${this._healthHtml(routine)}
@@ -1217,12 +1334,44 @@ class DailyRoutinePanel extends HTMLElement {
       </div>
       <div class="row-actions">
         <button class="ghost" data-act="run" data-id="${esc(routine.id)}">Run now</button>
+        <button class="ghost" data-act="skip-next" data-id="${esc(routine.id)}" data-skip="${routine.skip_next ? "" : "1"}">${routine.skip_next ? "Don't skip" : "Skip next run"}</button>
         <button class="ghost" data-act="edit" data-id="${esc(routine.id)}">Edit</button>
         <button class="ghost" data-act="duplicate" data-id="${esc(routine.id)}">Duplicate</button>
         <button class="ghost" data-act="toggle-enabled" data-id="${esc(routine.id)}">${routine.enabled ? "Disable" : "Enable"}</button>
         <button class="ghost danger" data-act="delete" data-id="${esc(routine.id)}">Delete</button>
       </div>
     </article>`;
+  }
+
+  _pausedDay(routine) {
+    return routine.paused_until && routine.paused_until >= todayIso() ? routine.paused_until : null;
+  }
+
+  _skipHtml(routine) {
+    const paused = this._pausedDay(routine);
+    const parts = [];
+    if (paused) parts.push(`<span class="pill warn">Paused until ${esc(formatDay(paused))}</span> <button class="link" data-act="resume" data-id="${esc(routine.id)}">Resume</button>`);
+    if (routine.skip_next) parts.push(`<span class="pill warn">The next run will be skipped</span>`);
+    return parts.length ? `<div class="small skip-line">${parts.join(" ")}</div>` : "";
+  }
+
+  // Pause many routines while you're away.
+  _awayCard() {
+    const routines = (this._data?.routines || []).filter((r) => r.kind !== "todo" && !r.companion_of);
+    if (!routines.length) return "";
+    const paused = routines.filter((r) => this._pausedDay(r));
+    const picks = this._awayPicks || new Set(routines.map((r) => r.id));
+    const list = routines.map((r) => `<label class="check"><input type="checkbox" data-away="${esc(r.id)}" ${picks.has(r.id) ? "checked" : ""}> ${esc(r.name)}${this._pausedDay(r) ? ` <span class="muted small">(paused until ${esc(formatDay(this._pausedDay(r)))})</span>` : ""}</label>`).join("");
+    return `<details class="card away" ${this._awayOpen ? "open" : ""}>
+      <summary><strong>Going away?</strong> <span class="muted small">${paused.length ? `${paused.length} routine${paused.length === 1 ? " is" : "s are"} paused` : "Pause routines until a date"}</span></summary>
+      <p class="muted small">Picked routines don't run on their own through the day you choose, then carry on as usual. Run now still works.</p>
+      <label>Skip through<input type="date" data-away-until value="${esc(this._awayUntil || "")}" min="${todayIso()}"></label>
+      <div class="checks">${list}</div>
+      <div class="row-actions">
+        <button class="primary" data-act="away-pause">Pause the picked routines</button>
+        ${paused.length ? `<button class="ghost" data-act="away-resume">Resume all</button>` : ""}
+      </div>
+    </details>`;
   }
 
   // The last few runs, newest first. Shown closed so the card stays short.
@@ -1645,7 +1794,7 @@ class DailyRoutinePanel extends HTMLElement {
   }
 
   _renderAll() {
-    return `<div class="toolbar"><input type="search" data-search value="${esc(this._query || "")}"
+    return `${this._awayCard()}<div class="toolbar"><input type="search" data-search value="${esc(this._query || "")}"
         placeholder="Search by name, room, device, trigger or day" aria-label="Search routines"></div>
       <div class="muted small" data-count>${esc(this._countText())}</div>
       <div class="list" data-results>${this._allResults()}</div>`;
@@ -1751,6 +1900,8 @@ class DailyRoutinePanel extends HTMLElement {
         ${todoDone ? this._todoDoneFields(d) : ""}
         ${d.trigger === "time" ? `<label>Time<input type="time" data-f="time" value="${esc(hhmm(d.time))}"></label>` : ""}
         ${d.trigger === "sunrise" || d.trigger === "sunset" ? `<label>Offset in minutes (negative is before)<input type="number" min="-720" max="720" data-f="offset_minutes" value="${esc(d.offset_minutes)}"></label>` : ""}
+        ${["time", "sunrise", "sunset"].includes(d.trigger) ? `<label>Vary the time by up to (minutes, earlier or later)<input type="number" min="0" max="120" data-f="random_minutes" value="${esc(d.random_minutes || 0)}"></label>
+        <p class="muted small">A different time each day, so lights while you're away don't look like a timer. 0 runs at the same time every day.</p>` : ""}
         ${timeBased || valueTrigger || stateTrigger || todoDone ? `<div class="chips">${days}</div>` : ""}
         ${presence ? this._zoneField(d) : ""}
         ${presence ? `<h4>Who</h4><p class="muted small">Pick the people this routine watches. People without location tracking can't be checked.</p><div class="checks">${peopleList}</div>
@@ -1775,6 +1926,7 @@ class DailyRoutinePanel extends HTMLElement {
           <button class="ghost" data-act="add-condition" data-kind="presence">+ Who is home or away</button>
           <button class="ghost" data-act="add-condition" data-kind="sensors">+ Sensors quiet or active</button>
           <button class="ghost" data-act="add-condition" data-kind="state">+ A device's state</button>
+          <button class="ghost" data-act="add-condition" data-kind="calendar">+ Calendar day</button>
         </div>
       </section>
 
@@ -1790,6 +1942,9 @@ class DailyRoutinePanel extends HTMLElement {
         <label class="check"><input type="checkbox" data-f="skip_noop" ${d.skip_noop ? "checked" : ""}> Skip steps that are already done</label>
         ${this._catchUpField(d.catch_up_minutes)}
         <label>Retry a failed step (times)<input type="number" min="0" max="3" data-f="retries" value="${esc(d.retries)}"></label>
+        <h4>Skip for now</h4>
+        <label class="check"><input type="checkbox" data-f="skip_next" ${d.skip_next ? "checked" : ""}> Skip the next run (it runs as usual after that)</label>
+        <label>Pause until (the last day it's skipped)<input type="date" data-f="paused_until" value="${esc(d.paused_until || "")}"></label>
         <label class="check"><input type="checkbox" data-f="wait_when_unavailable" ${d.wait_when_unavailable ? "checked" : ""}> If a to-do list or device is unavailable, wait for it to come back, then run (up to a day)</label>
         <h4>Notify me</h4>
         <label class="check"><input type="checkbox" data-f="notify_on_run" ${d.notify_on_run ? "checked" : ""}> When it runs</label>
@@ -1814,6 +1969,7 @@ class DailyRoutinePanel extends HTMLElement {
       const remove = `<button class="ghost" data-act="remove-condition" data-i="${i}">Remove</button>`;
       if (cond.kind === "presence") return this._presenceRow(d, cond, i, remove);
       if (cond.kind === "sensors") return this._sensorRow(cond, i, remove);
+      if (cond.kind === "calendar") return this._calendarRow(cond, i, remove);
       return this._stateRow(cond, i, remove);
     }).join("");
   }
@@ -1836,6 +1992,26 @@ class DailyRoutinePanel extends HTMLElement {
       <div class="step-head"><strong>Who is home or away</strong>${remove}</div>
       <div class="inline2">${who} ${where}<select data-ci="${i}" data-cf="zone">${zoneOptions}</select></div>
       <div class="checks">${people || `<p class="muted small">No people are turned on for routines. Turn them on under Settings.</p>`}</div>
+    </div>`;
+  }
+
+  _calendars() {
+    return (this._data?.all_entities || []).filter((e) => e.entity_id.startsWith("calendar."));
+  }
+
+  _calendarRow(cond, i, remove) {
+    const calendars = this._calendars();
+    const options = `<option value="">Choose a calendar…</option>${calendars.map((c) => `<option value="${esc(c.entity_id)}" ${c.entity_id === cond.entity_id ? "selected" : ""}>${esc(c.name)}</option>`).join("")}`;
+    return `<div class="condition">
+      <div class="step-head"><strong>Calendar day</strong>${remove}</div>
+      <div class="inline">
+        <select data-ci="${i}" data-cf="when">
+          <option value="no_event" ${cond.when !== "event" ? "selected" : ""}>Not on days with</option>
+          <option value="event" ${cond.when === "event" ? "selected" : ""}>Only on days with</option></select>
+        <input data-ci="${i}" data-cf="match" value="${esc(cond.match || "")}" placeholder="an event called… (empty: any event)" aria-label="Event name">
+      </div>
+      <label>In<select data-ci="${i}" data-cf="entity_id">${options}</select></label>
+      <p class="muted small">${calendars.length ? "For example, not on days with “No school” in the school calendar, or only on days with “Trash” in the household calendar. The name matches anywhere in the event's title." : "Add a calendar to Home Assistant (such as Local Calendar or Google Calendar) to use this."}</p>
     </div>`;
   }
 
@@ -1930,11 +2106,30 @@ class DailyRoutinePanel extends HTMLElement {
     const customField = custom
       ? `<label>Service name<input data-si="${i}" data-sf="service" value="${esc(step.service)}" placeholder="domain.service"></label>`
       : "";
+    const spec = actionSpec(step.service);
+    const allEntities = this._data?.all_entities || [];
+    const pick = (domain, selected, attrs, label) => {
+      const options = allEntities.filter((e) => e.entity_id.startsWith(`${domain}.`));
+      return `<label>${esc(label)}<select ${attrs}><option value="">Choose…</option>${options.map((e) => `<option value="${esc(e.entity_id)}" ${e.entity_id === selected ? "selected" : ""}>${esc(e.name)}</option>`).join("")}</select></label>`;
+    };
+    const values = step.fields || {};
+    const fields = (spec?.fields || []).map((f) => {
+      const attrs = `data-sfi="${i}" data-sfield="${esc(f.key)}"`;
+      const value = values[f.key] ?? "";
+      if (f.type === "entity") return pick(f.domain, value, attrs, f.label);
+      if (f.type === "percent") return `<label>${esc(f.label)} (%)<input type="number" min="0" max="100" step="5" ${attrs} value="${esc(value)}"></label>`;
+      if (f.type === "number") return `<label>${esc(f.label)}<input type="number" step="${f.step || 1}" ${attrs} value="${esc(value)}"></label>`;
+      return `<label>${esc(f.label)}<input ${attrs} value="${esc(value)}" placeholder="${esc(f.placeholder || "")}"></label>`;
+    }).join("");
+    const voice = spec?.voice ? pick("tts", step.voice || "", `data-si="${i}" data-sf="voice"`, "Voice") : "";
+    const target = spec?.voice ? "" : `<label>Applies to<select data-si="${i}" data-sf="targetMode" data-rerender>${targetModes}</select></label>
+      ${entityChecks}`;
     return `<div class="step">${head}${kind}
       <label>Action<select data-si="${i}" data-sf="actionChoice" data-rerender>${actionOptions}</select></label>
       ${customField}
-      <label>Applies to<select data-si="${i}" data-sf="targetMode" data-rerender>${targetModes}</select></label>
-      ${entityChecks}
+      ${voice}
+      ${target}
+      ${fields}
       <label>Advanced: extra settings (optional JSON)<textarea data-si="${i}" data-sf="data" rows="2" placeholder='{"brightness": 128}'>${esc(step.data)}</textarea></label>
     </div>`;
   }
@@ -1998,6 +2193,10 @@ const STYLES = `<style>
   header nav button[aria-selected="true"] { font-weight: 600; border-color: currentColor; }
   button.ghost { background: transparent; }
   button:disabled { opacity: .4; cursor: default; }
+  button.link { border: none; background: none; padding: 0 4px; color: var(--primary-color, #03a9f4); text-decoration: underline; }
+  .skip-line { margin-top: 4px; }
+  details.away { margin-bottom: 12px; }
+  details.away summary { cursor: pointer; }
   input, select, textarea { font: inherit; width: 100%; box-sizing: border-box; padding: 8px; border-radius: 8px;
            border: 1px solid var(--divider-color, #cfcfcf); background: var(--card-background-color, #fff); color: var(--primary-text-color, #212121); }
   input[type=checkbox] { width: auto; }

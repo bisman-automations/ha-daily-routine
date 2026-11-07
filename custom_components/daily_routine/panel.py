@@ -203,6 +203,8 @@ def async_setup_panel_api(hass: HomeAssistant) -> None:
         ws_run_routine,
         ws_preview_routine,
         ws_set_paused,
+        ws_skip_next,
+        ws_pause_until,
         ws_save_settings,
         ws_status,
         ws_activity,
@@ -411,6 +413,56 @@ async def ws_set_paused(
         return
     await coordinator.async_set_paused(msg["paused"])
     connection.send_result(msg["id"], {"paused": coordinator.paused})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/routine/skip_next",
+        vol.Required("routine_id"): str,
+        vol.Optional("skip", default=True): bool,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_skip_next(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Skip (or stop skipping) a routine's next scheduled run."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    try:
+        await coordinator.async_skip_next(msg["routine_id"], msg["skip"])
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "not_found", str(err))
+        return
+    connection.send_result(msg["id"], {"skip_next": msg["skip"]})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/routines/pause_until",
+        vol.Required("routine_ids"): [str],
+        vol.Required("until"): vol.Any(None, str),
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_pause_until(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Pause routines' scheduled runs through a day, or resume them (until None)."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    try:
+        await coordinator.async_pause_until(msg["routine_ids"], msg["until"])
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "invalid_routine", str(err))
+        return
+    connection.send_result(msg["id"], {"until": msg["until"]})
 
 
 @websocket_api.websocket_command(

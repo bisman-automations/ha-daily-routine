@@ -6,6 +6,7 @@ import asyncio
 from collections import deque
 from collections.abc import Callable, Coroutine
 from datetime import datetime, time as dt_time, timedelta
+import hashlib
 import logging
 import re
 from types import MappingProxyType
@@ -71,6 +72,8 @@ from .routines import (
     TODO_DONE_TRIGGERS,
     VALUE_TRIGGERS,
     WATCH_TRIGGERS,
+    calendar_matches,
+    normalize_date,
     normalize_routine,
     uses_conditions,
 )
@@ -99,7 +102,22 @@ _CONDITION_REASON = {
     "presence": "presence_not_met",
     "sensors": "sensors_not_met",
     "state": "extra_condition_not_met",
+    "calendar": "calendar_not_met",
 }
+# How often calendars used by conditions are read again (and after midnight).
+CALENDAR_REFRESH = timedelta(minutes=30)
+CALENDAR_TIMEOUT_SECONDS = 20
+
+
+def random_shift(routine_id: str, day: str, minutes: int) -> timedelta:
+    """The same shift, from -minutes to +minutes, for a routine on a given day.
+
+    Worked out from the routine and the date, so a restart doesn't pick a new one.
+    """
+    if minutes <= 0:
+        return timedelta(0)
+    digest = hashlib.sha256(f"{routine_id}:{day}".encode()).hexdigest()
+    return timedelta(minutes=int(digest, 16) % (2 * minutes + 1) - minutes)
 
 
 def _watched_entities(routine: dict[str, Any]) -> list[str]:
@@ -117,6 +135,10 @@ def _watched_entities(routine: dict[str, Any]) -> list[str]:
         else:
             entities.append(cond["entity_id"])
     return entities
+
+
+def _calendars(routine: dict[str, Any]) -> list[str]:
+    return [c["entity_id"] for c in routine["conditions"] if c["kind"] == "calendar"]
 
 
 def _all_people(routine: dict[str, Any]) -> list[str]:
@@ -317,6 +339,11 @@ class HomeRoutinesCoordinator:
         self._handles: dict[tuple[str, str], Callable[[], None]] = {}
         self._startup_unsubs: list[Callable[[], None]] = []
         self._health_unsub: Callable[[], None] | None = None
+        # Today's event titles for each calendar a condition uses: entity -> (date, titles).
+        self._calendar_days: dict[str, tuple[str, list[str]]] = {}
+        self._calendar_unsub: Callable[[], None] | None = None
+        self._calendar_refreshing = False
+        self._calendar_tried: str | None = None  # the day calendars were last read
         self._started_at: datetime | None = None
         self._entry_id: str | None = None
         # Serialises edits so the dashboard and the integration's entries stay in step.
@@ -526,9 +553,14 @@ class HomeRoutinesCoordinator:
             self._rt(rid).update({k: saved.get(k) for k in PERSISTED_KEYS})
 
     async def async_start(self) -> None:
+        # Calendars first, so a run right after starting can check them.
+        await self._refresh_calendars()
         self._start_all(catch_up=False)
         self._started_at = dt_util.utcnow()
         self._schedule_health_interval()
+        self._calendar_unsub = async_track_time_interval(
+            self.hass, self._on_calendar_interval, CALENDAR_REFRESH
+        )
         self._notify_listeners()
         if self.hass.is_running:
             self._schedule_startup_catch_up()
@@ -560,6 +592,9 @@ class HomeRoutinesCoordinator:
         if self._health_unsub is not None:
             self._health_unsub()
             self._health_unsub = None
+        if self._calendar_unsub is not None:
+            self._calendar_unsub()
+            self._calendar_unsub = None
         self._drop_all_handles()
         if save:
             await self._async_save()
@@ -592,6 +627,10 @@ class HomeRoutinesCoordinator:
         await self._async_save()
         self._notify_listeners()
         async_dispatcher_send(self.hass, SIGNAL_ROUTINES_CHANGED)
+        if any(
+            c not in self._calendar_days for r in self.routines for c in _calendars(r)
+        ):
+            self._spawn(self._refresh_calendars())
 
     # ----- editing (used by the panel, services and migration) -----
 
@@ -883,7 +922,86 @@ class HomeRoutinesCoordinator:
             return self._presence_ok(cond)
         if cond["kind"] == "sensors":
             return self._sensors_ok(cond, now)
+        if cond["kind"] == "calendar":
+            return self._calendar_ok(cond, now)
         return self._state_is(cond["entity_id"], cond["state"])
+
+    def _calendar_ok(self, cond: dict[str, Any], now: datetime) -> bool:
+        """Today's events in the calendar. Not read yet, or unreadable, fails closed."""
+        state = self.hass.states.get(cond["entity_id"])
+        if state is None or state.state in UNKNOWN_STATES:
+            return False
+        today = now.date().isoformat()
+        day = self._calendar_days.get(cond["entity_id"])
+        if day is None or day[0] != today:
+            if self._calendar_tried != today:
+                # A new day: read the calendars again (once; the timer retries).
+                self._spawn(self._refresh_calendars())
+            return False
+        return calendar_matches(cond, day[1])
+
+    # ----- calendars -----
+
+    async def _on_calendar_interval(self, _now: datetime) -> None:
+        await self._refresh_calendars()
+
+    async def _refresh_calendars(self) -> None:
+        """Read today's events from every calendar a condition uses."""
+        if self._calendar_refreshing:
+            return
+        wanted = sorted({c for r in self.routines for c in _calendars(r)})
+        if not wanted:
+            self._calendar_days.clear()
+            return
+        self._calendar_refreshing = True
+        try:
+            now = dt_util.now()
+            self._calendar_tried = now.date().isoformat()
+            start = dt_util.start_of_local_day(now)
+            end = start + timedelta(days=1)
+            for entity_id in wanted:
+                titles = await self._read_calendar(entity_id, start, end)
+                if titles is None:
+                    self._calendar_days.pop(entity_id, None)
+                else:
+                    self._calendar_days[entity_id] = (now.date().isoformat(), titles)
+            for gone in set(self._calendar_days) - set(wanted):
+                del self._calendar_days[gone]
+        finally:
+            self._calendar_refreshing = False
+        for routine in self.routines:
+            if _calendars(routine):
+                self._evaluate_pending(routine)
+        self._notify_listeners()
+
+    async def _read_calendar(
+        self, entity_id: str, start: datetime, end: datetime
+    ) -> list[str] | None:
+        if self.hass.states.get(
+            entity_id
+        ) is None or not self.hass.services.has_service("calendar", "get_events"):
+            return None
+        try:
+            async with asyncio.timeout(CALENDAR_TIMEOUT_SECONDS):
+                response = await self.hass.services.async_call(
+                    "calendar",
+                    "get_events",
+                    {
+                        "entity_id": entity_id,
+                        "start_date_time": start.isoformat(),
+                        "end_date_time": end.isoformat(),
+                    },
+                    blocking=True,
+                    return_response=True,
+                )
+        except Exception as err:  # noqa: BLE001 - an unreadable calendar fails closed
+            _LOGGER.warning("Couldn't read %s: %s", entity_id, err)
+            return None
+        calendar = (response or {}).get(entity_id)
+        events = calendar.get("events") if isinstance(calendar, dict) else None
+        if not isinstance(events, list):
+            return []
+        return [str(e.get("summary") or "") for e in events if isinstance(e, dict)]
 
     def _presence_ok(self, cond: dict[str, Any]) -> bool:
         """Who is in or away from the place. Unknown or unavailable people fail closed."""
@@ -953,9 +1071,13 @@ class HomeRoutinesCoordinator:
         @callback
         def _changed(event: Event[EventStateChangedData]) -> None:
             new = event.data.get("new_state")
-            if new is not None and new.state == "on":
+            entity_id = event.data.get("entity_id")
+            if str(entity_id).startswith("calendar."):
+                # An event started or ended, or the calendar came back: read it again.
+                self._spawn(self._refresh_calendars())
+            elif new is not None and new.state == "on":
                 self._last_on[new.entity_id] = dt_util.now()
-            self._on_condition_entity_changed(routine, event.data.get("entity_id"))
+            self._on_condition_entity_changed(routine, entity_id)
 
         unsub = async_track_state_change_event(self.hass, sorted(entities), _changed)
         self._set_handle(rid, H_WATCH, unsub)
@@ -1127,15 +1249,18 @@ class HomeRoutinesCoordinator:
         if trigger not in (TRIGGER_TIME, TRIGGER_SUNRISE, TRIGGER_SUNSET):
             return None
         offset = timedelta(minutes=routine["offset_minutes"])
+        vary = routine.get("random_minutes", 0)
+
+        def shift(day: datetime) -> timedelta:
+            return random_shift(routine["id"], day.date().isoformat(), vary)
 
         if trigger == TRIGGER_TIME:
             target = _parse_time(routine["time"])
-            for day_offset in range(8):
+            for day_offset in range(-1, 8):
                 candidate_date = (after + timedelta(days=day_offset)).date()
-                candidate = datetime.combine(
-                    candidate_date, target, tzinfo=after.tzinfo
-                )
-                if candidate > after and self._allowed_day(routine, candidate):
+                base = datetime.combine(candidate_date, target, tzinfo=after.tzinfo)
+                candidate = base + shift(base)
+                if candidate > after and self._allowed_day(routine, base):
                     return candidate
             return None
 
@@ -1149,8 +1274,9 @@ class HomeRoutinesCoordinator:
                 return None
             if event_dt is None:
                 return None
-            candidate = dt_util.as_local(event_dt) + offset
-            if candidate > after and self._allowed_day(routine, candidate):
+            base = dt_util.as_local(event_dt) + offset
+            candidate = base + shift(base)
+            if candidate > after and self._allowed_day(routine, base):
                 return candidate
             cursor = event_dt + timedelta(minutes=1)
         return None
@@ -1622,6 +1748,10 @@ class HomeRoutinesCoordinator:
             return False
         if scheduled and self._hold_if_unavailable(routine, now):
             return False
+        if scheduled and (until := self.paused_until(routine)) and today <= until:
+            self._record(rid, "skipped", "paused_until")
+            self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "paused_until")
+            return False
 
         ok, reason = self._check(routine, now)
         if not ok:
@@ -1647,6 +1777,17 @@ class HomeRoutinesCoordinator:
         if scheduled:
             rt["last_run_date"] = today
             self._clear_pending(routine)
+            if routine.get("skip_next"):
+                # Skipped once, as asked: it runs as usual next time.
+                routine["skip_next"] = False
+                rt["state"] = "idle"
+                rt["last_result"] = "skipped_once"
+                self._record(rid, "skipped", "skipped_once")
+                self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "skipped_once")
+                self.revision += 1
+                await self._async_save()
+                self._notify_listeners()
+                return False
 
         rt["state"] = "running"
         rt["last_run"] = now.isoformat()
@@ -1755,6 +1896,43 @@ class HomeRoutinesCoordinator:
         await self._async_save()
         self._notify_listeners()
         return result == "success"
+
+    def paused_until(self, routine: dict[str, Any]) -> str | None:
+        """The day a routine is paused through; a turn-off routine follows its routine."""
+        owner = (
+            self._find(routine["companion_of"]) if routine.get("companion_of") else None
+        )
+        return (owner or routine).get("paused_until")
+
+    async def async_skip_next(self, routine_id: str, skip: bool = True) -> None:
+        """Skip (or stop skipping) a routine's next scheduled run."""
+        routine = self._find(routine_id)
+        if routine is None:
+            raise vol.Invalid(f"No routine with id '{routine_id}'.")
+        async with self._lock:
+            routine["skip_next"] = bool(skip)
+            self.revision += 1
+            await self._async_save()
+        self._notify_listeners()
+
+    async def async_pause_until(
+        self, routine_ids: list[str], until: str | None
+    ) -> None:
+        """Pause routines' scheduled runs through a day (None resumes them)."""
+        day = normalize_date(until, "Paused until")
+        routines = [self._find(rid) for rid in routine_ids]
+        missing = [
+            rid for rid, r in zip(routine_ids, routines, strict=True) if r is None
+        ]
+        if missing:
+            raise vol.Invalid(f"No routine with id '{missing[0]}'.")
+        async with self._lock:
+            for routine in routines:
+                assert routine is not None
+                routine["paused_until"] = day
+            self.revision += 1
+            await self._async_save()
+        self._notify_listeners()
 
     async def async_run(self, routine_id: str) -> bool:
         """Manual run: conditions still apply, the once-a-day rule does not."""

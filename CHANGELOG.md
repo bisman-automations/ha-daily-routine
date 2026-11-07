@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.16.0] - 2026-11-07
+
+### Added
+
+- **Skip the next run.** Each routine's card has **Skip next run**: the next time it would run on its own, it doesn't, then it carries on as usual. **Don't skip** takes it back. Also in the editor, and as the `daily_routine.skip_next` action.
+- **Going away?** On the Routines tab, pick a date and the routines to pause, and they don't run on their own through that day, then carry on. Each card shows **Paused until** with a **Resume** button, and **Run now** still works. Each routine also has **Pause until** in the editor, and automations can use the new `daily_routine.pause_routines` action.
+- **Calendar days.** A new extra condition: only on days with an event in a calendar, or not on days with one, such as not on days with "No school". Type part of the event's name, or leave it empty for any event. A calendar that can't be read blocks the run, like other conditions.
+- **Vary the time.** Time, sunrise and sunset routines can run up to a number of minutes earlier or later, a different time each day, so lights while you're away don't look like a timer. A day's time stays the same if Home Assistant restarts.
+- **More actions with plain settings:** **Set speaker volume**, **Say something on a speaker**, **Set the thermostat**, **Turn off the thermostat**, **Play media**, **Start the vacuum** and **Send the vacuum home**. Each asks for what it needs, such as the temperature or what to say, instead of JSON.
+
+### Changed
+
+- Test tools: ruff 0.17.3 and mypy 2.4.1.
+
 ## [1.15.2] - 2026-10-31
 
 ### Changed
@@ -275,6 +289,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.16.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.15.2...v1.16.0
 [1.15.2]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.15.1...v1.15.2
 [1.15.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.15.0...v1.15.1
 [1.15.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.14.0...v1.15.0

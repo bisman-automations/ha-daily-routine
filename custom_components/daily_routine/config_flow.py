@@ -14,7 +14,7 @@ from homeassistant.config_entries import (
 from homeassistant.core import callback
 from homeassistant.helpers import device_registry as dr, selector
 
-from .const import DOMAIN, ROUTINE_SUBENTRY, TRIGGERS, WEEKDAYS
+from .const import DOMAIN, MAX_RANDOM_MINUTES, ROUTINE_SUBENTRY, TRIGGERS, WEEKDAYS
 from .runtime import get_coordinator
 from .schema import vol
 from .text_format import (
@@ -80,6 +80,7 @@ def _form_from_routine(routine: dict[str, Any]) -> dict[str, Any]:
         "trigger": routine["trigger"],
         "time": routine["time"][:5],
         "offset_minutes": routine["offset_minutes"],
+        "random_minutes": routine["random_minutes"],
         "days": list(routine["days"]),
         "zone": routine["zone"],
         "room": routine["room"],
@@ -125,6 +126,7 @@ def _routine_from_form(
         "trigger": values["trigger"],
         "time": _hhmmss(values["time"]),
         "offset_minutes": int(values.get("offset_minutes") or 0),
+        "random_minutes": int(values.get("random_minutes") or 0),
         "days": list(values.get("days") or []),
         "zone": values.get("zone") or "zone.home",
         "room": values.get("room") or None,
@@ -212,6 +214,9 @@ def _form_schema(hass: Any, values: dict[str, Any]) -> vol.Schema:
             vol.Required(
                 "offset_minutes", default=values.get("offset_minutes") or 0
             ): number(-720, 720),
+            vol.Required(
+                "random_minutes", default=values.get("random_minutes") or 0
+            ): number(0, MAX_RANDOM_MINUTES),
             vol.Required(
                 "days", default=values.get("days") or list(WEEKDAYS)
             ): selector.SelectSelector(

@@ -109,6 +109,7 @@ wait 30
   - `presence everyone away | person.sam, person.alex | zone.home`: everyone listed is away from the place. Use `presence anyone in | person.sam | zone.work` for "at least one person is at Work". `everyone` or `anyone`, then `in` or `away`, then the people and the place.
   - `sensors quiet 10 | binary_sensor.hall_motion`: the sensors have been off for 10 minutes. Use `sensors active 5 | ...` for "one of these has been on within the last 5 minutes".
   - `input_boolean.guest_mode = off`: an entity is in a given state, for example `lock.front_door = unlocked`.
+  - `calendar no_event | calendar.school | No school`: not on days with an event called "No school" in that calendar. Use `calendar event | ...` for "only on days with", and leave out the name for any event.
 - Every condition in the list has to hold for the routine to run. With more than one, choose **all** or **any one** above the list.
 - Routines saved before this change convert on load. "Only when everyone is away" becomes a who-is-away condition, and "Only when the sensors have been quiet" becomes a quiet-sensors condition. Check any routine that set "any one" with those checkboxes, because the converted conditions now count toward that choice.
 
@@ -182,16 +183,19 @@ The history is saved with Home Assistant, keeps the last 30 days, and is removed
 | Sensor and level | For value triggers: a numeric sensor, the level it must cross, and for "above" an optional level to turn back off |
 | Only run between | Optional start and end time. Outside these hours the routine does nothing. Windows can cross midnight |
 | Time / offset | For time and sun triggers (offset in minutes, negative is before) |
+| Vary the time | For time and sun triggers: run up to this many minutes earlier or later, a different time each day, so lights while you're away don't look like a timer. The time for a day stays the same if Home Assistant restarts. 0 (the default) runs at the same time every day |
 | Days | Which days it may run |
 | People | For presence triggers. Only people with location tracking can be checked |
 | Sensors and quiet for | For the room is quiet trigger: the motion or occupancy sensors that must stay off for N minutes. Motion restarts the count |
-| Extra conditions | A list of conditions that must hold. Each one is **who is home or away** (everyone or anyone, at or away from a place), **sensors quiet or active** for N minutes, or **a device's state**. With more than one, choose whether **all** of them must hold or **any one** is enough. Each line is described under Editing routines in Home Assistant |
+| Extra conditions | A list of conditions that must hold. Each one is **who is home or away** (everyone or anyone, at or away from a place), **sensors quiet or active** for N minutes, **a device's state**, or a **calendar day**: only on days with an event, or not on days with one, in a calendar you pick. Type part of the event's name (such as "No school") to look for just that event, or leave it empty for any event. A calendar that can't be read blocks the run. With more than one, choose whether **all** of them must hold or **any one** is enough. Each line is described under Editing routines in Home Assistant |
 | Run every time | Run on every trigger, not once a day (default on for presence and room triggers) |
 | Skip steps already done | Skip a step whose devices are already in the target state (default on) |
 | Catch up | If Home Assistant was restarting when a time routine was due, still run it once it is back, within a window of up to 3 hours ("Don't run it late" turns this off). Home Assistant gets about 30 seconds to load, then the routine runs as soon as it can. If a condition blocks it, it is retried each minute until the window closes |
 | Retry | Retry a failed step up to 3 times |
+| Skip the next run | The next time the routine would run on its own, it doesn't, and then it carries on as usual. Also on each routine's card: **Skip next run** |
+| Pause until | The routine doesn't run on its own through this day, then carries on. **Run now** still works. To pause many routines at once while you're away, use **Going away?** on the Routines tab |
 | Wait for an unavailable list or device | Off by default. When a to-do list (or the device the routine watches) is unavailable when the routine should run, for example while iCloud is having trouble, the run waits instead of failing. The card shows **Waiting for list**, and the routine runs as soon as the list is back. You aren't told it needs attention unless the list stays unavailable for a whole day; then the waiting run is dropped (and you're told it was skipped, if **On skip** is on). A list that is gone from Home Assistant altogether is still announced right away. A waiting run is forgotten if Home Assistant restarts |
-| Steps | Actions chosen by name, such as "Turn off lights" (with a room, specific devices, or no target), or any service under "Other (advanced)", plus waits |
+| Steps | Actions chosen by name, such as "Turn off lights" (with a room, specific devices, or no target), or any service under "Other (advanced)", plus waits. **Set speaker volume**, **Say something on a speaker** (a voice, a speaker and what to say), **Set the thermostat** (a temperature), **Turn off the thermostat**, **Play media**, **Start the vacuum** and **Send the vacuum home** ask for their settings in plain fields |
 | Notify | On run, on skip, on failure, and when it needs attention (a device or list is missing or unavailable). The attention message is sent once a problem has lasted a minute, and again only after it clears and returns. Choosing **Show a Home Assistant notification** as a notify target doesn't add a second copy: the Home Assistant notification is always shown |
 
 ### Trigger notes
@@ -210,13 +214,21 @@ The history is saved with Home Assistant, keeps the last 30 days, and is removed
 |---------|-------------|
 | `daily_routine.run_routine` | Run a routine by id. Conditions still apply; the once-a-day rule does not. |
 | `daily_routine.reload_routines` | Restart all schedules and watchers. |
+| `daily_routine.skip_next` | Skip a routine's next run once (`skip: false` takes it back). |
+| `daily_routine.pause_routines` | Pause routines (`routine_ids`, or every routine when left out) through a date (`until`), for example while you're on holiday. Leave `until` out to resume them. |
 
-Both are open to automations, admins and the people allowed to see Daily Routine. They report an error when Daily Routine isn't running or the routine id is unknown.
+All of them are open to automations, admins and the people allowed to see Daily Routine. They report an error when Daily Routine isn't running or the routine id is unknown.
 
 ```yaml
 service: daily_routine.run_routine
 data:
   routine_id: kitchen_lights_off
+```
+
+```yaml
+service: daily_routine.pause_routines
+data:
+  until: "2026-12-28"   # back on the 29th
 ```
 
 Entities:
@@ -228,7 +240,7 @@ Entities:
 
 - `daily_routine_routine_started`
 - `daily_routine_routine_finished` (`result`: `success` or a failure reason)
-- `daily_routine_routine_skipped` (`result`: `disabled`, `paused`, `already_ran_today`, `conditions_not_met`, `waiting:<reason>`, …)
+- `daily_routine_routine_skipped` (`result`: `disabled`, `paused`, `paused_until`, `skipped_once`, `already_ran_today`, `conditions_not_met`, `waiting:<reason>`, …)
 
 Every event includes `routine_id` and `name`.
 

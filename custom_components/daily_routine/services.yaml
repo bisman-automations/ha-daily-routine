@@ -12,3 +12,36 @@ run_routine:
 reload_routines:
   name: Reload routines
   description: Restart all routine schedules and sensor watchers.
+skip_next:
+  name: Skip next run
+  description: Skip a routine's next scheduled run once. It runs as usual after that.
+  fields:
+    routine_id:
+      name: Routine ID
+      description: The id of the routine to skip.
+      required: true
+      example: morning_covers
+      selector:
+        text:
+    skip:
+      name: Skip
+      description: Turn off to run the next time after all.
+      default: true
+      selector:
+        boolean:
+pause_routines:
+  name: Pause routines until a date
+  description: Skip routines' scheduled runs through a date, for example while you're on holiday. Leave the date empty to resume them.
+  fields:
+    routine_ids:
+      name: Routine IDs
+      description: The routines to pause. Leave empty for every routine.
+      example: morning_covers
+      selector:
+        text:
+          multiple: true
+    until:
+      name: Until
+      description: The last day to skip. Leave empty to resume.
+      selector:
+        date:

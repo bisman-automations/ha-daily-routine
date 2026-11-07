@@ -37,6 +37,9 @@ homeassistant/components/frontend/manifest.json>`.
 
 - Routine data is validated in `routines.py`. Add new fields there first, then the panel draft mapping (`_draftFromRoutine` / `_draftToRaw`), then tests.
 - Safety rules are fail-closed. Unknown or unavailable people and sensors block a run, and conditions are re-checked before each step. Don't weaken these without asking.
+- Calendar conditions (`kind: calendar`) are checked from `_calendar_days`, today's event titles read with `calendar.get_events` at start, every 30 minutes, when the calendar entity changes, and once on a new day. Unread or unreadable calendars fail closed. `_calendar_tried` keeps a status read from asking again in a loop.
+- `skip_next` and `paused_until` are routine fields but change through `async_skip_next` / `async_pause_until` (no reload). `skip_next` is consumed only when a scheduled run would really go ahead; `paused_until` is checked before conditions, and a turn-off companion follows its routine's. `random_minutes` shifts time and sun runs by `random_shift` (from the routine id and date, so restarts keep the day's time).
+- Actions in the panel's `ACTIONS` list can ask for `fields` (merged into `data`) and a `voice` (a `tts` entity as the target, for `tts.speak`).
 - Value triggers (`value_above` / `value_below`) fire on a crossing, not on every reading. Turn-off levels create a companion routine named `<id>_off` through `_companion_for`.
 - Panel tests stub the DOM. When you change a template or an editor field, add or update a Node test.
 - Keep UI wording plain. Show names, never entity ids, in the panel. Actions come from the `ACTIONS` list in the panel, each with a plain label. Add new actions there, and keep "Other (advanced)" for anything not listed.

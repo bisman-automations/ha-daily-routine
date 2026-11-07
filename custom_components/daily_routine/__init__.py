@@ -60,6 +60,58 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         schema=vol.Schema({vol.Required("routine_id"): str}),
     )
     hass.services.async_register(DOMAIN, "reload_routines", reload_service)
+
+    async def skip_next_service(call: ServiceCall) -> None:
+        coordinator = _coordinator()
+        await async_ensure_allowed(hass, call.context)
+        try:
+            await coordinator.async_skip_next(
+                call.data["routine_id"], call.data["skip"]
+            )
+        except vol.Invalid as err:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="run_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
+
+    async def pause_routines_service(call: ServiceCall) -> None:
+        coordinator = _coordinator()
+        await async_ensure_allowed(hass, call.context)
+        ids = call.data.get("routine_ids") or [
+            r["id"] for r in coordinator.routines if not r.get("companion_of")
+        ]
+        until = call.data.get("until")
+        try:
+            await coordinator.async_pause_until(
+                list(ids), until.isoformat() if until else None
+            )
+        except vol.Invalid as err:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="run_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
+
+    hass.services.async_register(
+        DOMAIN,
+        "skip_next",
+        skip_next_service,
+        schema=vol.Schema(
+            {vol.Required("routine_id"): str, vol.Optional("skip", default=True): bool}
+        ),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "pause_routines",
+        pause_routines_service,
+        schema=vol.Schema(
+            {
+                vol.Optional("routine_ids"): vol.All(cv.ensure_list, [str]),
+                vol.Optional("until"): vol.Any(None, cv.date),
+            }
+        ),
+    )
     return True
 
 

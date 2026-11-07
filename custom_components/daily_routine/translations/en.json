@@ -24,13 +24,14 @@
         },
         "reconfigure": {
           "title": "Edit {name}",
-          "description": "Everything here is also in the Daily Routine sidebar, and changes show in both. Steps: one per line, for example light.turn_off | light.hall, or wait 30. Extra conditions: one per line, for example lock.front_door = unlocked, presence everyone away | person.a, person.b | zone.home, or sensors quiet 10 | binary_sensor.hall_motion.",
+          "description": "Everything here is also in the Daily Routine sidebar, and changes show in both. Steps: one per line, for example light.turn_off | light.hall, or wait 30. Extra conditions: one per line, for example lock.front_door = unlocked, presence everyone away | person.a, person.b | zone.home, sensors quiet 10 | binary_sensor.hall_motion, or calendar no_event | calendar.school | No school.",
           "data": {
             "name": "Name",
             "enabled": "Turned on",
             "trigger": "When it runs",
             "time": "Time (for a set time, HH:MM)",
             "offset_minutes": "Offset in minutes (for sunrise or sunset; negative is before)",
+            "random_minutes": "Vary the time by up to (minutes, earlier or later; 0 = same time every day)",
             "days": "Days",
             "zone": "Place (for leave and arrive triggers)",
             "room": "Room (leave empty for the whole house)",

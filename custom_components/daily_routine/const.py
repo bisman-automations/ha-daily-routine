@@ -54,4 +54,6 @@ EVENT_ROUTINE_SKIPPED = f"{DOMAIN}_routine_skipped"
 SIGNAL_ROUTINES_CHANGED = f"{DOMAIN}_routines_changed"
 
 DEFAULT_TIME = "07:00:00"
+# "Vary the time": a time or sun routine runs up to this many minutes early or late.
+MAX_RANDOM_MINUTES = 120
 RETRY_DELAY_SECONDS = 2

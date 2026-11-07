@@ -1175,3 +1175,89 @@ test("admins pick who else can see Daily Routine in Settings, by name", async ()
   assert.match(html, /Teen &lt;3/);
   assert.match(html, /everyone sees Daily Routine in the sidebar/);
 });
+
+test("plain actions ask for their settings instead of JSON, and round-trip", () => {
+  const panel = makePanel();
+  panel._data.all_entities = [
+    { entity_id: "tts.piper", name: "Piper", state: "unknown" },
+    { entity_id: "media_player.kitchen", name: "Kitchen speaker", state: "idle" },
+  ];
+  const stored = {
+    ...overview.routines[0],
+    id: "wake_up", name: "Wake up", trigger: "time",
+    actions: [
+      { service: "tts.speak", target: { entity_id: ["tts.piper"] }, data: { message: "Good morning", media_player_entity_id: "media_player.kitchen" } },
+      { service: "media_player.volume_set", target: { area_id: ["kitchen"] }, data: { volume_level: 0.35 } },
+      { service: "climate.set_temperature", target: { area_id: ["kitchen"] }, data: { temperature: 20.5, hvac_mode: "heat" } },
+    ],
+  };
+  const draft = panel._draftFromRoutine(stored);
+  assert.equal(draft.actions[0].voice, "tts.piper");
+  assert.deepEqual(draft.actions[0].fields, { message: "Good morning", media_player_entity_id: "media_player.kitchen" });
+  assert.equal(draft.actions[1].fields.volume_level, 35);
+  // Settings the action doesn't ask for stay in the advanced JSON.
+  assert.deepEqual(JSON.parse(draft.actions[2].data), { hvac_mode: "heat" });
+  panel._draft = draft;
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Say something on a speaker/);
+  assert.match(html, /What to say/);
+  assert.match(html, /Volume \(%\)/);
+  assert.match(html, /Kitchen speaker/);
+  assert.doesNotMatch(html.split("Step 1")[1].split("Step 2")[0], /Applies to/);
+  const raw = panel._draftToRaw(draft);
+  assert.deepEqual(raw.actions[0], stored.actions[0]);
+  assert.equal(raw.actions[1].data.volume_level, 0.35);
+  assert.deepEqual(raw.actions[2].data, { hvac_mode: "heat", temperature: 20.5 });
+
+  draft.actions[0].fields.message = "";
+  assert.throws(() => panel._draftToRaw(draft), /Step 1: fill in what to say/);
+});
+
+test("calendar day condition, varied time and skips round-trip through the editor", () => {
+  const panel = makePanel();
+  panel._data.all_entities = [{ entity_id: "calendar.school", name: "School", state: "off" }];
+  const stored = {
+    ...overview.routines[0],
+    id: "school_run", name: "School run", trigger: "time", random_minutes: 10,
+    paused_until: "2030-01-02", skip_next: true,
+    conditions: [{ kind: "calendar", entity_id: "calendar.school", when: "no_event", match: "No school" }],
+  };
+  const draft = panel._draftFromRoutine(stored);
+  const raw = panel._draftToRaw(draft);
+  assert.deepEqual(raw.conditions, stored.conditions);
+  assert.equal(raw.random_minutes, 10);
+  assert.equal(raw.paused_until, "2030-01-02");
+  assert.equal(raw.skip_next, true);
+  panel._draft = draft;
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Calendar day/);
+  assert.match(html, /Not on days with/);
+  assert.match(html, /value="No school"/);
+  assert.match(html, /Vary the time by up to/);
+  assert.match(html, /data-f="skip_next" checked/);
+  assert.match(html, /value="2030-01-02"/);
+  assert.match(panel._describeTrigger(stored), /± 10 min/);
+});
+
+test("routine cards show skips and pauses, and the Routines tab offers Going away", () => {
+  const panel = makePanel();
+  panel._data.routines[0] = { ...panel._data.routines[0], skip_next: true, paused_until: "2099-12-31" };
+  panel._view = { name: "all" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Going away\?/);
+  assert.match(html, /1 routine is paused/);
+  assert.match(html, /Paused until/);
+  assert.match(html, /The next run will be skipped/);
+  assert.match(html, /Don't skip/);
+  assert.match(html, /data-act="away-pause"/);
+  // A pause that's over isn't shown.
+  panel._data.routines[0] = { ...panel._data.routines[0], skip_next: false, paused_until: "2000-01-01" };
+  panel._render();
+  assert.doesNotMatch(panel.shadowRoot.innerHTML, /Paused until/);
+  assert.match(panel.shadowRoot.innerHTML, /Skip next run/);
+});

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import date
 import re
 from typing import Any
 
 from .const import (
     MAX_ACTIONS,
+    MAX_RANDOM_MINUTES,
     TRIGGER_EVERYONE_LEAVES,
     TRIGGER_PERSON_ARRIVES,
     TRIGGER_PERSON_LEAVES,
@@ -77,7 +79,10 @@ def uses_conditions(routine: dict[str, Any]) -> bool:
     )
 
 
-CONDITION_KINDS = ("presence", "sensors", "state")
+CONDITION_KINDS = ("presence", "sensors", "state", "calendar")
+# A calendar condition: run only on days with a matching event, or skip those days.
+CALENDAR_WHEN = ("event", "no_event")
+MAX_CALENDAR_MATCH = 100
 PRESENCE_WHO = ("everyone", "anyone")
 PRESENCE_WHERE = ("in", "away")
 SENSOR_MODES = ("quiet", "active")
@@ -281,7 +286,49 @@ def _normalize_condition(raw: Any, index: int) -> dict[str, Any]:
         if not ENTITY_ID_RE.fullmatch(entity_id) or not state:
             raise vol.Invalid("Each extra condition needs an entity and a state.")
         return {"kind": "state", "entity_id": entity_id, "state": state}
+    if kind == "calendar":
+        entity_id = str(raw.get("entity_id") or "").strip()
+        if not ENTITY_ID_RE.fullmatch(entity_id) or not entity_id.startswith(
+            "calendar."
+        ):
+            raise vol.Invalid("Pick the calendar for this condition.")
+        when = str(raw.get("when") or "no_event")
+        if when not in CALENDAR_WHEN:
+            raise vol.Invalid(
+                "A calendar condition is on days with an event, or without."
+            )
+        match = " ".join(str(raw.get("match") or "").split())
+        if len(match) > MAX_CALENDAR_MATCH:
+            raise vol.Invalid("The calendar event text is too long.")
+        return {
+            "kind": "calendar",
+            "entity_id": entity_id,
+            "when": when,
+            "match": match,
+        }
     raise vol.Invalid(f"Condition {index}: pick what to check.")
+
+
+def calendar_matches(cond: dict[str, Any], summaries: list[str]) -> bool:
+    """Whether the day's events satisfy a calendar condition.
+
+    With no text, any event counts. The text matches anywhere in an event's
+    title, ignoring case.
+    """
+    needle = cond["match"].casefold()
+    found = (
+        any(needle in s.casefold() for s in summaries) if needle else bool(summaries)
+    )
+    return found if cond["when"] == "event" else not found
+
+
+def normalize_date(value: Any, label: str = "The date") -> str | None:
+    if value in (None, ""):
+        return None
+    try:
+        return date.fromisoformat(str(value).strip()[:10]).isoformat()
+    except ValueError as err:
+        raise vol.Invalid(f"{label} must be a date (YYYY-MM-DD).") from err
 
 
 def _conditions_from(
@@ -458,6 +505,14 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "companion_of": companion_of,
         "time": normalize_time(raw.get("time") or "07:00:00"),
         "offset_minutes": _int(raw.get("offset_minutes"), -720, 720, "Offset"),
+        # Up to this many minutes early or late each day (time and sun triggers).
+        "random_minutes": _int(
+            raw.get("random_minutes"), 0, MAX_RANDOM_MINUTES, "Vary the time by"
+        ),
+        # Scheduled runs are skipped through this day (vacation).
+        "paused_until": normalize_date(raw.get("paused_until"), "Paused until"),
+        # The next scheduled run is skipped once.
+        "skip_next": bool(raw.get("skip_next", False)),
         "days": days,
         # Trigger settings: only the trigger that uses them keeps them.
         "people": people if trigger in PRESENCE_TRIGGERS else [],
