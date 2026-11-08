@@ -79,6 +79,10 @@ def uses_conditions(routine: dict[str, Any]) -> bool:
     )
 
 
+# When a scheduled run's conditions aren't met: wait for them until the end of
+# the day, wait until a time, or skip the run.
+WAIT_MODES = ("day", "until", "no")
+
 CONDITION_KINDS = ("presence", "sensors", "state", "calendar")
 # A calendar condition: run only on days with a matching event, or skip those days.
 CALENDAR_WHEN = ("event", "no_event")
@@ -322,6 +326,15 @@ def calendar_matches(cond: dict[str, Any], summaries: list[str]) -> bool:
     return found if cond["when"] == "event" else not found
 
 
+def _wait_mode(value: Any) -> str:
+    mode = str(value or "day")
+    if mode not in WAIT_MODES:
+        raise vol.Invalid(
+            "Waiting for conditions is until the end of the day, until a time, or not at all."
+        )
+    return mode
+
+
 def normalize_date(value: Any, label: str = "The date") -> str | None:
     if value in (None, ""):
         return None
@@ -526,6 +539,8 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
             raw.get("catch_up_minutes"), 0, MAX_CATCH_UP_MINUTES, "Catch-up"
         ),
         "retries": _int(raw.get("retries"), 0, MAX_RETRIES, "Retries"),
+        "wait": _wait_mode(raw.get("wait")),
+        "wait_until": normalize_time(raw.get("wait_until") or "12:00:00"),
         "skip_noop": bool(raw.get("skip_noop", True)),
         "notify_on_run": bool(raw.get("notify_on_run", False)),
         "notify_on_skip": bool(raw.get("notify_on_skip", False)),

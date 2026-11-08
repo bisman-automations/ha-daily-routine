@@ -59,7 +59,9 @@
             "notify_on_health": "Notify me when it needs attention (a device or list is missing or unavailable)",
             "wait_when_unavailable": "Wait for an unavailable to-do list or device to come back, then run",
             "actions": "Steps (one per line)",
-            "conditions": "Extra conditions (one per line)"
+            "conditions": "Extra conditions (one per line)",
+            "wait": "If the conditions aren't met when it's time",
+            "wait_until": "Stop waiting at (HH:MM, when waiting until a time)"
           }
         }
       },

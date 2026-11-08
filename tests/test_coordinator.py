@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 from pytest_homeassistant_custom_component.common import (
@@ -465,7 +467,8 @@ async def test_clear_timer_is_not_persisted(hass: HomeAssistant, hass_storage) -
     await coord._async_save()  # noqa: SLF001
     saved = hass_storage[STORAGE_KEY]["data"]["runtime"]["away"]
     assert "clear_since" not in saved
-    assert "pending_date" not in saved
+    # Waiting for conditions is kept so a restart carries on waiting.
+    assert saved["pending_date"] is None
 
 
 async def test_clear_timer_starts_from_observed_state_after_restart(
@@ -507,3 +510,186 @@ async def test_saving_invalid_routine_is_rejected(hass: HomeAssistant, bad) -> N
     coord = HomeRoutinesCoordinator(hass)
     with pytest.raises(Exception):  # noqa: B017 - voluptuous.Invalid
         await coord.async_save_routine(bad)
+
+
+WAITS_FOR_AWAY = dict(
+    require_everyone_away=True,
+    people=["person.alex", "person.sam"],
+)
+
+
+async def test_time_routine_runs_once_conditions_are_met(
+    hass: HomeAssistant, freezer
+) -> None:
+    freezer.move_to(_at("2026-10-16 06:59:00"))
+    calls = async_mock_service(hass, "light", "turn_off")
+    _set_home(hass, home=True)
+    coord = await _started(hass, make_routine(**WAITS_FOR_AWAY))
+
+    _advance(hass, freezer, "2026-10-16 07:00:01")
+    await hass.async_block_till_done()
+    assert not calls
+    status = coord.get_status("routine_one")
+    assert status["waiting"] is True
+    assert status["wait_ends"].startswith("2026-10-17T00:00")
+
+    _set_home(hass, home=False)
+    await hass.async_block_till_done()
+    assert len(calls) == 1
+    assert coord.get_status("routine_one")["waiting"] is False
+
+
+async def test_waiting_survives_a_restart(hass: HomeAssistant, freezer) -> None:
+    freezer.move_to(_at("2026-10-16 08:00:00"))
+    calls = async_mock_service(hass, "light", "turn_off")
+    _set_home(hass, home=True)
+    coord = HomeRoutinesCoordinator(hass)
+    coord.routines = [make_routine(**WAITS_FOR_AWAY)]
+    coord._rt("routine_one")["pending_date"] = "2026-10-16"  # noqa: SLF001
+    coord._start_all(catch_up=False)  # noqa: SLF001
+    await hass.async_block_till_done()
+    assert coord.get_status("routine_one")["waiting"] is True
+
+    _set_home(hass, home=False)
+    await hass.async_block_till_done()
+    assert len(calls) == 1
+
+
+async def test_yesterdays_wait_is_dropped_after_a_restart(
+    hass: HomeAssistant, freezer
+) -> None:
+    freezer.move_to(_at("2026-10-16 08:00:00"))
+    calls = async_mock_service(hass, "light", "turn_off")
+    _set_home(hass, home=True)
+    coord = HomeRoutinesCoordinator(hass)
+    coord.routines = [make_routine(**WAITS_FOR_AWAY)]
+    coord._rt("routine_one")["pending_date"] = "2026-10-15"  # noqa: SLF001
+    coord._start_all(catch_up=False)  # noqa: SLF001
+    await hass.async_block_till_done()
+    assert coord.get_status("routine_one")["waiting"] is False
+
+    _set_home(hass, home=False)
+    await hass.async_block_till_done()
+    assert not calls
+
+
+async def test_saving_another_routine_keeps_the_wait(
+    hass: HomeAssistant, freezer
+) -> None:
+    freezer.move_to(_at("2026-10-16 06:59:00"))
+    calls = async_mock_service(hass, "light", "turn_off")
+    _set_home(hass, home=True)
+    coord = await _started(hass, make_routine(**WAITS_FOR_AWAY))
+    _advance(hass, freezer, "2026-10-16 07:00:01")
+    await hass.async_block_till_done()
+    assert coord.get_status("routine_one")["waiting"] is True
+
+    await coord.async_save_routine(
+        {
+            "id": "other",
+            "name": "Other",
+            "trigger": "time",
+            "time": "20:00:00",
+            "actions": [
+                {"service": "light.turn_on", "target": {"entity_id": ["light.porch"]}}
+            ],
+        }
+    )
+    await hass.async_block_till_done()
+    assert coord.get_status("routine_one")["waiting"] is True
+
+    _set_home(hass, home=False)
+    await hass.async_block_till_done()
+    assert len(calls) == 1
+
+
+async def test_wait_until_a_time_then_skip(hass: HomeAssistant, freezer) -> None:
+    freezer.move_to(_at("2026-10-16 06:59:00"))
+    calls = async_mock_service(hass, "light", "turn_off")
+    skipped = async_capture_events(hass, EVENT_ROUTINE_SKIPPED)
+    _set_home(hass, home=True)
+    coord = await _started(
+        hass, make_routine(wait="until", wait_until="09:30", **WAITS_FOR_AWAY)
+    )
+    _advance(hass, freezer, "2026-10-16 07:00:01")
+    await hass.async_block_till_done()
+    assert coord.get_status("routine_one")["wait_ends"].startswith("2026-10-16T09:30")
+
+    _advance(hass, freezer, "2026-10-16 09:30:01")
+    await hass.async_block_till_done()
+    assert coord.get_status("routine_one")["waiting"] is False
+    assert any(e.data.get("result") == "conditions_not_met" for e in skipped)
+
+    _set_home(hass, home=False)
+    await hass.async_block_till_done()
+    assert not calls
+
+
+async def test_wait_until_a_time_already_past_skips(
+    hass: HomeAssistant, freezer
+) -> None:
+    freezer.move_to(_at("2026-10-16 06:59:00"))
+    async_mock_service(hass, "light", "turn_off")
+    _set_home(hass, home=True)
+    coord = await _started(
+        hass, make_routine(wait="until", wait_until="06:30", **WAITS_FOR_AWAY)
+    )
+    _advance(hass, freezer, "2026-10-16 07:00:01")
+    await hass.async_block_till_done()
+    assert coord.get_status("routine_one")["waiting"] is False
+
+
+async def test_no_wait_skips_straight_away(hass: HomeAssistant, freezer) -> None:
+    freezer.move_to(_at("2026-10-16 06:59:00"))
+    calls = async_mock_service(hass, "light", "turn_off")
+    skipped = async_capture_events(hass, EVENT_ROUTINE_SKIPPED)
+    _set_home(hass, home=True)
+    coord = await _started(hass, make_routine(wait="no", **WAITS_FOR_AWAY))
+    _advance(hass, freezer, "2026-10-16 07:00:01")
+    await hass.async_block_till_done()
+    assert coord.get_status("routine_one")["waiting"] is False
+    assert skipped
+
+    _set_home(hass, home=False)
+    await hass.async_block_till_done()
+    assert not calls
+
+
+async def test_run_stopped_part_way_finishes_later(
+    hass: HomeAssistant, freezer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    freezer.move_to(_at("2026-10-16 06:59:00"))
+    calls = async_mock_service(hass, "light", "turn_off")
+    _set_home(hass, home=False)
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        # Someone comes home during the first run's pause.
+        sleeps.append(seconds)
+        if len(sleeps) == 1:
+            _set_home(hass, home=True)
+
+    monkeypatch.setattr(
+        coordinator_module,
+        "asyncio",
+        SimpleNamespace(sleep=fake_sleep, Lock=asyncio.Lock, timeout=asyncio.timeout),
+    )
+    coord = await _started(
+        hass,
+        make_routine(
+            actions=[
+                {"delay": 60},
+                {"service": "light.turn_off", "target": {"entity_id": ["light.hall"]}},
+            ],
+            **WAITS_FOR_AWAY,
+        ),
+    )
+    _advance(hass, freezer, "2026-10-16 07:00:01")
+    await hass.async_block_till_done()
+    assert not calls
+    assert coord.get_status("routine_one")["waiting"] is True
+
+    _set_home(hass, home=False)
+    await hass.async_block_till_done()
+    assert len(calls) == 1
+    assert coord.get_status("routine_one")["waiting"] is False

@@ -22,7 +22,7 @@
 - **Daytime windows.** Any routine can be limited to hours, such as 07:00 to 22:00. Windows can cross midnight.
 - **Humidity fan example.** A bathroom fan turns on when humidity goes above 60% and off again below 50%, but only between 07:00 and 22:00. The turn-off level creates a second routine named "(off)" that you can see and edit.
 - **Safety first.** Unknown or unavailable people and sensors block a run. Conditions are checked again before every step.
-- **Waits instead of giving up.** If a run is blocked (someone is still home, or motion is still happening), it waits until the conditions are met and runs once, up to midnight.
+- **Waits instead of giving up.** If a run is blocked (someone is still home, or motion is still happening), it waits and runs as soon as the conditions are met, up to midnight or a time you choose. The wait carries on through a Home Assistant restart.
 - **Runs as often as needed.** Presence and room triggers run every time they happen (for example, every time everyone leaves), not just once a day.
 - **Dry run.** *Test* shows exactly what a routine would do right now, without touching any device.
 - **Pause switch.** *Pause all routines* stops every automatic run. Manual runs still work.
@@ -91,7 +91,7 @@ Each routine is its own service under the Daily Routine integration. It is linke
 
 ## Editing routines in Home Assistant
 
-Every routine also appears under **Settings → Devices & services → Daily Routine**, as its own entry. Open one to change any of its settings: name, on or off, trigger, time, days, place, people, sensors, the quiet time, active hours, extra conditions, linked device, catch-up, retries, notifications and steps. Edits from either place show in both, and the same checks apply.
+Every routine also appears under **Settings → Devices & services → Daily Routine**, as its own entry. Open one to change any of its settings: name, on or off, trigger, time, days, place, people, sensors, the quiet time, active hours, extra conditions and how long to wait for them, linked device, catch-up, retries, notifications and steps. Edits from either place show in both, and the same checks apply.
 
 Steps and extra conditions are written as plain lines:
 
@@ -188,6 +188,7 @@ The history is saved with Home Assistant, keeps the last 30 days, and is removed
 | People | For presence triggers. Only people with location tracking can be checked |
 | Sensors and quiet for | For the room is quiet trigger: the motion or occupancy sensors that must stay off for N minutes. Motion restarts the count |
 | Extra conditions | A list of conditions that must hold. Each one is **who is home or away** (everyone or anyone, at or away from a place), **sensors quiet or active** for N minutes, **a device's state**, or a **calendar day**: only on days with an event, or not on days with one, in a calendar you pick. Type part of the event's name (such as "No school") to look for just that event, or leave it empty for any event. A calendar that can't be read blocks the run. With more than one, choose whether **all** of them must hold or **any one** is enough. Each line is described under Editing routines in Home Assistant |
+| If they aren't met when it's time | What happens when a scheduled run is blocked by its conditions. **Wait until the end of the day** (the default) runs it as soon as every condition holds, up to midnight. **Wait until…** does the same up to a time you pick, such as 09:30. **Skip it until next time** gives up straight away. A waiting routine keeps waiting through a Home Assistant restart and while other routines are saved. If a condition stops holding part way through the steps, the routine waits again and runs from the start once they hold |
 | Run every time | Run on every trigger, not once a day (default on for presence and room triggers) |
 | Skip steps already done | Skip a step whose devices are already in the target state (default on) |
 | Catch up | If Home Assistant was restarting when a time routine was due, still run it once it is back, within a window of up to 3 hours ("Don't run it late" turns this off). Home Assistant gets about 30 seconds to load, then the routine runs as soon as it can. If a condition blocks it, it is retried each minute until the window closes |
@@ -250,8 +251,8 @@ Every event includes `routine_id` and `name`.
 - Everyone away means every selected person is exactly `not_home`.
 - Sensors are quiet only when every selected sensor is exactly `off`. Any motion restarts the quiet timer.
 - The quiet timer starts when Home Assistant sees the sensors go quiet. It is not stored, so a restart starts it again from the live state.
-- Conditions are checked again before every step. If they stop holding, the rest of the routine stops.
-- Waiting routines expire at midnight and are reported as skipped.
+- Conditions are checked again before every step. If they stop holding, the rest of the routine stops. A scheduled run then waits for the conditions again (unless set to skip) and runs from the start once they hold.
+- Waiting routines stop waiting at midnight, or at the time you chose, and are reported as skipped.
 - There is **no force or bypass** option, including for manual runs.
 - Pausing and resuming takes effect immediately.
 - This is **not a security system**. Test with harmless steps before using locks or alarms.

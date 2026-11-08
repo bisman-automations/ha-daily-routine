@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.0] - 2026-11-08
+
+### Added
+
+- **Choose how long a routine waits for its conditions.** When a scheduled run is blocked (for example someone is still home), a new setting under the conditions picks what happens: wait and run as soon as they are met until the end of the day (as before), wait until a time you choose, or skip it until next time. It's in the sidebar editor and in the routine's settings in Home Assistant.
+- **The routine card says when a waiting routine will give up**, for example "Runs as soon as its conditions are met, until 9:30 AM".
+
+### Fixed
+
+- **A routine waiting for its conditions now keeps waiting after Home Assistant restarts.** Before, the wait was forgotten and the routine didn't run that day.
+- **Saving a routine no longer cancels other routines that are waiting.** Before, saving any routine made every waiting routine give up for the day.
+- **A run stopped part way finishes later.** If a condition stops holding in the middle of a routine's steps, the routine now waits for its conditions again and runs from the start once they hold, instead of being done for the day.
+- **The waiting choice also shows for "everyone leaves" and "room is quiet" routines**, which wait for the room to be quiet.
+
 ## [1.16.0] - 2026-11-07
 
 ### Added
@@ -289,6 +303,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.17.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.16.0...v1.17.0
 [1.16.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.15.2...v1.16.0
 [1.15.2]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.15.1...v1.15.2
 [1.15.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.15.0...v1.15.1

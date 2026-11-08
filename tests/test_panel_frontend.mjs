@@ -1261,3 +1261,43 @@ test("routine cards show skips and pauses, and the Routines tab offers Going awa
   assert.doesNotMatch(panel.shadowRoot.innerHTML, /Paused until/);
   assert.match(panel.shadowRoot.innerHTML, /Skip next run/);
 });
+
+test("conditions offer waiting until the end of the day, until a time, or skipping", () => {
+  const panel = makePanel();
+  panel._draft = panel._draftFromRoutine(panel._data.routines[0]);
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+  let html = panel.shadowRoot.innerHTML;
+  assert.match(html, /data-f="wait"/);
+  assert.match(html, /<option value="day" selected>/);
+  assert.doesNotMatch(html, /data-f="wait_until"/);
+
+  panel._draft.wait = "until";
+  panel._draft.wait_until = "09:30";
+  panel._render();
+  html = panel.shadowRoot.innerHTML;
+  assert.match(html, /data-f="wait_until" value="09:30"/);
+  const raw = panel._draftToRaw(panel._draft);
+  assert.equal(raw.wait, "until");
+  assert.equal(raw.wait_until, "09:30:00");
+
+  const back = panel._draftFromRoutine({ ...panel._data.routines[0], wait: "no", wait_until: "18:15:00" });
+  assert.equal(back.wait, "no");
+  assert.equal(back.wait_until, "18:15");
+});
+
+test("a time routine without conditions has no waiting choice", () => {
+  const panel = makePanel();
+  panel._draft = panel._draftFromRoutine({ ...panel._data.routines[0], trigger: "time", sensors: [] });
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+  assert.doesNotMatch(panel.shadowRoot.innerHTML, /data-f="wait"/);
+});
+
+test("a waiting routine's card says it runs as soon as its conditions are met", () => {
+  const panel = makePanel();
+  panel._view = { name: "room", room: "kitchen" };
+  panel._data.statuses.kitchen_lights = { state: "idle", waiting: true, conditions_ok: false, wait_ends: new Date(2026, 9, 17, 0, 0).toISOString() };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /Runs as soon as its conditions are met, until midnight/);
+});

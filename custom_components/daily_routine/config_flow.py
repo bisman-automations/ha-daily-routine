@@ -71,6 +71,17 @@ CONDITION_MATCH_OPTIONS = [
     selector.SelectOptionDict(value="any", label="Any one of these is true"),
 ]
 
+WAIT_OPTIONS = [
+    selector.SelectOptionDict(
+        value="day",
+        label="Wait, and run as soon as they are (until the end of the day)",
+    ),
+    selector.SelectOptionDict(
+        value="until", label="Wait, and run as soon as they are, until the time below"
+    ),
+    selector.SelectOptionDict(value="no", label="Skip it until next time"),
+]
+
 
 def _form_from_routine(routine: dict[str, Any]) -> dict[str, Any]:
     """The routine as form values: the same keys the form uses, so an edit starts from what is saved."""
@@ -99,6 +110,8 @@ def _form_from_routine(routine: dict[str, Any]) -> dict[str, Any]:
         "watch_item": routine["watch_item"],
         "conditions_match": routine["conditions_match"],
         "conditions": conditions_to_text(routine["conditions"]),
+        "wait": routine["wait"],
+        "wait_until": routine["wait_until"][:5],
         "catch_up_minutes": routine["catch_up_minutes"],
         "retries": routine["retries"],
         "repeat": routine["repeat"],
@@ -147,6 +160,8 @@ def _routine_from_form(
         "watch_item": values.get("watch_item") or "",
         "conditions_match": values.get("conditions_match") or "all",
         "conditions": conditions,
+        "wait": values.get("wait") or "day",
+        "wait_until": _hhmmss(values.get("wait_until") or "12:00"),
         "catch_up_minutes": int(values.get("catch_up_minutes") or 0),
         "retries": int(values.get("retries") or 0),
         "repeat": bool(values.get("repeat")),
@@ -265,6 +280,17 @@ def _form_schema(hass: Any, values: dict[str, Any]) -> vol.Schema:
             vol.Required(
                 "conditions", default=values.get("conditions", "")
             ): selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
+            vol.Required("wait", default=values.get("wait") or "day"): (
+                selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=WAIT_OPTIONS,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                )
+            ),
+            vol.Required(
+                "wait_until", default=values.get("wait_until") or "12:00"
+            ): str,
             vol.Required(
                 "catch_up_minutes", default=values.get("catch_up_minutes") or 0
             ): number(0, 180),

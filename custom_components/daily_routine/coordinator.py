@@ -163,7 +163,15 @@ H_CATCH_UP = "catch_up"
 STARTUP_SETTLE_SECONDS = 30
 
 # Runtime keys kept in storage. Clear timers and waiting state are not persisted.
-PERSISTED_KEYS = ("last_run_date", "last_run", "last_result", "seen_state", "seen_done")
+# pending_date is kept so a routine waiting for its conditions still runs after a restart.
+PERSISTED_KEYS = (
+    "last_run_date",
+    "last_run",
+    "last_result",
+    "seen_state",
+    "seen_done",
+    "pending_date",
+)
 # How long to wait before saving a state we just saw. Noisy sensors then do not write on every change.
 SEEN_SAVE_DELAY_SECONDS = 10
 # How often to check whether a routine needs attention (a device or list is missing or unavailable).
@@ -517,6 +525,12 @@ class HomeRoutinesCoordinator:
             "conditions_ok": ok,
             "block_reason": reason,
             "waiting": rt["pending_date"] is not None,
+            "wait_ends": (
+                ends.isoformat()
+                if rt["pending_date"] is not None
+                and (ends := self._wait_ends(routine, dt_util.now()))
+                else None
+            ),
             "held": rt["held_run"] is not None,
             "waiting_for": self._unavailable_names(routine),
             "trigger": routine["trigger"],
@@ -618,10 +632,8 @@ class HomeRoutinesCoordinator:
     async def async_reload(self) -> None:
         """Restart every schedule and watcher from the current routine list."""
         self._drop_all_handles()
-        for rt in self._runtime.values():
-            rt["pending_date"] = None
-            if rt["state"] == "waiting":
-                rt["state"] = "idle"
+        # Routines waiting for their conditions keep waiting (_start_all re-arms
+        # them): saving one routine mustn't cancel another's run today.
         self._start_all(catch_up=False)
         self.revision += 1
         await self._async_save()
@@ -1179,24 +1191,59 @@ class HomeRoutinesCoordinator:
 
     # ----- waiting (scheduled or presence runs blocked by conditions) -----
 
-    def _arm_pending(self, routine: dict[str, Any], now: datetime) -> None:
+    def _wait_ends(self, routine: dict[str, Any], now: datetime) -> datetime | None:
+        """When waiting for conditions stops today, or None when the routine doesn't wait."""
+        if not uses_conditions(routine) or routine.get("wait", "day") == "no":
+            return None
+        midnight = dt_util.start_of_local_day(now) + timedelta(days=1)
+        if routine.get("wait") == "until":
+            until = datetime.combine(
+                now.date(), _parse_time(routine["wait_until"]), tzinfo=now.tzinfo
+            )
+            return until if until > now else None
+        return midnight
+
+    def _arm_pending(self, routine: dict[str, Any], now: datetime) -> bool:
+        """Wait for the conditions; False when this routine doesn't wait now."""
         rid = routine["id"]
         rt = self._rt(rid)
+        ends = self._wait_ends(routine, now)
+        if ends is None:
+            return False
+        newly = rt["pending_date"] != now.date().isoformat()
         rt["pending_date"] = now.date().isoformat()
         rt["state"] = "waiting"
-        midnight = dt_util.start_of_local_day(now) + timedelta(days=1)
 
         @callback
         def _expire(_fired: datetime) -> None:
             self._expire_pending(routine)
 
         self._set_handle(
-            rid, H_EXPIRE, async_track_point_in_time(self.hass, _expire, midnight)
+            rid, H_EXPIRE, async_track_point_in_time(self.hass, _expire, ends)
         )
+        if newly:
+            self._spawn(self._async_save())
+        return True
+
+    def _resume_waiting(self, routine: dict[str, Any], now: datetime) -> None:
+        """After a restart or a reload: carry on waiting, or let a stale wait go."""
+        rt = self._rt(routine["id"])
+        if rt["pending_date"] is None:
+            return
+        if (
+            rt["pending_date"] == now.date().isoformat()
+            and routine["enabled"]
+            and self._arm_pending(routine, now)
+        ):
+            self._evaluate_pending(routine)
+            return
+        self._expire_pending(routine)
 
     def _clear_pending(self, routine: dict[str, Any]) -> None:
         rid = routine["id"]
         rt = self._rt(rid)
+        if rt["pending_date"] is not None:
+            self._spawn(self._async_save())
         rt["pending_date"] = None
         self._drop_handle(rid, H_EXPIRE)
         if rt["state"] == "waiting":
@@ -1212,13 +1259,13 @@ class HomeRoutinesCoordinator:
         rt["state"] = "skipped"
         self._record(rid, "skipped", "conditions_not_met")
         _LOGGER.info(
-            "Routine '%s' skipped: conditions not met before end of day.",
+            "Routine '%s' skipped: conditions not met in time.",
             routine["name"],
         )
         self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "conditions_not_met")
         if routine["notify_on_skip"]:
             self._send_notification(
-                f"Routine '{routine['name']}' skipped – conditions were not met today."
+                f"Routine '{routine['name']}' skipped – conditions were not met in time today."
             )
         self._notify_listeners()
 
@@ -1667,6 +1714,7 @@ class HomeRoutinesCoordinator:
             self._watch_done(routine)
             self._watch_health(routine)
             self._watch_conditions(routine)
+            self._resume_waiting(routine, now)
             if catch_up:
                 self._maybe_catch_up(routine, now)
 
@@ -1755,12 +1803,11 @@ class HomeRoutinesCoordinator:
 
         ok, reason = self._check(routine, now)
         if not ok:
-            if scheduled and uses_conditions(routine):
-                if rt["pending_date"] is None:
-                    self._arm_pending(routine, now)
-                    self._fire_event(
-                        EVENT_ROUTINE_SKIPPED, routine, f"waiting:{reason}"
-                    )
+            if scheduled and rt["pending_date"] is not None:
+                self._notify_listeners()  # already waiting
+                return False
+            if scheduled and self._arm_pending(routine, now):
+                self._fire_event(EVENT_ROUTINE_SKIPPED, routine, f"waiting:{reason}")
                 self._notify_listeners()
                 return False
             rt["last_result"] = reason
@@ -1774,6 +1821,7 @@ class HomeRoutinesCoordinator:
             self._notify_listeners()
             return False
 
+        ran_before = rt["last_run_date"]
         if scheduled:
             rt["last_run_date"] = today
             self._clear_pending(routine)
@@ -1872,6 +1920,22 @@ class HomeRoutinesCoordinator:
                 )
                 result = f"error:{action['service']}"
                 break
+
+        if (
+            scheduled
+            and result.startswith("conditions_failed_mid_run")
+            and self._wait_ends(routine, dt_util.now()) is not None
+        ):
+            # Stopped part way because a condition stopped passing: wait for it
+            # again and run the rest then (steps already done are skipped).
+            rt["last_run_date"] = ran_before
+            rt["last_result"] = result
+            self._record(rid, "failed", f"{result} – waiting to finish")
+            self._arm_pending(routine, dt_util.now())
+            self._fire_event(EVENT_ROUTINE_FINISHED, routine, result)
+            await self._async_save()
+            self._notify_listeners()
+            return False
 
         rt["last_result"] = result
         summary = "; ".join(details)

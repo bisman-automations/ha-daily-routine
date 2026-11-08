@@ -655,7 +655,7 @@ class DailyRoutinePanel extends HTMLElement {
       value_entity: "", value_threshold: "", off_threshold: "", watch_entity: "", watch_states: "", hold_minutes: 0, watch_item: "", active_from: "", active_to: "",
       trigger: "time", time: "07:00:00", offset_minutes: 0, random_minutes: 0, paused_until: "", skip_next: false, days: [...WEEKDAYS],
       people: [], sensors: [], clear_minutes: 0,
-      conditions: [], conditions_match: "all", repeat: false, catch_up_minutes: 0, retries: 0, skip_noop: true,
+      conditions: [], conditions_match: "all", repeat: false, catch_up_minutes: 0, retries: 0, skip_noop: true, wait: "day", wait_until: "12:00",
       notify_on_run: false, notify_on_skip: false, notify_on_error: true, notify_on_health: false, wait_when_unavailable: false,
       actions: [{ kind: "service", service: "", targetMode: roomId ? "area" : "entities", area: roomId || "", entities: [], data: "" }],
       isNew: true,
@@ -696,6 +696,7 @@ class DailyRoutinePanel extends HTMLElement {
       people: [...routine.people], sensors: [...routine.sensors], clear_minutes: routine.clear_minutes,
       conditions: (routine.conditions || []).map((c) => ({ ...c, people: [...(c.people || [])], sensors: [...(c.sensors || [])] })),
       conditions_match: routine.conditions_match || "all", repeat: routine.repeat,
+      wait: routine.wait || "day", wait_until: hhmm(routine.wait_until || "12:00:00"),
       catch_up_minutes: routine.catch_up_minutes, retries: routine.retries, skip_noop: routine.skip_noop,
       notify_on_run: routine.notify_on_run, notify_on_skip: routine.notify_on_skip, notify_on_error: routine.notify_on_error,
       notify_on_health: Boolean(routine.notify_on_health),
@@ -797,6 +798,8 @@ class DailyRoutinePanel extends HTMLElement {
         })
         .filter((c) => (c.kind !== "state" && c.kind !== "calendar") || (c.entity_id && (c.kind === "calendar" || c.state))),
       conditions_match: draft.conditions_match === "any" ? "any" : "all",
+      wait: ["day", "until", "no"].includes(draft.wait) ? draft.wait : "day",
+      wait_until: `${draft.wait_until || "12:00"}:00`.slice(0, 8),
       repeat: draft.repeat,
       catch_up_minutes: Number(draft.catch_up_minutes) || 0,
       retries: Number(draft.retries) || 0,
@@ -1318,6 +1321,9 @@ class DailyRoutinePanel extends HTMLElement {
     const state = status.waiting ? "waiting" : status.state || "idle";
     const reason = !status.conditions_ok && status.block_reason ? ` · ${REASON_LABELS[status.block_reason] || status.block_reason}` : "";
     const detail = status.last_result && status.last_result !== "success" && state !== "waiting" ? ` · last: ${esc(status.last_result)}` : "";
+    const waitLine = status.waiting
+      ? `<div class="small skip-line"><span class="pill warn">Runs as soon as its conditions are met${status.wait_ends ? `, until ${esc(new Date(status.wait_ends).getHours() === 0 && new Date(status.wait_ends).getMinutes() === 0 ? "midnight" : new Date(status.wait_ends).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }))}` : ""}</span></div>`
+      : "";
     return `<article class="card routine ${routine.enabled ? "" : "disabled"}">
       <div class="routine-head">
         <div>
@@ -1325,7 +1331,7 @@ class DailyRoutinePanel extends HTMLElement {
           ${options.showRoom ? `<div class="muted small">${esc(this._roomName(routine.room))}</div>` : ""}
           <div class="muted small">${esc(this._describeTrigger(routine))} · ${routine.days.length === 7 ? "every day" : routine.days.join(", ")}</div>
           <div class="muted small">Next: ${esc(formatTime(status.next_run))}${esc(reason)}${detail}</div>
-          ${this._skipHtml(routine)}
+          ${waitLine}${this._skipHtml(routine)}
           <div class="muted small">Linked to: ${esc(this._linkedName(routine.device_id))}</div>
           ${this._historyHtml(status)}
           ${this._healthHtml(routine)}
@@ -1922,6 +1928,11 @@ class DailyRoutinePanel extends HTMLElement {
           <option value="all" ${d.conditions_match !== "any" ? "selected" : ""}>All of these are true</option>
           <option value="any" ${d.conditions_match === "any" ? "selected" : ""}>Any one of these is true</option></select></label>` : ""}
         ${conditions}
+        ${d.conditions.length || d.trigger === "everyone_leaves" || d.trigger === "room_clear" ? `<label>If they aren't met when it's time<select data-f="wait" data-rerender>
+          <option value="day" ${d.wait === "day" || !d.wait ? "selected" : ""}>Wait, and run as soon as they are (until the end of the day)</option>
+          <option value="until" ${d.wait === "until" ? "selected" : ""}>Wait, and run as soon as they are, until…</option>
+          <option value="no" ${d.wait === "no" ? "selected" : ""}>Skip it until next time</option></select></label>
+        ${d.wait === "until" ? `<label>Stop waiting at<input type="time" data-f="wait_until" value="${esc(d.wait_until || "12:00")}"></label>` : ""}` : ""}
         <div class="row-actions">
           <button class="ghost" data-act="add-condition" data-kind="presence">+ Who is home or away</button>
           <button class="ghost" data-act="add-condition" data-kind="sensors">+ Sensors quiet or active</button>
