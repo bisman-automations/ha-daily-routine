@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.17.1] - 2026-11-10
+
+### Changed
+
+- **Install from the Marketplace by searching for Daily Routine.** Home Assistant 2026.11 renames HACS to the Marketplace, so the install steps start by searching the Marketplace. Searching HACS stays for Home Assistant 2026.10 and older, and adding the repository as a custom repository remains the fallback.
+- **Ruff 0.17.4.** Linting uses the current Ruff release.
+
 ## [1.17.0] - 2026-11-08
 
 ### Added
@@ -303,6 +310,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.17.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.17.0...v1.17.1
 [1.17.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.16.0...v1.17.0
 [1.16.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.15.2...v1.16.0
 [1.15.2]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.15.1...v1.15.2
