@@ -109,6 +109,44 @@ def normalize_time(value: Any) -> str:
     return f"{hour:02d}:{minute:02d}:{second:02d}"
 
 
+MAX_HEADS_UP_MINUTES = 240
+_MONTH_DAY = re.compile(r"^(\d{2})-(\d{2})$")
+
+
+def _month_day(value: Any, label: str) -> str | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if len(text) == 10 and text[4] == "-":
+        text = text[5:]  # a whole date: only the month and day count
+    match = _MONTH_DAY.match(text)
+    if not match:
+        raise vol.Invalid(f"{label} must be a month and day, like 11-01.")
+    try:
+        date(2024, int(match[1]), int(match[2]))  # 2024: 29 February is allowed
+    except ValueError as err:
+        raise vol.Invalid(f"{label} isn't a real day.") from err
+    return text
+
+
+def _dates(start: Any, end: Any) -> dict[str, str | None]:
+    first = _month_day(start, "From")
+    last = _month_day(end, "Until")
+    if (first is None) != (last is None):
+        raise vol.Invalid("Choose both the first and the last day, or neither.")
+    return {"from_date": first, "until_date": last}
+
+
+def in_dates(day: date, first: str | None, last: str | None) -> bool:
+    """Whether a day is within a yearly range ("MM-DD", either may wrap the new year)."""
+    if not first or not last:
+        return True
+    today = f"{day.month:02d}-{day.day:02d}"
+    if first <= last:
+        return first <= today <= last
+    return today >= first or today <= last
+
+
 ON_STEP_ERROR = ("stop", "continue")
 DEFAULT_RETRY_LATER_MINUTES = 5
 MAX_RETRY_LATER_MINUTES = 120
@@ -536,6 +574,12 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         ),
         # Scheduled runs are skipped through this day (vacation).
         "paused_until": normalize_date(raw.get("paused_until"), "Paused until"),
+        # A notification this many minutes before a scheduled run, with Skip (0: no).
+        "heads_up_minutes": _int(
+            raw.get("heads_up_minutes"), 0, MAX_HEADS_UP_MINUTES, "Heads-up"
+        ),
+        # Only between these days each year ("MM-DD"), both or neither.
+        **_dates(raw.get("from_date"), raw.get("until_date")),
         # The next scheduled run is skipped once.
         "skip_next": bool(raw.get("skip_next", False)),
         "days": days,

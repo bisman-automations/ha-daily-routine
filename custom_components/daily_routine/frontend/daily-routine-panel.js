@@ -85,8 +85,13 @@ const REASON_LABELS = {
 };
 // What a step can do, in plain words. The service id is only used under the hood.
 const ACTIONS = [
-  { service: "light.turn_on", label: "Turn on lights" },
-  { service: "light.turn_off", label: "Turn off lights" },
+  { service: "light.turn_on", label: "Turn on lights", fields: [
+    { key: "brightness_pct", label: "Brightness", type: "pct", optional: true },
+    { key: "transition", label: "Fade in over (minutes)", type: "minutes", optional: true },
+  ] },
+  { service: "light.turn_off", label: "Turn off lights", fields: [
+    { key: "transition", label: "Fade out over (minutes)", type: "minutes", optional: true },
+  ] },
   { service: "switch.turn_on", label: "Turn on switches" },
   { service: "switch.turn_off", label: "Turn off switches" },
   { service: "fan.turn_on", label: "Turn on fans" },
@@ -110,6 +115,12 @@ const ACTIONS = [
   { service: "vacuum.start", label: "Start the vacuum" },
   { service: "vacuum.return_to_base", label: "Send the vacuum home" },
   { service: "notify.persistent_notification", label: "Show a Home Assistant notification" },
+  { service: "daily_routine.remember_states", label: "Remember which lights and switches are on", domains: ["light", "switch", "fan"], fields: [
+    { key: "name", label: "Remember as", type: "text", placeholder: "for example Before we left" },
+  ] },
+  { service: "daily_routine.put_back_states", label: "Put back what was on", untargeted: true, fields: [
+    { key: "name", label: "Remembered as", type: "text", placeholder: "the same name as the Remember step" },
+  ] },
 ];
 const actionSpec = (service) => ACTIONS.find((a) => a.service === service);
 
@@ -118,11 +129,18 @@ function fieldsToData(spec, values, index) {
   const data = {};
   for (const f of spec?.fields || []) {
     const raw = values?.[f.key];
-    if (raw === undefined || raw === null || String(raw).trim() === "") throw new Error(`Step ${index + 1}: fill in ${f.label.toLowerCase()}.`);
-    if (f.type === "percent" || f.type === "number") {
+    if (raw === undefined || raw === null || String(raw).trim() === "") {
+      if (f.optional) continue;
+      throw new Error(`Step ${index + 1}: fill in ${f.label.toLowerCase()}.`);
+    }
+    if (["percent", "pct", "number", "minutes"].includes(f.type)) {
       const n = Number(raw);
       if (Number.isNaN(n)) throw new Error(`Step ${index + 1}: ${f.label.toLowerCase()} must be a number.`);
-      data[f.key] = f.type === "percent" ? Math.max(0, Math.min(100, n)) / 100 : n;
+      if (f.type === "percent") data[f.key] = Math.max(0, Math.min(100, n)) / 100;
+      else if (f.type === "pct") data[f.key] = Math.max(0, Math.min(100, n));
+      else if (f.type === "minutes") {
+        if (n > 0) data[f.key] = Math.round(Math.min(n, 120) * 60);
+      } else data[f.key] = n;
     } else {
       data[f.key] = String(raw).trim();
     }
@@ -135,7 +153,8 @@ function dataToFields(spec, data) {
   const rest = { ...(data || {}) };
   for (const f of spec?.fields || []) {
     if (!(f.key in rest)) continue;
-    fields[f.key] = f.type === "percent" ? Math.round(Number(rest[f.key]) * 100) : rest[f.key];
+    const value = rest[f.key];
+    fields[f.key] = f.type === "percent" ? Math.round(Number(value) * 100) : f.type === "minutes" ? Math.round((Number(value) / 60) * 100) / 100 : value;
     delete rest[f.key];
   }
   return { fields, rest };
@@ -269,6 +288,21 @@ const TIMING_FIELDS = [
   ["verify_seconds", "Check a step worked within (seconds)", "After turning something on or off, opening, closing or locking it, how long to wait for it to change (0 = don't check)", 0, 120],
 ];
 const TIMING_DEFAULTS = { list_wait_seconds: 30, health_check_minutes: 15, health_alert_seconds: 60, startup_quiet_minutes: 5, step_timeout_seconds: 30, verify_seconds: 10 };
+// Minutes before a scheduled run that the heads-up is sent.
+const HEADS_UP_CHOICES = [0, 5, 10, 15, 30, 60];
+// A yearly "MM-DD" as a date input's value (this year), and back.
+function monthDayInput(md) {
+  return md ? `${new Date().getFullYear()}-${md}` : "";
+}
+function monthDay(value) {
+  const text = String(value || "").trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text.slice(5) : null;
+}
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function describeMonthDay(md) {
+  const [m, d] = md.split("-").map(Number);
+  return `${d} ${MONTHS[m - 1]}`;
+}
 // Try a device that couldn't be changed again after this many minutes.
 const RETRY_LATER_CHOICES = [0, 2, 5, 10, 15, 30, 60];
 
@@ -703,6 +737,7 @@ class DailyRoutinePanel extends HTMLElement {
       wait: routine.wait || "day", wait_until: hhmm(routine.wait_until || "12:00:00"),
       catch_up_minutes: routine.catch_up_minutes, retries: routine.retries, skip_noop: routine.skip_noop,
       on_step_error: routine.on_step_error || "stop", retry_later_minutes: routine.retry_later_minutes ?? 5,
+      from_date: routine.from_date || null, until_date: routine.until_date || null, heads_up_minutes: routine.heads_up_minutes || 0,
       notify_on_run: routine.notify_on_run, notify_on_skip: routine.notify_on_skip, notify_on_error: routine.notify_on_error,
       notify_on_health: Boolean(routine.notify_on_health),
       wait_when_unavailable: Boolean(routine.wait_when_unavailable),
@@ -765,7 +800,7 @@ class DailyRoutinePanel extends HTMLElement {
       }
       Object.assign(data, fieldsToData(spec, step.fields, index));
       const raw = { service: step.service.trim(), data };
-      if (Object.keys(target).length) raw.target = target;
+      if (Object.keys(target).length && !spec?.untargeted) raw.target = target;
       return raw;
     });
     return {
@@ -809,6 +844,9 @@ class DailyRoutinePanel extends HTMLElement {
       catch_up_minutes: Number(draft.catch_up_minutes) || 0,
       retries: Number(draft.retries) || 0,
       on_step_error: draft.on_step_error === "continue" ? "continue" : "stop",
+      from_date: draft.from_date || null,
+      until_date: draft.until_date || null,
+      heads_up_minutes: Number(draft.heads_up_minutes) || 0,
       retry_later_minutes: Number(draft.retry_later_minutes) || 0,
       skip_noop: draft.skip_noop,
       notify_on_run: draft.notify_on_run,
@@ -1122,6 +1160,7 @@ class DailyRoutinePanel extends HTMLElement {
       const field = el.dataset.f;
       if (field === "watch_entity" && !live) this._loadStateHints(value);
       if (field === "time") d.time = value.length === 5 ? `${value}:00` : value;
+      else if (field === "from_date" || field === "until_date") d[field] = monthDay(value);
       else if (field === "enabled" || field === "skip_next" || field === "repeat" || field === "skip_noop" || field === "notify_on_run" || field === "notify_on_skip" || field === "notify_on_error" || field === "notify_on_health" || field === "wait_when_unavailable") d[field] = Boolean(value);
       else d[field] = value;
       if (el.dataset.rerender !== undefined && !live) this._render();
@@ -1341,7 +1380,7 @@ class DailyRoutinePanel extends HTMLElement {
         <div>
           <h3>${esc(routine.name)}</h3>
           ${options.showRoom ? `<div class="muted small">${esc(this._roomName(routine.room))}</div>` : ""}
-          <div class="muted small">${esc(this._describeTrigger(routine))} · ${routine.days.length === 7 ? "every day" : routine.days.join(", ")}</div>
+          <div class="muted small">${esc(this._describeTrigger(routine))} · ${routine.days.length === 7 ? "every day" : routine.days.join(", ")}${routine.from_date ? ` · ${esc(describeMonthDay(routine.from_date))} to ${esc(describeMonthDay(routine.until_date))}` : ""}</div>
           <div class="muted small">Next: ${esc(formatTime(status.next_run))}${esc(reason)}${detail}</div>
           ${waitLine}${this._skipHtml(routine)}
           <div class="muted small">Linked to: ${esc(this._linkedName(routine.device_id))}</div>
@@ -1922,6 +1961,15 @@ class DailyRoutinePanel extends HTMLElement {
         ${["time", "sunrise", "sunset"].includes(d.trigger) ? `<label>Vary the time by up to (minutes, earlier or later)<input type="number" min="0" max="120" data-f="random_minutes" value="${esc(d.random_minutes || 0)}"></label>
         <p class="muted small">A different time each day, so lights while you're away don't look like a timer. 0 runs at the same time every day.</p>` : ""}
         ${timeBased || valueTrigger || stateTrigger || todoDone ? `<div class="chips">${days}</div>` : ""}
+        <h4>Only part of the year</h4>
+        <p class="muted small">Optional, for things like holiday lights or heating. The year doesn't matter; the dates repeat every year, and can run over New Year (1 November to 31 March). Leave both empty to run all year.</p>
+        <div class="inline">
+          <label>From<input type="date" data-f="from_date" value="${esc(monthDayInput(d.from_date))}"></label>
+          <label>Until<input type="date" data-f="until_date" value="${esc(monthDayInput(d.until_date))}"></label>
+        </div>
+        ${["time", "sunrise", "sunset"].includes(d.trigger) ? `<label>Heads-up before it runs
+          <select data-f="heads_up_minutes">${HEADS_UP_CHOICES.map((m) => `<option value="${m}" ${Number(d.heads_up_minutes || 0) === m ? "selected" : ""}>${m ? `${m} minutes before, with a Skip button` : "No"}</option>`).join("")}</select>
+        </label>` : ""}
         ${presence ? this._zoneField(d) : ""}
         ${presence ? `<h4>Who</h4><p class="muted small">Pick the people this routine watches. People without location tracking can't be checked.</p><div class="checks">${peopleList}</div>
         <button class="ghost" data-act="tracked-people">Select everyone with tracking</button>` : ""}
@@ -2119,7 +2167,8 @@ class DailyRoutinePanel extends HTMLElement {
       return `<div class="step">${head}${kind}<label>Seconds<input type="number" min="0" step="1" data-si="${i}" data-sf="seconds" value="${esc(step.seconds)}"></label></div>`;
     }
     const domain = step.service.includes(".") ? step.service.split(".")[0] : "";
-    const candidates = this._roomEntities(roomId).filter((e) => !domain || e.domain === domain);
+    const domains = actionSpec(step.service)?.domains;
+    const candidates = this._roomEntities(roomId).filter((e) => (domains ? domains.includes(e.domain) : !domain || e.domain === domain));
     const targetModes = [
       roomId ? `<option value="area" ${step.targetMode === "area" ? "selected" : ""}>This room</option>` : "",
       `<option value="all_areas" ${step.targetMode === "all_areas" ? "selected" : ""}>Every room</option>`,
@@ -2150,12 +2199,13 @@ class DailyRoutinePanel extends HTMLElement {
       const attrs = `data-sfi="${i}" data-sfield="${esc(f.key)}"`;
       const value = values[f.key] ?? "";
       if (f.type === "entity") return pick(f.domain, value, attrs, f.label);
-      if (f.type === "percent") return `<label>${esc(f.label)} (%)<input type="number" min="0" max="100" step="5" ${attrs} value="${esc(value)}"></label>`;
+      if (f.type === "percent" || f.type === "pct") return `<label>${esc(f.label)} (%)${f.optional ? " – optional" : ""}<input type="number" min="0" max="100" step="5" ${attrs} value="${esc(value)}"></label>`;
+      if (f.type === "minutes") return `<label>${esc(f.label)} – optional<input type="number" min="0" max="120" step="0.5" ${attrs} value="${esc(value)}"></label>`;
       if (f.type === "number") return `<label>${esc(f.label)}<input type="number" step="${f.step || 1}" ${attrs} value="${esc(value)}"></label>`;
       return `<label>${esc(f.label)}<input ${attrs} value="${esc(value)}" placeholder="${esc(f.placeholder || "")}"></label>`;
     }).join("");
     const voice = spec?.voice ? pick("tts", step.voice || "", `data-si="${i}" data-sf="voice"`, "Voice") : "";
-    const target = spec?.voice ? "" : `<label>Applies to<select data-si="${i}" data-sf="targetMode" data-rerender>${targetModes}</select></label>
+    const target = spec?.voice || spec?.untargeted ? "" : `<label>Applies to<select data-si="${i}" data-sf="targetMode" data-rerender>${targetModes}</select></label>
       ${entityChecks}`;
     return `<div class="step">${head}${kind}
       <label>Action<select data-si="${i}" data-sf="actionChoice" data-rerender>${actionOptions}</select></label>

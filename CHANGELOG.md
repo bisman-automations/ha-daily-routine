@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.19.0] - 2026-11-14
+
+### Added
+
+- **Heads-up before a run.** A new routine setting sends a notification 5 to 60 minutes before a time or sun routine runs, saying when. On your phone it has a **Skip it** button, which skips just that run.
+- **Put things back.** Two new steps: **Remember which lights and switches are on** keeps, under a name you choose, the lights, switches and fans that are on (and each light's brightness and color), and **Put back what was on** turns exactly those back on later. Use them in a "leaving" and a "coming home" routine, so only what was on comes back on. They're also actions for automations: `daily_routine.remember_states` and `daily_routine.put_back_states`.
+- **Fade lights.** **Turn on lights** and **Turn off lights** can fade over a number of minutes, and **Turn on lights** can set a brightness, for a gentle wake-up or bedtime.
+- **Only part of the year.** A routine can run only between two dates each year, such as 1 November to 31 March for holiday lights or heating. The card shows the dates, and the next run shows the first day when it's out of season.
+
 ## [1.18.0] - 2026-11-14
 
 ### Added
@@ -331,6 +340,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.19.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.18.0...v1.19.0
 [1.18.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.17.2...v1.18.0
 [1.17.2]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.17.1...v1.17.2
 [1.17.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.17.0...v1.17.1

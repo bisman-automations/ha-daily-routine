@@ -45,3 +45,37 @@ pause_routines:
       description: The last day to skip. Leave empty to resume.
       selector:
         date:
+remember_states:
+  name: Remember what's on
+  description: Remember which of these lights, switches and fans are on, and how the lights look, so Put back what was on can turn them back on later.
+  target:
+    entity:
+      domain:
+        - light
+        - switch
+        - fan
+  fields:
+    name:
+      name: Remember as
+      description: A name to put them back by.
+      required: true
+      example: Before we left
+      selector:
+        text:
+put_back_states:
+  name: Put back what was on
+  description: Turn back on the lights, switches and fans remembered under a name, the lights as they were.
+  fields:
+    name:
+      name: Remembered as
+      description: The name they were remembered under.
+      required: true
+      example: Before we left
+      selector:
+        text:
+    forget:
+      name: Forget afterwards
+      description: Forget them once they're back on.
+      default: true
+      selector:
+        boolean:

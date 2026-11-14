@@ -93,6 +93,9 @@ def _form_from_routine(routine: dict[str, Any]) -> dict[str, Any]:
         "offset_minutes": routine["offset_minutes"],
         "random_minutes": routine["random_minutes"],
         "days": list(routine["days"]),
+        "from_date": routine["from_date"] or "",
+        "until_date": routine["until_date"] or "",
+        "heads_up_minutes": routine["heads_up_minutes"],
         "zone": routine["zone"],
         "room": routine["room"],
         "device_id": routine["device_id"],
@@ -143,6 +146,9 @@ def _routine_from_form(
         "offset_minutes": int(values.get("offset_minutes") or 0),
         "random_minutes": int(values.get("random_minutes") or 0),
         "days": list(values.get("days") or []),
+        "from_date": str(values.get("from_date") or "").strip() or None,
+        "until_date": str(values.get("until_date") or "").strip() or None,
+        "heads_up_minutes": int(values.get("heads_up_minutes") or 0),
         "zone": values.get("zone") or "zone.home",
         "room": values.get("room") or None,
         "device_id": values.get("device_id") or None,
@@ -248,6 +254,11 @@ def _form_schema(hass: Any, values: dict[str, Any]) -> vol.Schema:
                     mode=selector.SelectSelectorMode.LIST,
                 )
             ),
+            vol.Optional("from_date", default=values.get("from_date") or ""): str,
+            vol.Optional("until_date", default=values.get("until_date") or ""): str,
+            vol.Required(
+                "heads_up_minutes", default=values.get("heads_up_minutes") or 0
+            ): number(0, 240),
             vol.Required("zone", default=values.get("zone") or "zone.home"): entity(
                 "zone"
             ),

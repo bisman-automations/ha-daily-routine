@@ -26,6 +26,7 @@ from homeassistant.core import (
     State,
     callback,
 )
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import (
     area_registry as ar,
     device_registry as dr,
@@ -75,6 +76,7 @@ from .routines import (
     VALUE_TRIGGERS,
     WATCH_TRIGGERS,
     calendar_matches,
+    in_dates,
     normalize_date,
     normalize_routine,
     uses_conditions,
@@ -101,6 +103,12 @@ RETRY_LATER_TIMES = 3
 VERIFY_POLL_SECONDS = 0.25
 # The phone notification's Try again button: this prefix plus the routine id.
 TRY_AGAIN_ACTION = "DAILY_ROUTINE_TRY_AGAIN_"
+# The heads-up notification's Skip button: this prefix plus the routine id.
+SKIP_ACTION = "DAILY_ROUTINE_SKIP_"
+# Devices remember_states keeps (and put_back_states turns back on).
+REMEMBER_DOMAINS = ("light", "switch", "fan")
+# Light settings put back with the light.
+LIGHT_KEYS = ("brightness", "color_temp_kelvin", "hs_color")
 
 
 @dataclass
@@ -400,6 +408,8 @@ class HomeRoutinesCoordinator:
         self._handles: dict[tuple[str, str], Callable[[], None]] = {}
         # What a run couldn't do, for Try again and the tries planned later.
         self._retry: dict[str, _Retry] = {}
+        # Remembered states by name (remember_states / put_back_states).
+        self.memories: dict[str, dict[str, Any]] = {}
         self._startup_unsubs: list[Callable[[], None]] = []
         self._health_unsub: Callable[[], None] | None = None
         # Today's event titles for each calendar a condition uses: entity -> (date, titles).
@@ -463,7 +473,9 @@ class HomeRoutinesCoordinator:
         return True
 
     def _allowed_day(self, routine: dict[str, Any], when: datetime) -> bool:
-        return WEEKDAYS[when.weekday()] in routine["days"]
+        return WEEKDAYS[when.weekday()] in routine["days"] and in_dates(
+            when.date(), routine.get("from_date"), routine.get("until_date")
+        )
 
     def _fire_event(
         self, event_type: str, routine: dict[str, Any], result: str | None = None
@@ -479,8 +491,13 @@ class HomeRoutinesCoordinator:
         notification_id: str | None = None,
         *,
         retry_routine: str | None = None,
+        actions: list[dict[str, str]] | None = None,
     ) -> None:
-        self._spawn(self._notify(message, notification_id, retry_routine))
+        if retry_routine:
+            actions = [
+                {"action": f"{TRY_AGAIN_ACTION}{retry_routine}", "title": "Try again"}
+            ]
+        self._spawn(self._notify(message, notification_id, actions))
 
     @staticmethod
     def _health_notification_id(routine_id: str) -> str:
@@ -503,23 +520,18 @@ class HomeRoutinesCoordinator:
         self,
         message: str,
         notification_id: str | None = None,
-        retry_routine: str | None = None,
+        actions: list[dict[str, str]] | None = None,
     ) -> None:
         for service in self.settings.get("notify_services") or []:
             if service == "notify.persistent_notification":
                 continue  # the Home Assistant notification below is always created
             name = service.split(".", 1)[1]
             payload: dict[str, Any] = {"title": "Daily Routine", "message": message}
-            if retry_routine and name.startswith("mobile_app_"):
+            if actions and name.startswith("mobile_app_"):
                 # Only the Companion app shows buttons.
-                payload["data"] = {
-                    "actions": [
-                        {
-                            "action": f"{TRY_AGAIN_ACTION}{retry_routine}",
-                            "title": "Try again",
-                        }
-                    ]
-                }
+                payload["data"] = {"actions": actions}
+                if notification_id:
+                    payload["data"]["tag"] = notification_id
             try:
                 await self.hass.services.async_call(
                     "notify", name, payload, blocking=False
@@ -639,6 +651,8 @@ class HomeRoutinesCoordinator:
                 _LOGGER.error("Skipping stored routine %s: %s", raw.get("id"), err)
         for rid, saved in (data.get("runtime") or {}).items():
             self._rt(rid).update({k: saved.get(k) for k in PERSISTED_KEYS})
+        memories = data.get("memories")
+        self.memories = memories if isinstance(memories, dict) else {}
 
     async def async_start(self) -> None:
         # Calendars first, so a run right after starting can check them.
@@ -668,9 +682,12 @@ class HomeRoutinesCoordinator:
     @callback
     def _on_notification_action(self, event: Event) -> None:
         action = str(event.data.get("action") or "")
-        if not action.startswith(TRY_AGAIN_ACTION):
+        if action.startswith(TRY_AGAIN_ACTION):
+            routine_id, what = action[len(TRY_AGAIN_ACTION) :], "Try again"
+        elif action.startswith(SKIP_ACTION):
+            routine_id, what = action[len(SKIP_ACTION) :], "Skip"
+        else:
             return
-        routine_id = action[len(TRY_AGAIN_ACTION) :]
         if self._find(routine_id) is None:
             return
 
@@ -679,11 +696,15 @@ class HomeRoutinesCoordinator:
                 event.context
             ):
                 _LOGGER.warning(
-                    "Try again for routine %s was refused: that user can't use Daily Routine.",
+                    "%s for routine %s was refused: that user can't use Daily Routine.",
+                    what,
                     routine_id,
                 )
                 return
-            await self.async_try_again(routine_id)
+            if what == "Skip":
+                await self.async_skip_next(routine_id, True)
+            else:
+                await self.async_try_again(routine_id)
 
         self._spawn(_try())
 
@@ -725,6 +746,7 @@ class HomeRoutinesCoordinator:
             "migrated": self.migrated,
             "settings": self.settings,
             "runtime": runtime,
+            "memories": self.memories,
         }
 
     async def _async_save(self) -> None:
@@ -1402,9 +1424,11 @@ class HomeRoutinesCoordinator:
         def shift(day: datetime) -> timedelta:
             return random_shift(routine["id"], day.date().isoformat(), vary)
 
+        # With dates, the next allowed day can be most of a year away.
+        seasonal = bool(routine.get("from_date"))
         if trigger == TRIGGER_TIME:
             target = _parse_time(routine["time"])
-            for day_offset in range(-1, 8):
+            for day_offset in range(-1, 368 if seasonal else 8):
                 candidate_date = (after + timedelta(days=day_offset)).date()
                 base = datetime.combine(candidate_date, target, tzinfo=after.tzinfo)
                 candidate = base + shift(base)
@@ -1414,7 +1438,7 @@ class HomeRoutinesCoordinator:
 
         event = SUN_EVENT_SUNRISE if trigger == TRIGGER_SUNRISE else SUN_EVENT_SUNSET
         cursor = after
-        for _ in range(10):
+        for _ in range(370 if seasonal else 10):
             try:
                 event_dt = get_astral_event_next(self.hass, event, cursor)
             except Exception as err:  # noqa: BLE001
@@ -1445,6 +1469,38 @@ class HomeRoutinesCoordinator:
 
         self._set_handle(
             rid, H_TIME, async_track_point_in_time(self.hass, _fire, next_dt)
+        )
+        self._schedule_heads_up(routine, next_dt, after)
+
+    def _schedule_heads_up(
+        self, routine: dict[str, Any], next_dt: datetime, after: datetime
+    ) -> None:
+        """A notification shortly before a scheduled run, with a Skip button."""
+        rid = routine["id"]
+        self._drop_handle(rid, "heads_up")
+        minutes = routine.get("heads_up_minutes") or 0
+        notice_at = next_dt - timedelta(minutes=minutes)
+        if not minutes or notice_at <= after:
+            return
+
+        @callback
+        def _notice(_now: datetime) -> None:
+            self._drop_handle(rid, "heads_up")
+            if self.paused or routine.get("skip_next"):
+                return
+            if (
+                until := self.paused_until(routine)
+            ) and dt_util.now().date().isoformat() <= until:
+                return
+            at = dt_util.as_local(next_dt).strftime("%H:%M")
+            self._send_notification(
+                f"Routine '{routine['name']}' runs at {at}.",
+                f"daily_routine_heads_up_{rid}",
+                actions=[{"action": f"{SKIP_ACTION}{rid}", "title": "Skip it"}],
+            )
+
+        self._set_handle(
+            rid, "heads_up", async_track_point_in_time(self.hass, _notice, notice_at)
         )
 
     def _maybe_catch_up(self, routine: dict[str, Any], now: datetime) -> None:
@@ -2244,6 +2300,8 @@ class HomeRoutinesCoordinator:
 
         wanted = DESIRED_STATE.get(action["service"])
         verify = self.settings["verify_seconds"]
+        if verify and isinstance(data.get("transition"), (int, float)):
+            verify += data["transition"]  # a fade changes the state at its end
         if wanted and verify:
             check = [e for e in entities if e not in failed]
             stuck = await self._wait_for_state(check, wanted, verify)
@@ -2297,6 +2355,62 @@ class HomeRoutinesCoordinator:
             _short_error(error),
             exc_info=error if _LOGGER.isEnabledFor(logging.DEBUG) else None,
         )
+
+    async def async_remember(self, name: str, entity_ids: list[str]) -> list[str]:
+        """Remember which of these lights, switches and fans are on, and how the
+        lights look, under a name. Returns the ones that are on."""
+        kept: dict[str, Any] = {}
+        for entity_id in sorted(set(entity_ids)):
+            if entity_id.split(".", 1)[0] not in REMEMBER_DOMAINS:
+                continue
+            state = self.hass.states.get(entity_id)
+            if state is None or state.state != "on":
+                continue
+            attrs: dict[str, Any] = {}
+            if entity_id.startswith("light."):
+                mode = state.attributes.get("color_mode")
+                for key in LIGHT_KEYS:
+                    value = state.attributes.get(key)
+                    if value is None:
+                        continue
+                    if key == "color_temp_kelvin" and mode != "color_temp":
+                        continue
+                    if key == "hs_color" and mode in (
+                        "color_temp",
+                        "brightness",
+                        "onoff",
+                    ):
+                        continue
+                    attrs[key] = list(value) if isinstance(value, tuple) else value
+            kept[entity_id] = attrs
+        self.memories[name] = {"at": dt_util.now().isoformat(), "on": kept}
+        await self._async_save()
+        return list(kept)
+
+    async def async_put_back(self, name: str, *, forget: bool = True) -> list[str]:
+        """Turn back on what was remembered under that name, lights as they were."""
+        memory = self.memories.get(name)
+        if memory is None:
+            raise vol.Invalid(f"Nothing is remembered as '{name}'.")
+        failed: list[str] = []
+        for entity_id, attrs in (memory.get("on") or {}).items():
+            domain = entity_id.split(".", 1)[0]
+            if self.hass.states.get(entity_id) is None:
+                continue  # removed since
+            data = dict(attrs) if domain == "light" else {}
+            error = await self._call_service(
+                domain, "turn_on", data, {"entity_id": [entity_id]}
+            )
+            if error is not None:
+                failed.append(entity_id)
+        if forget and not failed:
+            self.memories.pop(name, None)
+            await self._async_save()
+        if failed:
+            raise HomeAssistantError(
+                f"{_join([self._entity_name(e) for e in failed])} couldn't be turned back on"
+            )
+        return list(memory.get("on") or {})
 
     def _entity_name(self, entity_id: str) -> str:
         state = self.hass.states.get(entity_id)
@@ -2555,6 +2669,8 @@ def _companion_for(routine: dict[str, Any]) -> dict[str, Any] | None:
         "value_entity": routine["value_entity"],
         "value_threshold": routine["off_threshold"],
         "days": routine["days"],
+        "from_date": routine["from_date"],
+        "until_date": routine["until_date"],
         "actions": actions,
         "retries": routine["retries"],
         "on_step_error": routine["on_step_error"],

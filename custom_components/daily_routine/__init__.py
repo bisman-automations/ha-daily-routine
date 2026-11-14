@@ -9,6 +9,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.service import async_extract_entity_ids
 
 from .access import async_ensure_allowed
 from .const import DOMAIN
@@ -109,6 +110,47 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
             {
                 vol.Optional("routine_ids"): vol.All(cv.ensure_list, [str]),
                 vol.Optional("until"): vol.Any(None, cv.date),
+            }
+        ),
+    )
+
+    async def remember_service(call: ServiceCall) -> None:
+        coordinator = _coordinator()
+        await async_ensure_allowed(hass, call.context)
+        await coordinator.async_remember(
+            call.data["name"], sorted(await async_extract_entity_ids(call))
+        )
+
+    async def put_back_service(call: ServiceCall) -> None:
+        coordinator = _coordinator()
+        await async_ensure_allowed(hass, call.context)
+        try:
+            await coordinator.async_put_back(
+                call.data["name"], forget=call.data["forget"]
+            )
+        except vol.Invalid as err:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="run_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
+
+    hass.services.async_register(
+        DOMAIN,
+        "remember_states",
+        remember_service,
+        schema=cv.make_entity_service_schema(
+            {vol.Required("name"): vol.All(str, vol.Length(min=1, max=60))}
+        ),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "put_back_states",
+        put_back_service,
+        schema=vol.Schema(
+            {
+                vol.Required("name"): vol.All(str, vol.Length(min=1, max=60)),
+                vol.Optional("forget", default=True): bool,
             }
         ),
     )

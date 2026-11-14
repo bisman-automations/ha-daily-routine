@@ -28,6 +28,9 @@
 - **Pause switch.** *Pause all routines* stops every automatic run. Manual runs still work.
 - **Skips no-op steps.** A "lights off" step does nothing if the lights are already off.
 - **Copes with devices that don't answer.** When one device in a step can't be reached, the others still change. It's tried again a few minutes later, and your phone's failure message has a **Try again** button. After turning something on or off, Daily Routine checks it really changed.
+- **Heads-up with Skip.** Optionally, a notification a few minutes before a scheduled run, with a **Skip it** button on your phone.
+- **Put things back.** One routine remembers which lights, switches and fans are on (and how the lights look), and another turns exactly those back on, for example when you leave and come home.
+- **Fades and part of the year.** Light steps can fade in or out over minutes, and a routine can run only between two dates each year, such as November to March.
 - **Retries and catch-up.** Retry a failed step, and run a missed time-based routine if Home Assistant restarted a few minutes late.
 - **Extra conditions.** Run only when the conditions hold: who is home or away, sensors quiet or active for a while, or an entity in a given state (for example guest mode is off).
 - **Notifications** on run, skip, or failure (failures are on by default).
@@ -195,6 +198,8 @@ The history is saved with Home Assistant, keeps the last 30 days, and is removed
 | Time / offset | For time and sun triggers (offset in minutes, negative is before) |
 | Vary the time | For time and sun triggers: run up to this many minutes earlier or later, a different time each day, so lights while you're away don't look like a timer. The time for a day stays the same if Home Assistant restarts. 0 (the default) runs at the same time every day |
 | Days | Which days it may run |
+| Only part of the year | Optional: the first and last day it may run each year, such as 1 November to 31 March for holiday lights. The range can run over New Year. Outside it, the routine doesn't run and its next run shows the first day of the range. Leave both empty to run all year |
+| Heads-up | For time and sun triggers: a notification 5 to 60 minutes before each scheduled run, saying when it runs. A Companion app notification has a **Skip it** button, which skips that run (like **Skip next run**). Not sent while routines are paused, or when the next run is already being skipped |
 | People | For presence triggers. Only people with location tracking can be checked |
 | Sensors and quiet for | For the room is quiet trigger: the motion or occupancy sensors that must stay off for N minutes. Motion restarts the count |
 | Extra conditions | A list of conditions that must hold. Each one is **who is home or away** (everyone or anyone, at or away from a place), **sensors quiet or active** for N minutes, **a device's state**, or a **calendar day**: only on days with an event, or not on days with one, in a calendar you pick. Type part of the event's name (such as "No school") to look for just that event, or leave it empty for any event. A calendar that can't be read blocks the run. With more than one, choose whether **all** of them must hold or **any one** is enough. Each line is described under Editing routines in Home Assistant |
@@ -208,7 +213,7 @@ The history is saved with Home Assistant, keeps the last 30 days, and is removed
 | Skip the next run | The next time the routine would run on its own, it doesn't, and then it carries on as usual. Also on each routine's card: **Skip next run** |
 | Pause until | The routine doesn't run on its own through this day, then carries on. **Run now** still works. To pause many routines at once while you're away, use **Going away?** on the Routines tab |
 | Wait for an unavailable list or device | Off by default. When a to-do list (or the device the routine watches) is unavailable when the routine should run, for example while iCloud is having trouble, the run waits instead of failing. The card shows **Waiting for list**, and the routine runs as soon as the list is back. You aren't told it needs attention unless the list stays unavailable for a whole day; then the waiting run is dropped (and you're told it was skipped, if **On skip** is on). A list that is gone from Home Assistant altogether is still announced right away. A waiting run is forgotten if Home Assistant restarts |
-| Steps | Actions chosen by name, such as "Turn off lights" (with a room, specific devices, or no target), or any service under "Other (advanced)", plus waits. **Set speaker volume**, **Say something on a speaker** (a voice, a speaker and what to say), **Set the thermostat** (a temperature), **Turn off the thermostat**, **Play media**, **Start the vacuum** and **Send the vacuum home** ask for their settings in plain fields |
+| Steps | Actions chosen by name, such as "Turn off lights" (with a room, specific devices, or no target), or any service under "Other (advanced)", plus waits. **Set speaker volume**, **Say something on a speaker** (a voice, a speaker and what to say), **Set the thermostat** (a temperature), **Turn off the thermostat**, **Play media**, **Start the vacuum** and **Send the vacuum home** ask for their settings in plain fields. **Turn on lights** can set a brightness, and **Turn on lights** and **Turn off lights** can fade over a number of minutes (the lights need to support fading; most smart bulbs do). **Remember which lights and switches are on** keeps, under a name you choose, the lights, switches and fans that are on in the room or devices you pick, with each light's brightness and color; **Put back what was on** turns exactly those back on and then forgets them |
 | Notify | On run, on skip, on failure, and when it needs attention (a device or list is missing or unavailable). The attention message is sent once a problem has lasted a minute, and again only after it clears and returns. Choosing **Show a Home Assistant notification** as a notify target doesn't add a second copy: the Home Assistant notification is always shown |
 
 ### Trigger notes
@@ -228,6 +233,8 @@ The history is saved with Home Assistant, keeps the last 30 days, and is removed
 | `daily_routine.run_routine` | Run a routine by id. Conditions still apply; the once-a-day rule does not. |
 | `daily_routine.reload_routines` | Restart all schedules and watchers. |
 | `daily_routine.skip_next` | Skip a routine's next run once (`skip: false` takes it back). |
+| `daily_routine.remember_states` | Remember which lights, switches and fans in the target are on, and how the lights look, under a `name`. |
+| `daily_routine.put_back_states` | Turn back on what was remembered under a `name`, lights as they were. Forgets it afterwards unless `forget: false`. |
 | `daily_routine.pause_routines` | Pause routines (`routine_ids`, or every routine when left out) through a date (`until`), for example while you're on holiday. Leave `until` out to resume them. |
 
 All of them are open to automations, admins and the people allowed to see Daily Routine. They report an error when Daily Routine isn't running or the routine id is unknown.
@@ -236,6 +243,14 @@ All of them are open to automations, admins and the people allowed to see Daily 
 service: daily_routine.run_routine
 data:
   routine_id: kitchen_lights_off
+```
+
+```yaml
+service: daily_routine.remember_states
+target:
+  area_id: living_room
+data:
+  name: Before we left
 ```
 
 ```yaml

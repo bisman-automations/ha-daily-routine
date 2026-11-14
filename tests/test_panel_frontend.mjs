@@ -1330,3 +1330,56 @@ test("a routine that couldn't change a device offers Try again on its card", () 
   panel._render();
   assert.match(panel.shadowRoot.innerHTML, /data-act="try-again" data-id="kitchen_lights">Try again</);
 });
+
+test("light steps take an optional brightness and a fade in minutes", () => {
+  const panel = makePanel();
+  const stored = {
+    ...panel._data.routines[0],
+    actions: [{ service: "light.turn_on", target: { entity_id: ["light.kitchen"] }, data: { brightness_pct: 30, transition: 900 } }],
+  };
+  panel._draft = panel._draftFromRoutine(stored);
+  assert.deepEqual(panel._draft.actions[0].fields, { brightness_pct: 30, transition: 15 });
+  assert.deepEqual(panel._draftToRaw(panel._draft).actions[0].data, { brightness_pct: 30, transition: 900 });
+  // Both are optional.
+  panel._draft.actions[0].fields = {};
+  assert.deepEqual(panel._draftToRaw(panel._draft).actions[0].data, {});
+});
+
+test("put back what was on has no target; remember offers lights, switches and fans", () => {
+  const panel = makePanel();
+  panel._draft = panel._draftFromRoutine({
+    ...panel._data.routines[0],
+    actions: [
+      { service: "daily_routine.remember_states", target: { area_id: ["kitchen"] }, data: { name: "Before we left" } },
+      { service: "daily_routine.put_back_states", data: { name: "Before we left" } },
+    ],
+  });
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Remember which lights and switches are on/);
+  assert.match(html, /Put back what was on/);
+  const raw = panel._draftToRaw(panel._draft);
+  assert.deepEqual(raw.actions[0].target, { area_id: ["kitchen"] });
+  assert.equal(raw.actions[1].target, undefined);
+  assert.deepEqual(raw.actions[1].data, { name: "Before we left" });
+});
+
+test("dates and the heads-up round-trip and show on the card", () => {
+  const panel = makePanel();
+  const stored = { ...panel._data.routines[0], trigger: "time", time: "07:00:00", from_date: "11-01", until_date: "03-31", heads_up_minutes: 10 };
+  panel._draft = panel._draftFromRoutine(stored);
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, new RegExp(`data-f="from_date" value="${new Date().getFullYear()}-11-01"`));
+  assert.match(html, /<option value="10" selected>10 minutes before, with a Skip button/);
+  const raw = panel._draftToRaw(panel._draft);
+  assert.equal(raw.from_date, "11-01");
+  assert.equal(raw.until_date, "03-31");
+  assert.equal(raw.heads_up_minutes, 10);
+  panel._data.routines[0] = { ...panel._data.routines[0], from_date: "11-01", until_date: "03-31" };
+  panel._view = { name: "room", room: "kitchen" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /1 Nov to 31 Mar/);
+});
