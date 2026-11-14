@@ -1421,3 +1421,28 @@ test("routines that react to something happening can wait before running again",
   panel._render();
   assert.doesNotMatch(panel.shadowRoot.innerHTML, /data-f="cooldown_minutes"/);
 });
+
+test("integration order: Settings lists linked integrations, and a routine can have its own", async () => {
+  const panel = makePanel();
+  panel._integrations = [
+    { domain: "matter", name: "Matter", local: true },
+    { domain: "switchbot", name: "SwitchBot Bluetooth", local: true },
+    { domain: "switchbot_cloud", name: "SwitchBot Cloud", local: false },
+  ];
+  panel._data.settings = { ...(panel._data.settings || {}), hidden_people: [], notify_services: [], integration_order: ["switchbot"] };
+  panel._view = { name: "settings" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Devices in more than one integration/);
+  // The saved order first, then the rest.
+  assert.deepEqual(panel._fullOrder(["switchbot"]), ["switchbot", "matter", "switchbot_cloud"]);
+  assert.match(html, /SwitchBot Cloud <span class="muted small">cloud/);
+
+  panel._draft = panel._draftFromRoutine({ ...panel._data.routines[0], integration_order: ["matter", "switchbot", "switchbot_cloud"] });
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /<option value="1" selected>Its own order/);
+  assert.deepEqual(panel._draftToRaw(panel._draft).integration_order, ["matter", "switchbot", "switchbot_cloud"]);
+  panel._draft.integration_order = null;
+  assert.equal(panel._draftToRaw(panel._draft).integration_order, null);
+});

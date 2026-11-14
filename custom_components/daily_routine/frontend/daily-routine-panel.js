@@ -744,6 +744,7 @@ class DailyRoutinePanel extends HTMLElement {
       conditions: (routine.conditions || []).map((c) => ({ ...c, people: [...(c.people || [])], sensors: [...(c.sensors || [])] })),
       conditions_match: routine.conditions_match || "all", repeat: routine.repeat,
       wait: routine.wait || "day", wait_until: hhmm(routine.wait_until || "12:00:00"), wait_minutes: routine.wait_minutes || 5, cooldown_minutes: routine.cooldown_minutes || 0,
+      integration_order: routine.integration_order ? [...routine.integration_order] : null,
       catch_up_minutes: routine.catch_up_minutes, retries: routine.retries, skip_noop: routine.skip_noop,
       on_step_error: routine.on_step_error || "stop", retry_later_minutes: routine.retry_later_minutes ?? 5,
       from_date: routine.from_date || null, until_date: routine.until_date || null, heads_up_minutes: routine.heads_up_minutes || 0,
@@ -850,6 +851,7 @@ class DailyRoutinePanel extends HTMLElement {
       wait: ["day", "until", "minutes", "no"].includes(draft.wait) ? draft.wait : "day",
       wait_minutes: Math.max(1, Math.min(240, Number(draft.wait_minutes) || 5)),
       cooldown_minutes: Math.max(0, Math.min(1440, Number(draft.cooldown_minutes) || 0)),
+      integration_order: Array.isArray(draft.integration_order) ? [...draft.integration_order] : null,
       wait_until: `${draft.wait_until || "12:00"}:00`.slice(0, 8),
       repeat: draft.repeat,
       catch_up_minutes: Number(draft.catch_up_minutes) || 0,
@@ -915,6 +917,22 @@ class DailyRoutinePanel extends HTMLElement {
         case "run": {
           const result = await this._call({ type: `${DOMAIN}/routine/run`, routine_id: el.dataset.id });
           this._showNotice(result.ran ? "Routine ran." : "Did not run – its conditions are not met right now.", !result.ran);
+          break;
+        }
+        case "order-move": {
+          const by = Number(el.dataset.by);
+          const routineScope = el.dataset.scope === "routine";
+          const order = this._fullOrder(routineScope ? this._draft.integration_order : this._data.settings?.integration_order);
+          const i = order.indexOf(el.dataset.domain);
+          const j = i + by;
+          if (i < 0 || j < 0 || j >= order.length) break;
+          [order[i], order[j]] = [order[j], order[i]];
+          if (routineScope) {
+            this._draft.integration_order = order;
+            this._render();
+          } else {
+            await this._saveSettings({ integration_order: order });
+          }
           break;
         }
         case "try-again": {
@@ -1173,6 +1191,7 @@ class DailyRoutinePanel extends HTMLElement {
       if (field === "trigger" && d.isNew && d.wait === defaultWait(d.trigger)) d.wait = defaultWait(value);
       if (field === "time") d.time = value.length === 5 ? `${value}:00` : value;
       else if (field === "from_date" || field === "until_date") d[field] = monthDay(value);
+      else if (field === "ownOrder") d.integration_order = value ? this._fullOrder(this._data.settings?.integration_order) : null;
       else if (field === "enabled" || field === "skip_next" || field === "repeat" || field === "skip_noop" || field === "notify_on_run" || field === "notify_on_skip" || field === "notify_on_error" || field === "notify_on_health" || field === "wait_when_unavailable") d[field] = Boolean(value);
       else d[field] = value;
       if (el.dataset.rerender !== undefined && !live) this._render();
@@ -1801,10 +1820,65 @@ class DailyRoutinePanel extends HTMLElement {
         <div class="checks">${targets}</div>
       </section>
       ${this._renderAccess()}
+      ${this._renderIntegrationOrder()}
       <section class="card">
         <h3>Timing</h3>
         <p class="muted small">How patiently Daily Routine waits on slow devices and cloud lists, such as an iCloud to-do list after a restart. Changes are saved when you leave a box.</p>
         <div class="timing">${timing}</div>
+      </section>`;
+  }
+
+  // Integrations whose devices are also in another one (a curtain through Matter,
+  // Bluetooth and the cloud), loaded once when they're first shown.
+  _integrationList() {
+    if (this._integrations === undefined && !this._integrationsLoading) {
+      this._integrationsLoading = true;
+      this._call({ type: `${DOMAIN}/integrations` })
+        .then((res) => {
+          this._integrations = res?.integrations || [];
+        })
+        .catch(() => {
+          this._integrations = [];
+        })
+        .finally(() => {
+          this._integrationsLoading = false;
+          if (["settings", "editor"].includes(this._view.name)) this._render();
+        });
+    }
+    return this._integrations;
+  }
+
+  // The full order: the saved one first, then the rest, local before cloud.
+  _fullOrder(saved) {
+    const known = this._integrationList() || [];
+    const domains = known.map((i) => i.domain);
+    return [...(saved || []).filter((d) => domains.includes(d)), ...domains.filter((d) => !(saved || []).includes(d))];
+  }
+
+  _orderRows(order, scope) {
+    const known = this._integrationList() || [];
+    const byDomain = Object.fromEntries(known.map((i) => [i.domain, i]));
+    return `<ol class="order">${order
+      .map((domain, i) => {
+        const item = byDomain[domain] || { name: domain, local: false };
+        return `<li><span class="grow">${esc(item.name)} <span class="muted small">${item.local ? "local" : "cloud"}</span></span>
+          <button class="ghost" data-act="order-move" data-scope="${scope}" data-domain="${esc(domain)}" data-by="-1" ${i === 0 ? "disabled" : ""} aria-label="Move ${esc(item.name)} up">↑</button>
+          <button class="ghost" data-act="order-move" data-scope="${scope}" data-domain="${esc(domain)}" data-by="1" ${i === order.length - 1 ? "disabled" : ""} aria-label="Move ${esc(item.name)} down">↓</button></li>`;
+      })
+      .join("")}</ol>`;
+  }
+
+  _renderIntegrationOrder() {
+    const known = this._integrationList();
+    const body = known === undefined
+      ? `<p class="muted small">Loading…</p>`
+      : known.length
+        ? this._orderRows(this._fullOrder(this._data.settings?.integration_order), "settings")
+        : `<p class="muted small">None of your devices is in more than one integration yet. When one is (Home Assistant shows them under Linked devices), it appears here.</p>`;
+    return `<section class="card">
+        <h3>Devices in more than one integration</h3>
+        <p class="muted small">A device can be in Home Assistant more than once, for example a curtain through Matter, Bluetooth and the cloud. A step then uses one at a time, in this order, and only tries the next if the device didn't change. Routines can have their own order.</p>
+        ${body}
       </section>`;
   }
 
@@ -2031,6 +2105,13 @@ class DailyRoutinePanel extends HTMLElement {
         <p class="muted small">So a door opened and closed a few times, or a sensor bouncing around its level, doesn't run it each time. 0 runs it every time.</p>` : ""}
         ${this._catchUpField(d.catch_up_minutes)}
         <label>Retry a failed step (times)<input type="number" min="0" max="3" data-f="retries" value="${esc(d.retries)}"></label>
+        ${(this._integrationList() || []).length ? `<label>For devices in more than one integration
+          <select data-f="ownOrder" data-rerender>
+            <option value="" ${d.integration_order == null ? "selected" : ""}>Use the order in Settings</option>
+            <option value="1" ${d.integration_order != null ? "selected" : ""}>Its own order</option>
+          </select>
+        </label>
+        ${d.integration_order != null ? this._orderRows(this._fullOrder(d.integration_order), "routine") : ""}` : ""}
         <label>If a step can't change a device
           <select data-f="on_step_error">
             <option value="stop" ${d.on_step_error !== "continue" ? "selected" : ""}>Stop there</option>
@@ -2349,6 +2430,10 @@ const STYLES = `<style>
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--divider-color, #eee); vertical-align: top; }
   .timing { display: grid; gap: 12px; }
+  ol.order { margin: 8px 0; padding-left: 24px; display: grid; gap: 6px; }
+  ol.order li { display: flex; align-items: center; gap: 8px; }
+  ol.order .grow { flex: 1; min-width: 0; }
+  ol.order button { min-width: 40px; }
   .timing label { display: grid; gap: 4px; }
   .inline { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px; align-items: center; }
   .inline2 { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }

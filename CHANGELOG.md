@@ -5,6 +5,17 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.0] - 2026-11-14
+
+### Added
+
+- **Devices in more than one integration are reached one way at a time.** A device that's in Home Assistant more than once, such as a SwitchBot curtain through Matter, SwitchBot (Bluetooth) and SwitchBot Cloud, used to get every command three times. Now a step sends it through the first integration in your order, checks the curtain actually closed, and only then tries the next one. The step fails only if every way did. Home Assistant has to show the devices as linked (they share a MAC address or another identifier).
+- **Choose the order.** **Settings → Devices in more than one integration** lists the integrations your linked devices come from; move them up or down. Integrations you haven't placed come after, local ones before cloud ones. Each routine can use that order or its own (**For devices in more than one integration** under Options).
+
+### Changed
+
+- **Curtains and blinds still opening or closing get up to two minutes** to finish before the step counts them as not having changed.
+
 ## [1.20.0] - 2026-11-14
 
 ### Added
@@ -358,6 +369,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.21.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.20.0...v1.21.0
 [1.20.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.19.0...v1.20.0
 [1.19.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.18.0...v1.19.0
 [1.18.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.17.2...v1.18.0

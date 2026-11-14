@@ -24,6 +24,7 @@ from .coordinator import (
     list_people,
     notify_targets,
 )
+from .linked import integration_name, integration_rank, linked_integrations
 from .routines import normalize_routine
 from .run_log import WINDOWS, summarize
 from .runtime import get_coordinator
@@ -208,6 +209,7 @@ def async_setup_panel_api(hass: HomeAssistant) -> None:
         ws_pause_until,
         ws_save_settings,
         ws_status,
+        ws_integrations,
         ws_activity,
         ws_export,
         ws_import,
@@ -258,6 +260,28 @@ async def ws_activity(
         if r["enabled"] and (problems := coordinator.health(r))
     ]
     connection.send_result(msg["id"], summary)
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/integrations"})
+@require_access
+@websocket_api.async_response
+async def ws_integrations(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Integrations whose devices are also in another integration, best first."""
+    connection.send_result(
+        msg["id"],
+        {
+            "integrations": [
+                {
+                    "domain": domain,
+                    "name": integration_name(hass, domain),
+                    "local": integration_rank(hass, domain) <= 2,
+                }
+                for domain in linked_integrations(hass)
+            ]
+        },
+    )
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/status"})

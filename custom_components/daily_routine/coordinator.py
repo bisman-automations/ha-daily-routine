@@ -67,6 +67,7 @@ from .const import (
     TRIGGER_VALUE_BELOW,
     WEEKDAYS,
 )
+from .linked import linked_groups
 from .routines import (
     DESIRED_STATE,
     PER_PERSON_TRIGGERS,
@@ -101,6 +102,11 @@ UNLIMITED_DOMAINS = frozenset(
 # A step that couldn't change a device is tried again later this many times.
 RETRY_LATER_TIMES = 3
 VERIFY_POLL_SECONDS = 0.25
+# A cover still opening or closing is given this long to finish before it counts
+# as not having changed.
+MOVING_STATES = ("opening", "closing")
+MOVING_SECONDS = 120
+DOMAIN_RE = re.compile(r"[a-z0-9_]+")
 # The phone notification's Try again button: this prefix plus the routine id.
 TRY_AGAIN_ACTION = "DAILY_ROUTINE_TRY_AGAIN_"
 # The heads-up notification's Skip button: this prefix plus the routine id.
@@ -405,6 +411,7 @@ class HomeRoutinesCoordinator:
         self.settings: dict[str, Any] = {
             "hidden_people": [],
             "notify_services": [],
+            "integration_order": [],
             **{key: default for key, (default, *_rest) in TIMING_SETTINGS.items()},
         }
         self._runtime: dict[str, dict[str, Any]] = {}
@@ -665,6 +672,9 @@ class HomeRoutinesCoordinator:
                 p for p in saved.get("hidden_people", []) if isinstance(p, str)
             ],
             "notify_services": [s for s in (services or []) if isinstance(s, str)],
+            "integration_order": [
+                d for d in saved.get("integration_order") or [] if isinstance(d, str)
+            ],
             **{key: _timing_value(saved.get(key), key) for key in TIMING_SETTINGS},
         }
         for raw in data.get("routines", []):
@@ -1013,9 +1023,15 @@ class HomeRoutinesCoordinator:
                     f"{label} must be a whole number from {low} to {high}."
                 )
             timing[key] = value
+        order = raw.get("integration_order", self.settings["integration_order"])
+        if not isinstance(order, list) or not all(
+            isinstance(d, str) and DOMAIN_RE.fullmatch(d) for d in order
+        ):
+            raise vol.Invalid("The integration order must be a list of integrations.")
         self.settings = {
             "hidden_people": sorted(set(hidden)),
             "notify_services": sorted(set(services)),
+            "integration_order": list(dict.fromkeys(order)),
             **timing,
         }
         self._schedule_health_interval()
@@ -2007,7 +2023,24 @@ class HomeRoutinesCoordinator:
         if not (routine["skip_noop"] and service in DESIRED_STATE and entities):
             return "would_run", None, entities
         wanted = DESIRED_STATE[service]
-        remaining = [e for e in entities if not self._state_is(e, wanted)]
+        remaining: list[str] = []
+        for ways in linked_groups(
+            self.hass, entities, self._integration_order(routine)
+        ):
+            # A device in several integrations: believe the first way that's
+            # reporting (the others can lag behind or be stale).
+            reporting = next(
+                (
+                    e
+                    for e in ways
+                    if (st := self.hass.states.get(e)) is not None
+                    and st.state not in UNKNOWN_STATES
+                ),
+                None,
+            )
+            if reporting is None or not self._state_is(reporting, wanted):
+                remaining.extend(ways)
+        remaining.sort(key=entities.index)
         if not remaining:
             return "already_in_state", None, entities
         if len(remaining) != len(entities):
@@ -2381,51 +2414,39 @@ class HomeRoutinesCoordinator:
         data = dict(action.get("data") or {})
         target = override if override is not None else action.get("target")
         entities = self._resolve_targets(target or {}, domain)
-        failed: dict[str, str] = {}
-        if len(entities) > 1:
-            error = await self._call_service(domain, service, data, target)
-            if error is not None:
-                _LOGGER.debug(
-                    "Routine '%s': %s failed for the group (%s), trying each device.",
-                    routine["name"],
-                    action["service"],
-                    _short_error(error),
-                )
-                for entity_id in entities:
-                    error = await self._call_with_retries(
-                        routine, domain, service, data, {"entity_id": [entity_id]}
-                    )
-                    if error is not None:
-                        failed[entity_id] = _short_error(error)
-        else:
+        if not entities:
             error = await self._call_with_retries(
                 routine, domain, service, data, target
             )
-            if error is not None:
-                if not entities:
-                    self._log_step_error(routine, action, error)
-                    return _Failure(
-                        index,
-                        action["service"],
-                        None,
-                        f"{action['service']} didn't work",
-                    )
-                failed[entities[0]] = _short_error(error)
+            if error is None:
+                return None
+            self._log_step_error(routine, action, error)
+            return _Failure(
+                index, action["service"], None, f"{action['service']} didn't work"
+            )
 
-        wanted = DESIRED_STATE.get(action["service"])
-        verify = self.settings["verify_seconds"]
-        if verify and isinstance(data.get("transition"), (int, float)):
-            verify += data["transition"]  # a fade changes the state at its end
-        if wanted and verify:
-            check = [e for e in entities if e not in failed]
-            stuck = await self._wait_for_state(check, wanted, verify)
-            for entity_id in stuck:
-                # Sent, but it didn't change: send it once more.
-                await self._call_service(
-                    domain, service, data, {"entity_id": [entity_id]}
+        # A device in more than one integration is reached one way at a time.
+        groups = linked_groups(self.hass, entities, self._integration_order(routine))
+        linked = [g for g in groups if len(g) > 1]
+        retry_target: dict[str, list[str]] = {}
+        if not linked:
+            failed = await self._run_on_devices(routine, action, data, target, entities)
+        else:
+            singles = [g[0] for g in groups if len(g) == 1]
+            failed = (
+                await self._run_on_devices(
+                    routine, action, data, {"entity_id": singles}, singles
                 )
-            for entity_id in await self._wait_for_state(stuck, wanted, verify):
-                failed[entity_id] = "didn't change"
+                if singles
+                else {}
+            )
+            outcomes = await asyncio.gather(
+                *(self._run_linked(routine, action, data, g) for g in linked)
+            )
+            for group, why in zip(linked, outcomes, strict=True):
+                if why is not None:
+                    failed[group[0]] = why
+                    retry_target[group[0]] = group
 
         if not failed:
             return None
@@ -2455,9 +2476,110 @@ class HomeRoutinesCoordinator:
             parts.append(f"{_join(reached)} couldn't be reached")
         if unchanged:
             parts.append(f"{_join(unchanged)} didn't change")
+        again = [e for key in failed for e in retry_target.get(key, [key])]
         return _Failure(
-            index, action["service"], {"entity_id": list(failed)}, "; ".join(parts)
+            index, action["service"], {"entity_id": again}, "; ".join(parts)
         )
+
+    async def _run_on_devices(
+        self,
+        routine: dict[str, Any],
+        action: dict[str, Any],
+        data: dict[str, Any],
+        target: dict[str, Any] | None,
+        entities: list[str],
+    ) -> dict[str, str]:
+        """Devices reached one way: the call, device by device if it fails, then the
+        check. Returns why each device that didn't change didn't."""
+        domain, service = action["service"].split(".", 1)
+        failed: dict[str, str] = {}
+        if len(entities) > 1:
+            error = await self._call_service(domain, service, data, target)
+            if error is not None:
+                _LOGGER.debug(
+                    "Routine '%s': %s failed for the group (%s), trying each device.",
+                    routine["name"],
+                    action["service"],
+                    _short_error(error),
+                )
+                for entity_id in entities:
+                    error = await self._call_with_retries(
+                        routine, domain, service, data, {"entity_id": [entity_id]}
+                    )
+                    if error is not None:
+                        failed[entity_id] = _short_error(error)
+        else:
+            error = await self._call_with_retries(
+                routine, domain, service, data, target
+            )
+            if error is not None:
+                failed[entities[0]] = _short_error(error)
+
+        wanted = DESIRED_STATE.get(action["service"])
+        verify = self._verify_seconds(data)
+        if wanted and verify:
+            check = [e for e in entities if e not in failed]
+            stuck = await self._wait_for_state(check, wanted, verify)
+            for entity_id in stuck:
+                # Sent, but it didn't change: send it once more.
+                await self._call_service(
+                    domain, service, data, {"entity_id": [entity_id]}
+                )
+            for entity_id in await self._wait_for_state(stuck, wanted, verify):
+                failed[entity_id] = "didn't change"
+        return failed
+
+    async def _run_linked(
+        self,
+        routine: dict[str, Any],
+        action: dict[str, Any],
+        data: dict[str, Any],
+        ways: list[str],
+    ) -> str | None:
+        """One device, several integrations: try each in order until the device
+        shows the change (or, with nothing to check, until a call works)."""
+        domain, service = action["service"].split(".", 1)
+        wanted = DESIRED_STATE.get(action["service"])
+        verify = self._verify_seconds(data)
+        why = "couldn't be reached"
+        for entity_id in ways:
+            error = await self._call_service(
+                domain, service, data, {"entity_id": [entity_id]}
+            )
+            if error is not None:
+                _LOGGER.debug(
+                    "Routine '%s': %s through %s failed (%s), trying the next way.",
+                    routine["name"],
+                    action["service"],
+                    entity_id,
+                    _short_error(error),
+                )
+                continue
+            if not (wanted and verify):
+                return None
+            # Any of its ways showing the change counts: some report it later.
+            if not await self._wait_for_state(ways, wanted, verify, any_of=True):
+                return None
+            why = "didn't change"
+            _LOGGER.debug(
+                "Routine '%s': %s through %s didn't change it, trying the next way.",
+                routine["name"],
+                action["service"],
+                entity_id,
+            )
+        return why
+
+    def _integration_order(self, routine: dict[str, Any]) -> list[str]:
+        own = routine.get("integration_order")
+        return (
+            list(own) if own is not None else list(self.settings["integration_order"])
+        )
+
+    def _verify_seconds(self, data: dict[str, Any]) -> float:
+        verify: float = self.settings["verify_seconds"]
+        if verify and isinstance(data.get("transition"), (int, float)):
+            verify += data["transition"]  # a fade changes the state at its end
+        return verify
 
     def _log_step_error(
         self, routine: dict[str, Any], action: dict[str, Any], error: BaseException
@@ -2531,14 +2653,27 @@ class HomeRoutinesCoordinator:
         return state.name if state is not None else entity_id
 
     async def _wait_for_state(
-        self, entities: list[str], wanted: str, seconds: float
+        self,
+        entities: list[str],
+        wanted: str,
+        seconds: float,
+        *,
+        any_of: bool = False,
     ) -> list[str]:
-        """Wait up to that long for the devices to reach the state; return the ones that didn't."""
+        """Wait up to that long for the devices to reach the state; return the ones
+        that didn't (with any_of, all of them unless one did). Curtains and blinds
+        still opening or closing get longer, up to MOVING_SECONDS."""
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + seconds
+        start = loop.time()
         while True:
             left = [e for e in entities if not self._state_is(e, wanted)]
-            if not left or loop.time() >= deadline:
+            if any_of and len(left) < len(entities):
+                return []
+            if not left:
+                return []
+            moving = any(self._state_is(e, s) for e in left for s in MOVING_STATES)
+            limit = MOVING_SECONDS if moving else seconds
+            if loop.time() - start >= max(seconds, limit):
                 return left
             await asyncio.sleep(VERIFY_POLL_SECONDS)
 
@@ -2786,6 +2921,7 @@ def _companion_for(routine: dict[str, Any]) -> dict[str, Any] | None:
         "from_date": routine["from_date"],
         "until_date": routine["until_date"],
         "cooldown_minutes": routine["cooldown_minutes"],
+        "integration_order": routine["integration_order"],
         "actions": actions,
         "retries": routine["retries"],
         "on_step_error": routine["on_step_error"],

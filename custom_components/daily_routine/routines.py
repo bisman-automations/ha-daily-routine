@@ -376,6 +376,19 @@ def calendar_matches(cond: dict[str, Any], summaries: list[str]) -> bool:
     return found if cond["when"] == "event" else not found
 
 
+_DOMAIN = re.compile(r"^[a-z0-9_]+$")
+
+
+def _integration_order(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(
+        isinstance(d, str) and _DOMAIN.match(d) for d in value
+    ):
+        raise vol.Invalid("The integration order must be a list of integrations.")
+    return list(dict.fromkeys(value))
+
+
 DEFAULT_WAIT_MINUTES = 5
 MAX_COOLDOWN_MINUTES = 1440
 MAX_WAIT_MINUTES = 240
@@ -612,6 +625,8 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         ),
         "wait": _wait_mode(raw.get("wait")),
         "wait_until": normalize_time(raw.get("wait_until") or "12:00:00"),
+        # Which integration to try first for a device in several (None: Settings).
+        "integration_order": _integration_order(raw.get("integration_order")),
         # Not again within this many minutes of the last run (0: no limit).
         "cooldown_minutes": _int(
             raw.get("cooldown_minutes"), 0, MAX_COOLDOWN_MINUTES, "Not again within"
