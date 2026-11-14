@@ -23,6 +23,10 @@ const TRIGGER_LABELS = {
   manual: "Only when I press Run",
 };
 const PRESENCE_TRIGGERS = ["everyone_leaves", "someone_arrives", "person_leaves", "person_arrives"];
+// Triggers that react to something happening. A run they start doesn't wait the
+// rest of the day for its conditions by default: the moment has passed.
+const EVENT_TRIGGERS = [...PRESENCE_TRIGGERS, "value_above", "value_below", "state_is", "todo_done"];
+const defaultWait = (trigger) => (EVENT_TRIGGERS.includes(trigger) ? "no" : "day");
 const PER_PERSON_TRIGGERS = ["person_leaves", "person_arrives"];
 const VALUE_TRIGGERS = ["value_above", "value_below"];
 const STATE_TRIGGERS = ["state_is"];
@@ -33,7 +37,9 @@ const ACTIVITY_FILTERS = [["all", "All"], ["ran", "Succeeded"], ["failed", "Fail
 const ACTIVITY_OUTCOMES = { ran: "Succeeded", failed: "Failed", skipped: "Skipped" };
 const SKIP_REASON_LABELS = {
   paused: "Routines were paused",
-  conditions_not_met: "Conditions were not met by the end of the day",
+  conditions_not_met: "Conditions were not met in time",
+  trigger_ended: "What started it was over before the conditions were met",
+  cooldown: "It ran a moment ago",
   disabled: "Routine was turned off",
   already_ran_today: "Already ran today",
 };
@@ -78,6 +84,8 @@ const REASON_LABELS = {
   clear_timer_not_started: "waiting for sensors",
   extra_condition_not_met: "an extra condition is not met",
   conditions_not_met: "conditions were not met",
+  trigger_ended: "what started it was over",
+  cooldown: "it ran a moment ago",
   outside_hours: "outside its hours",
   calendar_not_met: "the calendar doesn't allow it today",
   paused_until: "paused for a while",
@@ -693,7 +701,7 @@ class DailyRoutinePanel extends HTMLElement {
       value_entity: "", value_threshold: "", off_threshold: "", watch_entity: "", watch_states: "", hold_minutes: 0, watch_item: "", active_from: "", active_to: "",
       trigger: "time", time: "07:00:00", offset_minutes: 0, random_minutes: 0, paused_until: "", skip_next: false, days: [...WEEKDAYS],
       people: [], sensors: [], clear_minutes: 0,
-      conditions: [], conditions_match: "all", repeat: false, catch_up_minutes: 0, retries: 0, skip_noop: true, wait: "day", wait_until: "12:00",
+      conditions: [], conditions_match: "all", repeat: false, catch_up_minutes: 0, retries: 0, skip_noop: true, wait: "day", wait_until: "12:00", wait_minutes: 5,
       notify_on_run: false, notify_on_skip: false, notify_on_error: true, notify_on_health: false, wait_when_unavailable: false,
       actions: [{ kind: "service", service: "", targetMode: roomId ? "area" : "entities", area: roomId || "", entities: [], data: "" }],
       isNew: true,
@@ -705,6 +713,7 @@ class DailyRoutinePanel extends HTMLElement {
     const spec = template.draft || {};
     draft.name = template.title === "Blank routine" ? "" : template.title;
     if (spec.trigger) draft.trigger = spec.trigger;
+    draft.wait = defaultWait(draft.trigger);
     if (spec.time) draft.time = spec.time;
     if (spec.clear_minutes) draft.clear_minutes = spec.clear_minutes;
     if (spec.useRoomSensors) draft.sensors = this._roomSensors(roomId).map((e) => e.entity_id);
@@ -734,7 +743,7 @@ class DailyRoutinePanel extends HTMLElement {
       people: [...routine.people], sensors: [...routine.sensors], clear_minutes: routine.clear_minutes,
       conditions: (routine.conditions || []).map((c) => ({ ...c, people: [...(c.people || [])], sensors: [...(c.sensors || [])] })),
       conditions_match: routine.conditions_match || "all", repeat: routine.repeat,
-      wait: routine.wait || "day", wait_until: hhmm(routine.wait_until || "12:00:00"),
+      wait: routine.wait || "day", wait_until: hhmm(routine.wait_until || "12:00:00"), wait_minutes: routine.wait_minutes || 5, cooldown_minutes: routine.cooldown_minutes || 0,
       catch_up_minutes: routine.catch_up_minutes, retries: routine.retries, skip_noop: routine.skip_noop,
       on_step_error: routine.on_step_error || "stop", retry_later_minutes: routine.retry_later_minutes ?? 5,
       from_date: routine.from_date || null, until_date: routine.until_date || null, heads_up_minutes: routine.heads_up_minutes || 0,
@@ -838,7 +847,9 @@ class DailyRoutinePanel extends HTMLElement {
         })
         .filter((c) => (c.kind !== "state" && c.kind !== "calendar") || (c.entity_id && (c.kind === "calendar" || c.state))),
       conditions_match: draft.conditions_match === "any" ? "any" : "all",
-      wait: ["day", "until", "no"].includes(draft.wait) ? draft.wait : "day",
+      wait: ["day", "until", "minutes", "no"].includes(draft.wait) ? draft.wait : "day",
+      wait_minutes: Math.max(1, Math.min(240, Number(draft.wait_minutes) || 5)),
+      cooldown_minutes: Math.max(0, Math.min(1440, Number(draft.cooldown_minutes) || 0)),
       wait_until: `${draft.wait_until || "12:00"}:00`.slice(0, 8),
       repeat: draft.repeat,
       catch_up_minutes: Number(draft.catch_up_minutes) || 0,
@@ -1159,6 +1170,7 @@ class DailyRoutinePanel extends HTMLElement {
     if (el.dataset.f) {
       const field = el.dataset.f;
       if (field === "watch_entity" && !live) this._loadStateHints(value);
+      if (field === "trigger" && d.isNew && d.wait === defaultWait(d.trigger)) d.wait = defaultWait(value);
       if (field === "time") d.time = value.length === 5 ? `${value}:00` : value;
       else if (field === "from_date" || field === "until_date") d[field] = monthDay(value);
       else if (field === "enabled" || field === "skip_next" || field === "repeat" || field === "skip_noop" || field === "notify_on_run" || field === "notify_on_skip" || field === "notify_on_error" || field === "notify_on_health" || field === "wait_when_unavailable") d[field] = Boolean(value);
@@ -1992,8 +2004,11 @@ class DailyRoutinePanel extends HTMLElement {
         ${d.conditions.length || d.trigger === "everyone_leaves" || d.trigger === "room_clear" ? `<label>If they aren't met when it's time<select data-f="wait" data-rerender>
           <option value="day" ${d.wait === "day" || !d.wait ? "selected" : ""}>Wait, and run as soon as they are (until the end of the day)</option>
           <option value="until" ${d.wait === "until" ? "selected" : ""}>Wait, and run as soon as they are, until…</option>
+          <option value="minutes" ${d.wait === "minutes" ? "selected" : ""}>Wait a few minutes, and run as soon as they are</option>
           <option value="no" ${d.wait === "no" ? "selected" : ""}>Skip it until next time</option></select></label>
-        ${d.wait === "until" ? `<label>Stop waiting at<input type="time" data-f="wait_until" value="${esc(d.wait_until || "12:00")}"></label>` : ""}` : ""}
+        ${d.wait === "until" ? `<label>Stop waiting at<input type="time" data-f="wait_until" value="${esc(d.wait_until || "12:00")}"></label>` : ""}
+        ${d.wait === "minutes" ? `<label>Wait up to (minutes)<input type="number" min="1" max="240" data-f="wait_minutes" value="${esc(d.wait_minutes || 5)}"></label>` : ""}
+        ${EVENT_TRIGGERS.includes(d.trigger) ? `<p class="muted small">This routine reacts to something happening. Waiting long can make it run hours later, when that moment has passed; skipping, or waiting a few minutes, is usually right. A waiting run is dropped once what started it is over (for example everyone has left again).</p>` : ""}` : ""}
         <div class="row-actions">
           <button class="ghost" data-act="add-condition" data-kind="presence">+ Who is home or away</button>
           <button class="ghost" data-act="add-condition" data-kind="sensors">+ Sensors quiet or active</button>
@@ -2012,6 +2027,8 @@ class DailyRoutinePanel extends HTMLElement {
         <h3>Options</h3>
         <label class="check"><input type="checkbox" data-f="repeat" ${d.repeat ? "checked" : ""}> Run every time (not just once a day)</label>
         <label class="check"><input type="checkbox" data-f="skip_noop" ${d.skip_noop ? "checked" : ""}> Skip steps that are already done</label>
+        ${EVENT_TRIGGERS.includes(d.trigger) || d.trigger === "room_clear" ? `<label>Not again within (minutes after it ran)<input type="number" min="0" max="1440" data-f="cooldown_minutes" value="${esc(d.cooldown_minutes || 0)}"></label>
+        <p class="muted small">So a door opened and closed a few times, or a sensor bouncing around its level, doesn't run it each time. 0 runs it every time.</p>` : ""}
         ${this._catchUpField(d.catch_up_minutes)}
         <label>Retry a failed step (times)<input type="number" min="0" max="3" data-f="retries" value="${esc(d.retries)}"></label>
         <label>If a step can't change a device

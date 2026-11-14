@@ -79,6 +79,10 @@ WAIT_OPTIONS = [
     selector.SelectOptionDict(
         value="until", label="Wait, and run as soon as they are, until the time below"
     ),
+    selector.SelectOptionDict(
+        value="minutes",
+        label="Wait a few minutes (below), and run as soon as they are",
+    ),
     selector.SelectOptionDict(value="no", label="Skip it until next time"),
 ]
 
@@ -115,6 +119,8 @@ def _form_from_routine(routine: dict[str, Any]) -> dict[str, Any]:
         "conditions": conditions_to_text(routine["conditions"]),
         "wait": routine["wait"],
         "wait_until": routine["wait_until"][:5],
+        "wait_minutes": routine["wait_minutes"],
+        "cooldown_minutes": routine["cooldown_minutes"],
         "catch_up_minutes": routine["catch_up_minutes"],
         "retries": routine["retries"],
         "on_step_error": routine["on_step_error"],
@@ -170,6 +176,8 @@ def _routine_from_form(
         "conditions": conditions,
         "wait": values.get("wait") or "day",
         "wait_until": _hhmmss(values.get("wait_until") or "12:00"),
+        "wait_minutes": int(values.get("wait_minutes") or 5),
+        "cooldown_minutes": int(values.get("cooldown_minutes") or 0),
         "catch_up_minutes": int(values.get("catch_up_minutes") or 0),
         "retries": int(values.get("retries") or 0),
         "on_step_error": values.get("on_step_error") or "stop",
@@ -306,6 +314,12 @@ def _form_schema(hass: Any, values: dict[str, Any]) -> vol.Schema:
             vol.Required(
                 "wait_until", default=values.get("wait_until") or "12:00"
             ): str,
+            vol.Required(
+                "wait_minutes", default=values.get("wait_minutes") or 5
+            ): number(1, 240),
+            vol.Required(
+                "cooldown_minutes", default=values.get("cooldown_minutes") or 0
+            ): number(0, 1440),
             vol.Required(
                 "catch_up_minutes", default=values.get("catch_up_minutes") or 0
             ): number(0, 180),

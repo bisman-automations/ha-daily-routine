@@ -5,6 +5,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.20.0] - 2026-11-14
+
+### Added
+
+- **Wait a few minutes.** A new choice for **If they aren't met when it's time**: wait up to a number of minutes you pick, and run as soon as the conditions hold.
+- **Not again within a few minutes.** Routines that react to something happening (and the room is quiet) have a new **Not again within** setting: after running, they don't run again on their own for that many minutes, so a door opened and closed a few times, or a sensor bouncing around its level, doesn't run it each time. Off unless you set it; **Run now** isn't held back.
+
+### Changed
+
+- **A run started by something happening ends when that's over.** A routine that reacts to someone arriving, everyone leaving, a person, a device's state or a sensor's level, and is waiting for its conditions, is now dropped once that moment has passed: for example, an "unlock when someone arrives" run waiting for the lock to be locked no longer unlocks it hours later, once everyone has left again. The Activity tab shows "What started it was over".
+- **New routines that react to something happening don't wait all day.** They start with **Skip it until next time**, and the editor explains why. Existing routines keep their setting; think about changing ones that wait until the end of the day, such as unlocking a door when someone arrives.
+
+### Fixed
+
+- **A phone's location dropping out no longer counts as arriving or leaving.** When everyone was away and one tracker went unavailable for a moment, "someone arrives" could run. After a restart, trackers loading could look like everyone leaving.
+- **Person leaves or arrives no longer misses a move made while the location was unavailable** (home, unavailable, away now counts once).
+- **A device or sensor coming back from unavailable isn't a change.** "Device changes to a state" no longer runs when a device reconnects in the state it was already in (unless you picked unavailable as a state), and "above or below a level" no longer runs when a sensor reconnects on the same side of the level.
+
 ## [1.19.0] - 2026-11-14
 
 ### Added
@@ -340,6 +358,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.20.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.19.0...v1.20.0
 [1.19.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.18.0...v1.19.0
 [1.18.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.17.2...v1.18.0
 [1.17.2]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.17.1...v1.17.2

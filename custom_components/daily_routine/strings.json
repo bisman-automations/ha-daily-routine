@@ -66,7 +66,9 @@
             "actions": "Steps (one per line)",
             "conditions": "Extra conditions (one per line)",
             "wait": "If the conditions aren't met when it's time",
-            "wait_until": "Stop waiting at (HH:MM, when waiting until a time)"
+            "wait_until": "Stop waiting at (HH:MM, when waiting until a time)",
+            "wait_minutes": "Wait up to (minutes, when waiting a few minutes)",
+            "cooldown_minutes": "Not again within (minutes after it ran, 0 = no limit)"
           }
         }
       },

@@ -81,7 +81,7 @@ def uses_conditions(routine: dict[str, Any]) -> bool:
 
 # When a scheduled run's conditions aren't met: wait for them until the end of
 # the day, wait until a time, or skip the run.
-WAIT_MODES = ("day", "until", "no")
+WAIT_MODES = ("day", "until", "minutes", "no")
 
 CONDITION_KINDS = ("presence", "sensors", "state", "calendar")
 # A calendar condition: run only on days with a matching event, or skip those days.
@@ -376,11 +376,17 @@ def calendar_matches(cond: dict[str, Any], summaries: list[str]) -> bool:
     return found if cond["when"] == "event" else not found
 
 
+DEFAULT_WAIT_MINUTES = 5
+MAX_COOLDOWN_MINUTES = 1440
+MAX_WAIT_MINUTES = 240
+
+
 def _wait_mode(value: Any) -> str:
     mode = str(value or "day")
     if mode not in WAIT_MODES:
         raise vol.Invalid(
-            "Waiting for conditions is until the end of the day, until a time, or not at all."
+            "Waiting for conditions is until the end of the day, until a time, "
+            "for some minutes, or not at all."
         )
     return mode
 
@@ -606,6 +612,17 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         ),
         "wait": _wait_mode(raw.get("wait")),
         "wait_until": normalize_time(raw.get("wait_until") or "12:00:00"),
+        # Not again within this many minutes of the last run (0: no limit).
+        "cooldown_minutes": _int(
+            raw.get("cooldown_minutes"), 0, MAX_COOLDOWN_MINUTES, "Not again within"
+        ),
+        # wait "minutes": how long after the trigger the run may still go ahead.
+        "wait_minutes": _int(
+            raw.get("wait_minutes", DEFAULT_WAIT_MINUTES),
+            1,
+            MAX_WAIT_MINUTES,
+            "Wait for",
+        ),
         "skip_noop": bool(raw.get("skip_noop", True)),
         "notify_on_run": bool(raw.get("notify_on_run", False)),
         "notify_on_skip": bool(raw.get("notify_on_skip", False)),

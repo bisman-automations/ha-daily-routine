@@ -1383,3 +1383,41 @@ test("dates and the heads-up round-trip and show on the card", () => {
   panel._render();
   assert.match(panel.shadowRoot.innerHTML, /1 Nov to 31 Mar/);
 });
+
+test("routines that react to something happening don't wait all day by default", () => {
+  const panel = makePanel();
+  panel._draft = panel._newDraft("kitchen");
+  assert.equal(panel._draft.wait, "day"); // a time routine
+  panel._draft.conditions = [{ kind: "state", entity_id: "lock.garage", state: "locked" }];
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+  const select = { dataset: { f: "trigger" }, value: "someone_arrives", type: "select-one", closest: () => null };
+  panel._onField({ target: select, composedPath: () => [select] });
+  assert.equal(panel._draft.trigger, "someone_arrives");
+  assert.equal(panel._draft.wait, "no");
+  panel._draft.wait = "minutes";
+  panel._draft.wait_minutes = 10;
+  panel._draft.name = "Unlock on arrival";
+  panel._draft.actions[0].service = "lock.unlock";
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /<option value="minutes" selected>Wait a few minutes/);
+  assert.match(html, /data-f="wait_minutes" value="10"/);
+  assert.match(html, /reacts to something happening/);
+  const raw = panel._draftToRaw(panel._draft);
+  assert.equal(raw.wait, "minutes");
+  assert.equal(raw.wait_minutes, 10);
+});
+
+test("routines that react to something happening can wait before running again", () => {
+  const panel = makePanel();
+  panel._draft = panel._draftFromRoutine({ ...panel._data.routines[0], trigger: "state_is", watch_entity: "binary_sensor.door", watch_states: ["on"], cooldown_minutes: 10 });
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /data-f="cooldown_minutes" value="10"/);
+  assert.equal(panel._draftToRaw(panel._draft).cooldown_minutes, 10);
+  // Not offered for a time routine.
+  panel._draft = panel._draftFromRoutine({ ...panel._data.routines[0], trigger: "time", time: "07:00:00" });
+  panel._render();
+  assert.doesNotMatch(panel.shadowRoot.innerHTML, /data-f="cooldown_minutes"/);
+});

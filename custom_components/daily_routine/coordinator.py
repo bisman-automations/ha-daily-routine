@@ -230,6 +230,7 @@ PERSISTED_KEYS = (
     "seen_state",
     "seen_done",
     "pending_date",
+    "pending_since",
 )
 # How long to wait before saving a state we just saw. Noisy sensors then do not write on every change.
 SEEN_SAVE_DELAY_SECONDS = 10
@@ -376,6 +377,9 @@ def _blank_runtime() -> dict[str, Any]:
         "clear_since": None,  # in memory: when all sensors last became clear
         "armed": False,  # room_clear: a real off-transition happened since start
         "pending_date": None,  # local date while waiting for conditions
+        "pending_since": None,  # when that wait began (for a wait of some minutes)
+        "last_value": None,  # in memory: last number seen, for value triggers
+        "places": {},  # in memory: each person's last known place, per-person triggers
         "all_away": None,  # last known "everyone away" for presence triggers
         "seen_done": None,  # in memory: names of completed items already seen
         "health_alerted": False,  # in memory: a problem was already announced
@@ -460,6 +464,25 @@ class HomeRoutinesCoordinator:
             return "home"
         state = self.hass.states.get(zone)
         return state.name if state is not None else None
+
+    def _place(self, person: str) -> str | None:
+        """A person's place, or None while unknown or unavailable."""
+        state = self.hass.states.get(person)
+        if state is None or state.state in UNKNOWN_STATES:
+            return None
+        return state.state
+
+    def _everyone_away(self, people: list[str], zone: str) -> bool | None:
+        """True or False, or None while anyone's place is unknown (no decision yet)."""
+        key = self._zone_key(zone)
+        if key is None:
+            return None
+        places = [self._place(p) for p in people]
+        if any(place == key for place in places):
+            return False  # someone is there: known whatever the others are
+        if any(place is None for place in places):
+            return None
+        return True
 
     def _all_away(self, people: list[str], zone: str = "zone.home") -> bool:
         """True when every person has left the zone. Unknown or unavailable people block it."""
@@ -1319,6 +1342,13 @@ class HomeRoutinesCoordinator:
         if not uses_conditions(routine) or routine.get("wait", "day") == "no":
             return None
         midnight = dt_util.start_of_local_day(now) + timedelta(days=1)
+        if routine.get("wait") == "minutes":
+            since = dt_util.parse_datetime(
+                self._rt(routine["id"])["pending_since"] or ""
+            )
+            ends = (since or now) + timedelta(minutes=routine["wait_minutes"])
+            ends = min(ends, midnight)
+            return ends if ends > now else None
         if routine.get("wait") == "until":
             until = datetime.combine(
                 now.date(), _parse_time(routine["wait_until"]), tzinfo=now.tzinfo
@@ -1330,11 +1360,14 @@ class HomeRoutinesCoordinator:
         """Wait for the conditions; False when this routine doesn't wait now."""
         rid = routine["id"]
         rt = self._rt(rid)
+        if rt["pending_date"] != now.date().isoformat():
+            rt["pending_since"] = None  # a new wait
         ends = self._wait_ends(routine, now)
         if ends is None:
             return False
         newly = rt["pending_date"] != now.date().isoformat()
         rt["pending_date"] = now.date().isoformat()
+        rt["pending_since"] = rt["pending_since"] or now.isoformat()
         rt["state"] = "waiting"
 
         @callback
@@ -1368,6 +1401,7 @@ class HomeRoutinesCoordinator:
         if rt["pending_date"] is not None:
             self._spawn(self._async_save())
         rt["pending_date"] = None
+        rt["pending_since"] = None
         self._drop_handle(rid, H_EXPIRE)
         if rt["state"] == "waiting":
             rt["state"] = "idle"
@@ -1403,10 +1437,56 @@ class HomeRoutinesCoordinator:
         if not routine["enabled"] or self.paused:
             self._clear_pending(routine)
             return
+        if not self._trigger_holds(routine):
+            # What started the run is over (everyone left again, the door closed):
+            # running now would be for something that no longer happened.
+            self._clear_pending(routine)
+            rt["last_result"] = "trigger_ended"
+            rt["state"] = "skipped"
+            self._record(routine["id"], "skipped", "trigger_ended")
+            self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "trigger_ended")
+            self._notify_listeners()
+            return
         ok, _reason = self._check(routine, now)
         if ok:
             self._clear_pending(routine)
             self._spawn(self._execute_routine(routine, now, scheduled=True))
+
+    def _cooling_down(self, routine: dict[str, Any], now: datetime) -> bool:
+        """Whether the routine last ran less than its cooldown ago."""
+        minutes = routine.get("cooldown_minutes") or 0
+        last = dt_util.parse_datetime(self._rt(routine["id"])["last_run"] or "")
+        return bool(minutes and last and now - last < timedelta(minutes=minutes))
+
+    def _trigger_holds(self, routine: dict[str, Any]) -> bool:
+        """Whether what the trigger reacted to is still so (for a run that waited)."""
+        trigger = routine["trigger"]
+        people = routine["people"]
+        zone = routine["zone"]
+        if trigger == TRIGGER_SOMEONE_ARRIVES:
+            return self._everyone_away(people, zone) is False
+        if trigger == TRIGGER_EVERYONE_LEAVES:
+            return self._everyone_away(people, zone) is True
+        if trigger in PER_PERSON_TRIGGERS:
+            key = self._zone_key(zone)
+            places = [self._place(p) for p in people]
+            if trigger == TRIGGER_PERSON_ARRIVES:
+                return any(place == key for place in places)
+            return any(place is not None and place != key for place in places)
+        if trigger in STATE_TRIGGERS:
+            state = self.hass.states.get(routine["watch_entity"])
+            return state is not None and state.state in routine["watch_states"]
+        if trigger in VALUE_TRIGGERS:
+            value = _as_float(self.hass.states.get(routine["value_entity"]))
+            if value is None:
+                return False
+            threshold = float(routine["value_threshold"])
+            return (
+                value > threshold
+                if trigger == TRIGGER_VALUE_ABOVE
+                else value < threshold
+            )
+        return True
 
     # ----- time and sun triggers -----
 
@@ -1564,17 +1644,21 @@ class HomeRoutinesCoordinator:
             return
         rt = self._rt(rid)
         zone = routine["zone"]
-        rt["all_away"] = self._all_away(people, zone)
+        # Last known answer; None until everyone's place is known (after a restart,
+        # trackers loading must not look like leaving or arriving).
+        rt["all_away"] = self._everyone_away(people, zone)
 
         @callback
         def _on_change(_event: Event[EventStateChangedData]) -> None:
             if not routine["enabled"]:
                 return
             now = dt_util.now()
-            was_away = bool(rt["all_away"])
-            is_away = self._all_away(people, zone)
+            is_away = self._everyone_away(people, zone)
+            if is_away is None:
+                return  # a tracker is unknown or unavailable: not a move
+            was_away = rt["all_away"]
             rt["all_away"] = is_away
-            if not self._allowed_day(routine, now):
+            if was_away is None or not self._allowed_day(routine, now):
                 return
             leaves = trigger == TRIGGER_EVERYONE_LEAVES and is_away and not was_away
             arrives = trigger == TRIGGER_SOMEONE_ARRIVES and was_away and not is_away
@@ -1589,19 +1673,28 @@ class HomeRoutinesCoordinator:
         rid = routine["id"]
         trigger = routine["trigger"]
         zone = routine["zone"]
+        # Each person's last known place, so a move through unavailable
+        # (home, unavailable, away) still counts once, and a blip doesn't.
+        places: dict[str, str] = self._rt(rid)["places"]
+        places.clear()
+        for person in people:
+            if (place := self._place(person)) is not None:
+                places[person] = place
 
         @callback
         def _changed(event: Event[EventStateChangedData]) -> None:
             if not routine["enabled"]:
                 return
-            old = event.data.get("old_state")
             new = event.data.get("new_state")
             key = self._zone_key(zone)
-            if old is None or new is None or key is None:
+            if new is None or key is None or new.state in UNKNOWN_STATES:
                 return
-            if old.state in UNKNOWN_STATES or new.state in UNKNOWN_STATES:
-                return
-            was_in = old.state == key
+            person = event.data["entity_id"]
+            before = places.get(person)
+            places[person] = new.state
+            if before is None:
+                return  # first known place: nothing to compare with
+            was_in = before == key
             is_in = new.state == key
             leaves = trigger == TRIGGER_PERSON_LEAVES and was_in and not is_in
             arrives = trigger == TRIGGER_PERSON_ARRIVES and is_in and not was_in
@@ -1619,17 +1712,24 @@ class HomeRoutinesCoordinator:
         if trigger not in VALUE_TRIGGERS or not routine["enabled"]:
             return
         threshold = float(routine["value_threshold"])
+        rt = self._rt(rid)
+        # The last number seen: a sensor coming back from unavailable only counts
+        # as crossing if it's now on the other side of where it last was.
+        rt["last_value"] = _as_float(self.hass.states.get(routine["value_entity"]))
 
         @callback
         def _changed(event: Event[EventStateChangedData]) -> None:
             new = _as_float(event.data.get("new_state"))
             if new is None:
                 return
-            old = _as_float(event.data.get("old_state"))
+            old = rt["last_value"]
+            rt["last_value"] = new
+            if old is None:
+                return  # first number: nothing to compare with
             if trigger == TRIGGER_VALUE_ABOVE:
-                crossed = new > threshold and (old is None or old <= threshold)
+                crossed = new > threshold and old <= threshold
             else:
-                crossed = new < threshold and (old is None or old >= threshold)
+                crossed = new < threshold and old >= threshold
             now = dt_util.now()
             if crossed and self._allowed_day(routine, now):
                 self._spawn(self._execute_routine(routine, now, scheduled=True))
@@ -1660,14 +1760,19 @@ class HomeRoutinesCoordinator:
             new = event.data.get("new_state")
             if new is None:
                 return
-            old = event.data.get("old_state")
+            if new.state in UNKNOWN_STATES and new.state not in wanted:
+                return  # gone quiet for a moment: compare with where it was before
+            before = rt.get("seen_state")
+            if before is None:
+                old = event.data.get("old_state")
+                before = old.state if old is not None else None
             rt["seen_state"] = new.state
             self._store.async_delay_save(self._payload, SEEN_SAVE_DELAY_SECONDS)
             if new.state not in wanted:
                 self._drop_handle(rid, H_HOLD)
                 return
-            if old is not None and old.state in wanted:
-                return  # moving between chosen states: the run already counts
+            if before in wanted:
+                return  # moving between chosen states, or back after a blip: already counted
             self._start_state_run(routine)
 
         unsub = async_track_state_change_event(self.hass, [entity], _changed)
@@ -1701,7 +1806,10 @@ class HomeRoutinesCoordinator:
             if routine["trigger"] not in STATE_TRIGGERS or not routine["enabled"]:
                 continue
             state = self.hass.states.get(routine["watch_entity"])
-            if state is None:
+            if state is None or (
+                state.state in UNKNOWN_STATES
+                and state.state not in routine["watch_states"]
+            ):
                 continue
             rt = self._rt(routine["id"])
             seen = rt.get("seen_state")
@@ -1978,6 +2086,12 @@ class HomeRoutinesCoordinator:
         if scheduled and (until := self.paused_until(routine)) and today <= until:
             self._record(rid, "skipped", "paused_until")
             self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "paused_until")
+            return False
+        if scheduled and self._cooling_down(routine, now):
+            # Ran a moment ago (a door opened twice, a sensor around its level).
+            self._record(rid, "skipped", "cooldown")
+            self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "cooldown")
+            self._notify_listeners()
             return False
 
         ok, reason = self._check(routine, now)
@@ -2671,6 +2785,7 @@ def _companion_for(routine: dict[str, Any]) -> dict[str, Any] | None:
         "days": routine["days"],
         "from_date": routine["from_date"],
         "until_date": routine["until_date"],
+        "cooldown_minutes": routine["cooldown_minutes"],
         "actions": actions,
         "retries": routine["retries"],
         "on_step_error": routine["on_step_error"],
