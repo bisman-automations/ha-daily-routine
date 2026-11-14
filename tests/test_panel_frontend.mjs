@@ -1301,3 +1301,32 @@ test("a waiting routine's card says it runs as soon as its conditions are met", 
   panel._render();
   assert.match(panel.shadowRoot.innerHTML, /Runs as soon as its conditions are met, until midnight/);
 });
+
+test("editor sets what happens when a step can't change a device, and it round-trips", () => {
+  const panel = makePanel();
+  const stored = { ...panel._data.routines[0], on_step_error: "continue", retry_later_minutes: 10 };
+  panel._draft = panel._draftFromRoutine(stored);
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /<option value="continue" selected>Keep going with the other steps/);
+  assert.match(html, /<option value="10" selected>After 10 minutes \(up to 3 times\)/);
+  const raw = panel._draftToRaw(panel._draft);
+  assert.equal(raw.on_step_error, "continue");
+  assert.equal(raw.retry_later_minutes, 10);
+  // A routine saved before 1.18.0 has neither: stop, and try again after 5 minutes.
+  const { on_step_error, retry_later_minutes, ...old } = stored;
+  const fresh = panel._draftToRaw(panel._draftFromRoutine(old));
+  assert.equal(fresh.on_step_error, "stop");
+  assert.equal(fresh.retry_later_minutes, 5);
+});
+
+test("a routine that couldn't change a device offers Try again on its card", () => {
+  const panel = makePanel();
+  panel._view = { name: "room", room: "kitchen" };
+  panel._render();
+  assert.doesNotMatch(panel.shadowRoot.innerHTML, /data-act="try-again"/);
+  panel._data.statuses.kitchen_lights = { ...panel._data.statuses.kitchen_lights, state: "error", can_try_again: true };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /data-act="try-again" data-id="kitchen_lights">Try again</);
+});

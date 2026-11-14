@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from collections.abc import Callable, Coroutine
+from dataclasses import dataclass, field
 from datetime import datetime, time as dt_time, timedelta
 import hashlib
 import logging
@@ -41,6 +42,7 @@ from homeassistant.helpers.event import (
 from homeassistant.helpers.sun import get_astral_event_next
 from homeassistant.util import dt as dt_util, slugify
 
+from .access import async_get_access
 from .const import (
     DOMAIN,
     EVENT_ROUTINE_FINISHED,
@@ -88,6 +90,55 @@ from .todo import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Steps in these domains can rightly take long (a script runs to its end), so the
+# step time limit doesn't apply to them.
+UNLIMITED_DOMAINS = frozenset(
+    {"script", "automation", "python_script", "pyscript", "shell_command"}
+)
+# A step that couldn't change a device is tried again later this many times.
+RETRY_LATER_TIMES = 3
+VERIFY_POLL_SECONDS = 0.25
+# The phone notification's Try again button: this prefix plus the routine id.
+TRY_AGAIN_ACTION = "DAILY_ROUTINE_TRY_AGAIN_"
+
+
+@dataclass
+class _Failure:
+    """A step that didn't do everything: which devices (target), and why, in words."""
+
+    index: int
+    service: str
+    target: dict[str, Any] | None
+    text: str
+
+
+@dataclass
+class _Run:
+    result: str = "success"
+    details: list[str] = field(default_factory=list)
+    failures: list[_Failure] = field(default_factory=list)
+    # The step the run stopped at, when it stopped at a failed step.
+    stopped_at: int | None = None
+
+
+@dataclass
+class _Retry:
+    failures: list[_Failure]
+    stopped_at: int | None
+    tries: int
+
+
+def _short_error(error: BaseException) -> str:
+    text = str(error).strip() or type(error).__name__
+    return text if len(text) <= 160 else text[:157] + "..."
+
+
+def _join(names: list[str]) -> str:
+    if len(names) < 3:
+        return " and ".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
 
 UNKNOWN_STATES = ("unknown", "unavailable")
 # Recent runs kept per routine, newest last. Kept in memory, so they start again after a restart.
@@ -181,6 +232,8 @@ TIMING_SETTINGS = {
     "health_check_minutes": (15, 1, 60, "The health check interval"),
     "health_alert_seconds": (60, 0, 600, "The health alert delay"),
     "startup_quiet_minutes": (5, 0, 60, "The startup quiet period"),
+    "step_timeout_seconds": (30, 0, 600, "The step time limit"),
+    "verify_seconds": (10, 0, 120, "The check that a step worked"),
 }
 # A device or list that is unavailable only briefly (for example while Home Assistant starts) is not announced.
 # With "wait when unavailable": how long a run is held for a list or device to come back, and how
@@ -345,6 +398,8 @@ class HomeRoutinesCoordinator:
         self._runtime: dict[str, dict[str, Any]] = {}
         self._listeners: list[Callable[[], None]] = []
         self._handles: dict[tuple[str, str], Callable[[], None]] = {}
+        # What a run couldn't do, for Try again and the tries planned later.
+        self._retry: dict[str, _Retry] = {}
         self._startup_unsubs: list[Callable[[], None]] = []
         self._health_unsub: Callable[[], None] | None = None
         # Today's event titles for each calendar a condition uses: entity -> (date, titles).
@@ -419,9 +474,13 @@ class HomeRoutinesCoordinator:
         self.hass.bus.async_fire(event_type, data)
 
     def _send_notification(
-        self, message: str, notification_id: str | None = None
+        self,
+        message: str,
+        notification_id: str | None = None,
+        *,
+        retry_routine: str | None = None,
     ) -> None:
-        self._spawn(self._notify(message, notification_id))
+        self._spawn(self._notify(message, notification_id, retry_routine))
 
     @staticmethod
     def _health_notification_id(routine_id: str) -> str:
@@ -440,16 +499,30 @@ class HomeRoutinesCoordinator:
         except Exception:  # noqa: BLE001
             _LOGGER.debug("Could not dismiss health notification for %s", routine_id)
 
-    async def _notify(self, message: str, notification_id: str | None = None) -> None:
+    async def _notify(
+        self,
+        message: str,
+        notification_id: str | None = None,
+        retry_routine: str | None = None,
+    ) -> None:
         for service in self.settings.get("notify_services") or []:
             if service == "notify.persistent_notification":
                 continue  # the Home Assistant notification below is always created
+            name = service.split(".", 1)[1]
+            payload: dict[str, Any] = {"title": "Daily Routine", "message": message}
+            if retry_routine and name.startswith("mobile_app_"):
+                # Only the Companion app shows buttons.
+                payload["data"] = {
+                    "actions": [
+                        {
+                            "action": f"{TRY_AGAIN_ACTION}{retry_routine}",
+                            "title": "Try again",
+                        }
+                    ]
+                }
             try:
                 await self.hass.services.async_call(
-                    "notify",
-                    service.split(".", 1)[1],
-                    {"title": "Daily Routine", "message": message},
-                    blocking=False,
+                    "notify", name, payload, blocking=False
                 )
             except Exception:  # noqa: BLE001
                 _LOGGER.debug("Could not call notify service %s", service)
@@ -532,6 +605,7 @@ class HomeRoutinesCoordinator:
                 else None
             ),
             "held": rt["held_run"] is not None,
+            "can_try_again": routine_id in self._retry,
             "waiting_for": self._unavailable_names(routine),
             "trigger": routine["trigger"],
             "days": routine["days"],
@@ -575,6 +649,11 @@ class HomeRoutinesCoordinator:
         self._calendar_unsub = async_track_time_interval(
             self.hass, self._on_calendar_interval, CALENDAR_REFRESH
         )
+        self._startup_unsubs.append(
+            self.hass.bus.async_listen(
+                "mobile_app_notification_action", self._on_notification_action
+            )
+        )
         self._notify_listeners()
         if self.hass.is_running:
             self._schedule_startup_catch_up()
@@ -585,6 +664,28 @@ class HomeRoutinesCoordinator:
                     lambda _event: self._schedule_startup_catch_up(),
                 )
             )
+
+    @callback
+    def _on_notification_action(self, event: Event) -> None:
+        action = str(event.data.get("action") or "")
+        if not action.startswith(TRY_AGAIN_ACTION):
+            return
+        routine_id = action[len(TRY_AGAIN_ACTION) :]
+        if self._find(routine_id) is None:
+            return
+
+        async def _try() -> None:
+            if not await (await async_get_access(self.hass)).async_allows_context(
+                event.context
+            ):
+                _LOGGER.warning(
+                    "Try again for routine %s was refused: that user can't use Daily Routine.",
+                    routine_id,
+                )
+                return
+            await self.async_try_again(routine_id)
+
+        self._spawn(_try())
 
     def _schedule_startup_catch_up(self) -> None:
         @callback
@@ -1749,6 +1850,29 @@ class HomeRoutinesCoordinator:
             return "partly_in_state", {"entity_id": remaining}, remaining
         return "would_run", None, entities
 
+    async def _call_service(
+        self,
+        domain: str,
+        service: str,
+        data: dict[str, Any],
+        target: dict[str, Any] | None,
+    ) -> BaseException | None:
+        """One call, within the step time limit (except scripts and the like, which
+        can rightly take longer). Returns the error, or None."""
+        limit = self.settings["step_timeout_seconds"]
+        try:
+            async with asyncio.timeout(
+                limit if limit and domain not in UNLIMITED_DOMAINS else None
+            ):
+                await self.hass.services.async_call(
+                    domain, service, data, blocking=True, target=target or None
+                )
+        except TimeoutError:
+            return TimeoutError(f"no answer within {limit} seconds")
+        except Exception as err:  # noqa: BLE001
+            return err
+        return None
+
     async def _call_with_retries(
         self,
         routine: dict[str, Any],
@@ -1756,26 +1880,25 @@ class HomeRoutinesCoordinator:
         service: str,
         data: dict[str, Any],
         target: dict[str, Any] | None,
-    ) -> None:
+    ) -> BaseException | None:
         attempts = 1 + routine["retries"]
         for attempt in range(1, attempts + 1):
-            try:
-                await self.hass.services.async_call(
-                    domain, service, data, blocking=True, target=target or None
-                )
-                return
-            except Exception:  # noqa: BLE001
-                if attempt == attempts:
-                    raise
-                _LOGGER.warning(
-                    "Routine '%s': %s.%s failed (attempt %d of %d), retrying.",
-                    routine["name"],
-                    domain,
-                    service,
-                    attempt,
-                    attempts,
-                )
-                await asyncio.sleep(RETRY_DELAY_SECONDS)
+            error = await self._call_service(domain, service, data, target)
+            if error is None:
+                return None
+            if attempt == attempts:
+                return error
+            _LOGGER.debug(
+                "Routine '%s': %s.%s failed (attempt %d of %d), retrying: %s",
+                routine["name"],
+                domain,
+                service,
+                attempt,
+                attempts,
+                _short_error(error),
+            )
+            await asyncio.sleep(RETRY_DELAY_SECONDS)
+        return None
 
     async def _execute_routine(
         self, routine: dict[str, Any], now: datetime, *, scheduled: bool
@@ -1842,10 +1965,157 @@ class HomeRoutinesCoordinator:
         self._notify_listeners()
         self._fire_event(EVENT_ROUTINE_STARTED, routine)
 
-        result = "success"
-        details: list[str] = []
+        run = await self._run_steps(
+            routine,
+            [(i, action, None) for i, action in enumerate(routine["actions"])],
+            now,
+            scheduled=scheduled,
+        )
+        if run is None:
+            return False  # held for an unavailable list
+        result = run.result
+
+        if (
+            scheduled
+            and result.startswith("conditions_failed_mid_run")
+            and self._wait_ends(routine, dt_util.now()) is not None
+        ):
+            # Stopped part way because a condition stopped passing: wait for it
+            # again and run the rest then (steps already done are skipped).
+            rt["last_run_date"] = ran_before
+            rt["last_result"] = result
+            self._record(rid, "failed", f"{result} – waiting to finish")
+            self._arm_pending(routine, dt_util.now())
+            self._fire_event(EVENT_ROUTINE_FINISHED, routine, result)
+            await self._async_save()
+            self._notify_listeners()
+            return False
+
+        await self._finish_run(routine, run, tries=0)
+        return result == "success"
+
+    async def _finish_run(
+        self, routine: dict[str, Any], run: _Run, *, tries: int
+    ) -> None:
+        """Record a run (or a later try), notify, and plan another try when one is due."""
+        rid = routine["id"]
+        rt = self._rt(rid)
+        self._drop_handle(rid, "retry_later")
+        self._retry.pop(rid, None)
+        result = run.result
+        rt["last_result"] = result
+        summary = "; ".join(run.details)
+        problems = "; ".join(f.text for f in run.failures)
+        later = (
+            bool(run.failures)
+            and routine["retry_later_minutes"] > 0
+            and tries < RETRY_LATER_TIMES
+            and not result.startswith("conditions_failed")
+        )
+        if run.failures:
+            # Kept for Try again, and for the try that's planned.
+            self._retry[rid] = _Retry(run.failures, run.stopped_at, tries)
+        if result == "success":
+            rt["state"] = "idle"
+            if tries:
+                self._record(rid, "ran", f"Tried again: done. {summary}".strip())
+                _LOGGER.info("Routine '%s' finished on a later try.", routine["name"])
+            else:
+                self._record(rid, "ran", summary)
+                _LOGGER.info("Routine '%s' completed.", routine["name"])
+            self._fire_event(EVENT_ROUTINE_FINISHED, routine, "success")
+            if tries and routine["notify_on_error"]:
+                self._send_notification(
+                    f"Routine '{routine['name']}' finished when it tried again."
+                )
+            elif routine["notify_on_run"]:
+                note = f" ({summary})" if summary else ""
+                self._send_notification(f"Routine '{routine['name']}' completed{note}.")
+        else:
+            rt["state"] = "error"
+            detail = problems or result
+            if later:
+                detail += f" – trying again in {routine['retry_later_minutes']} min"
+            self._record(rid, "failed", detail)
+            self._fire_event(EVENT_ROUTINE_FINISHED, routine, result)
+            if routine["notify_on_error"]:
+                message = f"Routine '{routine['name']}' failed: {problems or result}."
+                if later:
+                    minutes = routine["retry_later_minutes"]
+                    message += f" It tries again in {minutes} minutes."
+                self._send_notification(
+                    message, retry_routine=rid if run.failures else None
+                )
+        if later:
+            self._plan_retry(routine, tries + 1)
+        await self._async_save()
+        self._notify_listeners()
+
+    def _plan_retry(self, routine: dict[str, Any], tries: int) -> None:
+        rid = routine["id"]
+
+        @callback
+        def _due(_now: datetime) -> None:
+            self._drop_handle(rid, "retry_later")
+            self._spawn(self.async_try_again(rid, tries=tries))
+
+        self._set_handle(
+            rid,
+            "retry_later",
+            async_call_later(self.hass, routine["retry_later_minutes"] * 60, _due),
+        )
+
+    async def async_try_again(self, routine_id: str, *, tries: int = 0) -> bool:
+        """Try what failed again: the devices a step couldn't change, then the steps
+        after it that didn't run. With nothing kept (after a restart), run it again."""
+        routine = self._find(routine_id)
+        if routine is None:
+            raise vol.Invalid(f"No routine with id '{routine_id}'.")
+        retry = self._retry.get(routine_id)
+        if retry is None:
+            return await self.async_run(routine_id)
+        if not routine["enabled"]:
+            self._retry.pop(routine_id, None)
+            return False
+        now = dt_util.now()
+        ok, reason = self._check(routine, now)
+        if not ok:
+            self._drop_handle(routine_id, "retry_later")
+            self._retry.pop(routine_id, None)
+            self._record(routine_id, "skipped", f"Didn't try again: {reason}")
+            self._notify_listeners()
+            return False
+        steps: list[tuple[int, dict[str, Any], dict[str, Any] | None]] = [
+            (f.index, routine["actions"][f.index], f.target)
+            for f in retry.failures
+            if f.index < len(routine["actions"])
+        ]
+        if retry.stopped_at is not None:
+            steps += [
+                (i, routine["actions"][i], None)
+                for i in range(retry.stopped_at + 1, len(routine["actions"]))
+            ]
+        rt = self._rt(routine_id)
+        rt["state"] = "running"
+        self._notify_listeners()
+        run = await self._run_steps(routine, steps, now, scheduled=False)
+        if run is None:
+            return False
+        await self._finish_run(routine, run, tries=tries or (retry.tries + 1))
+        return run.result == "success"
+
+    async def _run_steps(
+        self,
+        routine: dict[str, Any],
+        steps: list[tuple[int, dict[str, Any], dict[str, Any] | None]],
+        now: datetime,
+        *,
+        scheduled: bool,
+    ) -> _Run | None:
+        """Run steps in order. None: held for an unavailable list (nothing done yet)."""
+        run = _Run()
         acted = False
-        for action in routine["actions"]:
+        for index, action, only in steps:
             ok, reason = self._check(routine, dt_util.now())
             if not ok:
                 _LOGGER.warning(
@@ -1853,7 +2123,7 @@ class HomeRoutinesCoordinator:
                     routine["name"],
                     reason,
                 )
-                result = f"conditions_failed_mid_run:{reason}"
+                run.result = f"conditions_failed_mid_run:{reason}"
                 break
 
             if "delay" in action:
@@ -1875,7 +2145,7 @@ class HomeRoutinesCoordinator:
                     and routine["wait_when_unavailable"]
                     and self._hold_if_unavailable(routine, now, force=True)
                 ):
-                    return False
+                    return None
                 acted = True
                 if outcome in FAILED_OUTCOMES:
                     _LOGGER.warning(
@@ -1885,12 +2155,16 @@ class HomeRoutinesCoordinator:
                         step["list"],
                         outcome,
                     )
-                    result = f"error:todo_{outcome}"
+                    run.result = f"error:todo_{outcome}"
                     break
-                details.append(f"{step['item']}: {TODO_OUTCOME_TEXT[outcome]}")
+                run.details.append(f"{step['item']}: {TODO_OUTCOME_TEXT[outcome]}")
                 continue
 
-            outcome, override, _entities = self._plan_action(routine, action)
+            override: dict[str, Any] | None
+            if only is not None:
+                outcome, override = "would_run", only
+            else:
+                outcome, override, _entities = self._plan_action(routine, action)
             if outcome == "already_in_state":
                 _LOGGER.debug(
                     "Routine '%s': %s already done, skipped",
@@ -1906,60 +2180,139 @@ class HomeRoutinesCoordinator:
                     routine["name"],
                     action["service"],
                 )
-                result = f"missing_service:{action['service']}"
+                run.result = f"missing_service:{action['service']}"
                 break
-            target = override if override is not None else action.get("target")
             acted = True
-            try:
-                await self._call_with_retries(
-                    routine, domain, service, dict(action.get("data") or {}), target
-                )
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception(
-                    "Routine '%s': %s failed.", routine["name"], action["service"]
-                )
-                result = f"error:{action['service']}"
-                break
+            failure = await self._run_service_step(routine, index, action, override)
+            if failure is None:
+                continue
+            run.failures.append(failure)
+            if routine["on_step_error"] == "continue":
+                continue
+            run.result = f"error:{action['service']}"
+            run.stopped_at = index
+            break
 
-        if (
-            scheduled
-            and result.startswith("conditions_failed_mid_run")
-            and self._wait_ends(routine, dt_util.now()) is not None
-        ):
-            # Stopped part way because a condition stopped passing: wait for it
-            # again and run the rest then (steps already done are skipped).
-            rt["last_run_date"] = ran_before
-            rt["last_result"] = result
-            self._record(rid, "failed", f"{result} – waiting to finish")
-            self._arm_pending(routine, dt_util.now())
-            self._fire_event(EVENT_ROUTINE_FINISHED, routine, result)
-            await self._async_save()
-            self._notify_listeners()
-            return False
+        if run.failures and run.result == "success":
+            run.result = f"error:{run.failures[0].service}"
+        return run
 
-        rt["last_result"] = result
-        summary = "; ".join(details)
-        self._record(
-            rid,
-            "ran" if result == "success" else "failed",
-            summary if result == "success" else result,
-        )
-        if result == "success":
-            rt["state"] = "idle"
-            _LOGGER.info("Routine '%s' completed.", routine["name"])
-            self._fire_event(EVENT_ROUTINE_FINISHED, routine, "success")
-            if routine["notify_on_run"]:
-                note = f" ({summary})" if summary else ""
-                self._send_notification(f"Routine '{routine['name']}' completed{note}.")
+    async def _run_service_step(
+        self,
+        routine: dict[str, Any],
+        index: int,
+        action: dict[str, Any],
+        override: dict[str, Any] | None,
+    ) -> _Failure | None:
+        """Call one step's action. With several devices, a failed call is tried device
+        by device, so the ones that answer still change. Afterwards, devices that should
+        now be on, off, open, closed or locked are checked."""
+        domain, service = action["service"].split(".", 1)
+        data = dict(action.get("data") or {})
+        target = override if override is not None else action.get("target")
+        entities = self._resolve_targets(target or {}, domain)
+        failed: dict[str, str] = {}
+        if len(entities) > 1:
+            error = await self._call_service(domain, service, data, target)
+            if error is not None:
+                _LOGGER.debug(
+                    "Routine '%s': %s failed for the group (%s), trying each device.",
+                    routine["name"],
+                    action["service"],
+                    _short_error(error),
+                )
+                for entity_id in entities:
+                    error = await self._call_with_retries(
+                        routine, domain, service, data, {"entity_id": [entity_id]}
+                    )
+                    if error is not None:
+                        failed[entity_id] = _short_error(error)
         else:
-            rt["state"] = "error"
-            self._fire_event(EVENT_ROUTINE_FINISHED, routine, result)
-            if routine["notify_on_error"]:
-                self._send_notification(f"Routine '{routine['name']}' failed: {result}")
+            error = await self._call_with_retries(
+                routine, domain, service, data, target
+            )
+            if error is not None:
+                if not entities:
+                    self._log_step_error(routine, action, error)
+                    return _Failure(
+                        index,
+                        action["service"],
+                        None,
+                        f"{action['service']} didn't work",
+                    )
+                failed[entities[0]] = _short_error(error)
 
-        await self._async_save()
-        self._notify_listeners()
-        return result == "success"
+        wanted = DESIRED_STATE.get(action["service"])
+        verify = self.settings["verify_seconds"]
+        if wanted and verify:
+            check = [e for e in entities if e not in failed]
+            stuck = await self._wait_for_state(check, wanted, verify)
+            for entity_id in stuck:
+                # Sent, but it didn't change: send it once more.
+                await self._call_service(
+                    domain, service, data, {"entity_id": [entity_id]}
+                )
+            for entity_id in await self._wait_for_state(stuck, wanted, verify):
+                failed[entity_id] = "didn't change"
+
+        if not failed:
+            return None
+        names = [self._entity_name(e) for e in failed]
+        for entity_id, why in failed.items():
+            _LOGGER.warning(
+                "Routine '%s': %s %s (%s).",
+                routine["name"],
+                self._entity_name(entity_id),
+                "didn't change" if why == "didn't change" else "couldn't be reached",
+                f"{action['service']}"
+                if why == "didn't change"
+                else f"{action['service']}: {why}",
+            )
+        reached = [
+            n
+            for e, n in zip(failed, names, strict=True)
+            if failed[e] != "didn't change"
+        ]
+        unchanged = [
+            n
+            for e, n in zip(failed, names, strict=True)
+            if failed[e] == "didn't change"
+        ]
+        parts = []
+        if reached:
+            parts.append(f"{_join(reached)} couldn't be reached")
+        if unchanged:
+            parts.append(f"{_join(unchanged)} didn't change")
+        return _Failure(
+            index, action["service"], {"entity_id": list(failed)}, "; ".join(parts)
+        )
+
+    def _log_step_error(
+        self, routine: dict[str, Any], action: dict[str, Any], error: BaseException
+    ) -> None:
+        _LOGGER.warning(
+            "Routine '%s': %s failed (%s).",
+            routine["name"],
+            action["service"],
+            _short_error(error),
+            exc_info=error if _LOGGER.isEnabledFor(logging.DEBUG) else None,
+        )
+
+    def _entity_name(self, entity_id: str) -> str:
+        state = self.hass.states.get(entity_id)
+        return state.name if state is not None else entity_id
+
+    async def _wait_for_state(
+        self, entities: list[str], wanted: str, seconds: float
+    ) -> list[str]:
+        """Wait up to that long for the devices to reach the state; return the ones that didn't."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + seconds
+        while True:
+            left = [e for e in entities if not self._state_is(e, wanted)]
+            if not left or loop.time() >= deadline:
+                return left
+            await asyncio.sleep(VERIFY_POLL_SECONDS)
 
     def paused_until(self, routine: dict[str, Any]) -> str | None:
         """The day a routine is paused through; a turn-off routine follows its routine."""
@@ -2204,6 +2557,8 @@ def _companion_for(routine: dict[str, Any]) -> dict[str, Any] | None:
         "days": routine["days"],
         "actions": actions,
         "retries": routine["retries"],
+        "on_step_error": routine["on_step_error"],
+        "retry_later_minutes": routine["retry_later_minutes"],
         "notify_on_error": routine["notify_on_error"],
         "companion_of": routine["id"],
     }

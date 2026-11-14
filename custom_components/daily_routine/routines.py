@@ -109,6 +109,18 @@ def normalize_time(value: Any) -> str:
     return f"{hour:02d}:{minute:02d}:{second:02d}"
 
 
+ON_STEP_ERROR = ("stop", "continue")
+DEFAULT_RETRY_LATER_MINUTES = 5
+MAX_RETRY_LATER_MINUTES = 120
+
+
+def _on_step_error(value: Any) -> str:
+    value = value or "stop"
+    if value not in ON_STEP_ERROR:
+        raise vol.Invalid("If a step fails must be stop or continue.")
+    return str(value)
+
+
 def parse_delay(value: Any) -> float:
     """Delay as seconds (number), 'SS', 'MM:SS' or 'HH:MM:SS'."""
     if isinstance(value, bool):
@@ -539,6 +551,15 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
             raw.get("catch_up_minutes"), 0, MAX_CATCH_UP_MINUTES, "Catch-up"
         ),
         "retries": _int(raw.get("retries"), 0, MAX_RETRIES, "Retries"),
+        # When a step can't change a device: go on with the rest, or stop there.
+        "on_step_error": _on_step_error(raw.get("on_step_error")),
+        # Try the devices a step couldn't change again this many minutes later (0: no).
+        "retry_later_minutes": _int(
+            raw.get("retry_later_minutes", DEFAULT_RETRY_LATER_MINUTES),
+            0,
+            MAX_RETRY_LATER_MINUTES,
+            "Try again after",
+        ),
         "wait": _wait_mode(raw.get("wait")),
         "wait_until": normalize_time(raw.get("wait_until") or "12:00:00"),
         "skip_noop": bool(raw.get("skip_noop", True)),

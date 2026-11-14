@@ -204,6 +204,7 @@ def async_setup_panel_api(hass: HomeAssistant) -> None:
         ws_preview_routine,
         ws_set_paused,
         ws_skip_next,
+        ws_try_again,
         ws_pause_until,
         ws_save_settings,
         ws_status,
@@ -357,6 +358,29 @@ async def ws_delete_routine(
         return
     await coordinator.async_delete_routine(msg["routine_id"])
     connection.send_result(msg["id"], {"ok": True})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/routine/try_again",
+        vol.Required("routine_id"): str,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_try_again(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    try:
+        done = await coordinator.async_try_again(msg["routine_id"])
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "not_found", str(err))
+        return
+    connection.send_result(msg["id"], {"done": done})
 
 
 @websocket_api.websocket_command(

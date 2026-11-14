@@ -265,8 +265,12 @@ const TIMING_FIELDS = [
   ["health_check_minutes", "Health check every (minutes)", "How often every routine's devices and lists are checked", 1, 60],
   ["health_alert_seconds", "Health alert delay (seconds)", "How long a problem must last before it is announced", 0, 600],
   ["startup_quiet_minutes", "Startup quiet period (minutes)", "No health alerts for this long after Home Assistant starts", 0, 60],
+  ["step_timeout_seconds", "Give up on a device after (seconds)", "How long a step waits for a device that doesn't answer (0 = no limit). Scripts aren't limited", 0, 600],
+  ["verify_seconds", "Check a step worked within (seconds)", "After turning something on or off, opening, closing or locking it, how long to wait for it to change (0 = don't check)", 0, 120],
 ];
-const TIMING_DEFAULTS = { list_wait_seconds: 30, health_check_minutes: 15, health_alert_seconds: 60, startup_quiet_minutes: 5 };
+const TIMING_DEFAULTS = { list_wait_seconds: 30, health_check_minutes: 15, health_alert_seconds: 60, startup_quiet_minutes: 5, step_timeout_seconds: 30, verify_seconds: 10 };
+// Try a device that couldn't be changed again after this many minutes.
+const RETRY_LATER_CHOICES = [0, 2, 5, 10, 15, 30, 60];
 
 function catchUpLabel(minutes) {
   if (minutes === 0) return "Don't run it late";
@@ -698,6 +702,7 @@ class DailyRoutinePanel extends HTMLElement {
       conditions_match: routine.conditions_match || "all", repeat: routine.repeat,
       wait: routine.wait || "day", wait_until: hhmm(routine.wait_until || "12:00:00"),
       catch_up_minutes: routine.catch_up_minutes, retries: routine.retries, skip_noop: routine.skip_noop,
+      on_step_error: routine.on_step_error || "stop", retry_later_minutes: routine.retry_later_minutes ?? 5,
       notify_on_run: routine.notify_on_run, notify_on_skip: routine.notify_on_skip, notify_on_error: routine.notify_on_error,
       notify_on_health: Boolean(routine.notify_on_health),
       wait_when_unavailable: Boolean(routine.wait_when_unavailable),
@@ -803,6 +808,8 @@ class DailyRoutinePanel extends HTMLElement {
       repeat: draft.repeat,
       catch_up_minutes: Number(draft.catch_up_minutes) || 0,
       retries: Number(draft.retries) || 0,
+      on_step_error: draft.on_step_error === "continue" ? "continue" : "stop",
+      retry_later_minutes: Number(draft.retry_later_minutes) || 0,
       skip_noop: draft.skip_noop,
       notify_on_run: draft.notify_on_run,
       notify_on_skip: draft.notify_on_skip,
@@ -859,6 +866,11 @@ class DailyRoutinePanel extends HTMLElement {
         case "run": {
           const result = await this._call({ type: `${DOMAIN}/routine/run`, routine_id: el.dataset.id });
           this._showNotice(result.ran ? "Routine ran." : "Did not run – its conditions are not met right now.", !result.ran);
+          break;
+        }
+        case "try-again": {
+          const result = await this._call({ type: `${DOMAIN}/routine/try_again`, routine_id: el.dataset.id });
+          this._showNotice(result.done ? "Tried again: done." : "Tried again, but it still didn't work. See the routine's recent runs.", !result.done);
           break;
         }
         case "duplicate": {
@@ -1340,6 +1352,7 @@ class DailyRoutinePanel extends HTMLElement {
       </div>
       <div class="row-actions">
         <button class="ghost" data-act="run" data-id="${esc(routine.id)}">Run now</button>
+        ${status.can_try_again ? `<button class="ghost" data-act="try-again" data-id="${esc(routine.id)}">Try again</button>` : ""}
         <button class="ghost" data-act="skip-next" data-id="${esc(routine.id)}" data-skip="${routine.skip_next ? "" : "1"}">${routine.skip_next ? "Don't skip" : "Skip next run"}</button>
         <button class="ghost" data-act="edit" data-id="${esc(routine.id)}">Edit</button>
         <button class="ghost" data-act="duplicate" data-id="${esc(routine.id)}">Duplicate</button>
@@ -1953,6 +1966,15 @@ class DailyRoutinePanel extends HTMLElement {
         <label class="check"><input type="checkbox" data-f="skip_noop" ${d.skip_noop ? "checked" : ""}> Skip steps that are already done</label>
         ${this._catchUpField(d.catch_up_minutes)}
         <label>Retry a failed step (times)<input type="number" min="0" max="3" data-f="retries" value="${esc(d.retries)}"></label>
+        <label>If a step can't change a device
+          <select data-f="on_step_error">
+            <option value="stop" ${d.on_step_error !== "continue" ? "selected" : ""}>Stop there</option>
+            <option value="continue" ${d.on_step_error === "continue" ? "selected" : ""}>Keep going with the other steps</option>
+          </select>
+        </label>
+        <label>Try that device again later
+          <select data-f="retry_later_minutes">${RETRY_LATER_CHOICES.map((m) => `<option value="${m}" ${Number(d.retry_later_minutes) === m ? "selected" : ""}>${m ? `After ${m} minutes (up to 3 times)` : "No"}</option>`).join("")}</select>
+        </label>
         <h4>Skip for now</h4>
         <label class="check"><input type="checkbox" data-f="skip_next" ${d.skip_next ? "checked" : ""}> Skip the next run (it runs as usual after that)</label>
         <label>Pause until (the last day it's skipped)<input type="date" data-f="paused_until" value="${esc(d.paused_until || "")}"></label>

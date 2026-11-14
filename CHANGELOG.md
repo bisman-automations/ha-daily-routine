@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.18.0] - 2026-11-14
+
+### Added
+
+- **One device that doesn't answer no longer spoils the step.** When a step turns several devices on or off and one can't be reached (for example a Bluetooth switch out of range), the others still change, and only that device is reported, by name: "Hall light couldn't be reached".
+- **Choose what happens next.** A new setting on each routine, **If a step can't change a device**: **Stop there** (the default, as before) or **Keep going with the other steps**, which suits routines like turning everything off when everyone leaves.
+- **Tries again later.** The devices that couldn't be changed are tried again after 5 minutes, then any steps that were stopped, up to 3 times. Each try checks the routine's conditions first. Change the wait, or turn it off, with **Try that device again later**.
+- **Try again button.** A routine that couldn't change a device shows **Try again** on its card, and a failure message sent to the Companion app has a **Try again** button too.
+- **Checks that it worked.** After turning something on or off, opening, closing or locking it, Daily Routine waits up to 10 seconds for the device to show the change, and sends the command once more if it didn't. A device that still didn't change is reported: "Porch light didn't change". Set the time, or turn the check off, under **Settings → Timing**.
+
+### Changed
+
+- **A device that doesn't answer is given up on after 30 seconds** (each try), instead of holding the routine for as long as the device's integration keeps trying. Scripts aren't limited. Set it under **Settings → Timing**.
+- **A failed step is one line in the log**, naming the device and why, instead of a long error. Turn on debug logging for the full details.
+
 ## [1.17.2] - 2026-11-13
 
 ### Changed
@@ -316,6 +331,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.18.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.17.2...v1.18.0
 [1.17.2]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.17.1...v1.17.2
 [1.17.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.17.0...v1.17.1
 [1.17.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.16.0...v1.17.0

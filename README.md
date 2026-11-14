@@ -27,6 +27,7 @@
 - **Dry run.** *Test* shows exactly what a routine would do right now, without touching any device.
 - **Pause switch.** *Pause all routines* stops every automatic run. Manual runs still work.
 - **Skips no-op steps.** A "lights off" step does nothing if the lights are already off.
+- **Copes with devices that don't answer.** When one device in a step can't be reached, the others still change. It's tried again a few minutes later, and your phone's failure message has a **Try again** button. After turning something on or off, Daily Routine checks it really changed.
 - **Retries and catch-up.** Retry a failed step, and run a missed time-based routine if Home Assistant restarted a few minutes late.
 - **Extra conditions.** Run only when the conditions hold: who is home or away, sensors quiet or active for a while, or an entity in a given state (for example guest mode is off).
 - **Notifications** on run, skip, or failure (failures are on by default).
@@ -179,7 +180,7 @@ The history is saved with Home Assistant, keeps the last 30 days, and is removed
 - **People in routines.** Turn off the profiles that aren't people, such as a shared display, so they don't appear when you build a routine. A routine that already uses someone keeps them.
 - **Notifications.** Routine runs, skips and failures always appear in Home Assistant's notifications. Tick any phones or devices, shown by name, to send them there too. Any number can be selected.
 - **Who can see Daily Routine.** Admins always can. Routines show who's home and when, so anyone else only sees them once an admin checks their name here. Home Assistant can't show a sidebar entry to only some people, so once anyone who isn't an admin is checked, everyone sees Daily Routine in the sidebar, and people who aren't checked get a page saying they don't have access. Only admins can change routines and settings.
-- **Timing.** Four values apply to every routine: how long a to-do step waits for a list that is still loading (default 30 seconds), how often the health check runs (default every 15 minutes), how long a problem must last before it is announced (default 60 seconds), and a startup quiet period with no health alerts (default 5 minutes). Raise the list wait if a cloud list such as iCloud takes a while to load after a restart.
+- **Timing.** These apply to every routine: how long a to-do step waits for a list that is still loading (default 30 seconds), how often the health check runs (default every 15 minutes), how long a problem must last before it is announced (default 60 seconds), a startup quiet period with no health alerts (default 5 minutes), how long a step waits for a device that doesn't answer (default 30 seconds; scripts aren't limited), and how long to wait for a device to show it turned on or off, opened, closed or locked (default 10 seconds; a device that didn't change gets the command once more). Raise the list wait if a cloud list such as iCloud takes a while to load after a restart.
 
 ## Routine reference
 
@@ -201,7 +202,9 @@ The history is saved with Home Assistant, keeps the last 30 days, and is removed
 | Run every time | Run on every trigger, not once a day (default on for presence and room triggers) |
 | Skip steps already done | Skip a step whose devices are already in the target state (default on) |
 | Catch up | If Home Assistant was restarting when a time routine was due, still run it once it is back, within a window of up to 3 hours ("Don't run it late" turns this off). Home Assistant gets about 30 seconds to load, then the routine runs as soon as it can. If a condition blocks it, it is retried each minute until the window closes |
-| Retry | Retry a failed step up to 3 times |
+| Retry | Retry a failed step straight away, up to 3 times |
+| If a step can't change a device | **Stop there** (the default) skips the rest of the steps, for routines where a later step depends on an earlier one. **Keep going with the other steps** runs them anyway, which suits routines like turning everything off when everyone leaves. Either way, a step with several devices still changes the ones that answer, and the run is marked failed, naming the devices that didn't |
+| Try that device again later | After 5 minutes (the default), or 2 to 60 minutes, or No. The devices that couldn't be changed are tried again, then any steps that were stopped, up to 3 times. Each try checks the conditions first and gives up if they no longer hold. The card shows **Try again** too, and so does a failure message sent to the Companion app |
 | Skip the next run | The next time the routine would run on its own, it doesn't, and then it carries on as usual. Also on each routine's card: **Skip next run** |
 | Pause until | The routine doesn't run on its own through this day, then carries on. **Run now** still works. To pause many routines at once while you're away, use **Going away?** on the Routines tab |
 | Wait for an unavailable list or device | Off by default. When a to-do list (or the device the routine watches) is unavailable when the routine should run, for example while iCloud is having trouble, the run waits instead of failing. The card shows **Waiting for list**, and the routine runs as soon as the list is back. You aren't told it needs attention unless the list stays unavailable for a whole day; then the waiting run is dropped (and you're told it was skipped, if **On skip** is on). A list that is gone from Home Assistant altogether is still announced right away. A waiting run is forgotten if Home Assistant restarts |

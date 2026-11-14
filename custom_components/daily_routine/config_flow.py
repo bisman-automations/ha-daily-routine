@@ -114,6 +114,8 @@ def _form_from_routine(routine: dict[str, Any]) -> dict[str, Any]:
         "wait_until": routine["wait_until"][:5],
         "catch_up_minutes": routine["catch_up_minutes"],
         "retries": routine["retries"],
+        "on_step_error": routine["on_step_error"],
+        "retry_later_minutes": routine["retry_later_minutes"],
         "repeat": routine["repeat"],
         "skip_noop": routine["skip_noop"],
         "notify_on_run": routine["notify_on_run"],
@@ -164,6 +166,8 @@ def _routine_from_form(
         "wait_until": _hhmmss(values.get("wait_until") or "12:00"),
         "catch_up_minutes": int(values.get("catch_up_minutes") or 0),
         "retries": int(values.get("retries") or 0),
+        "on_step_error": values.get("on_step_error") or "stop",
+        "retry_later_minutes": int(values.get("retry_later_minutes") or 0),
         "repeat": bool(values.get("repeat")),
         "skip_noop": bool(values.get("skip_noop")),
         "notify_on_run": bool(values.get("notify_on_run")),
@@ -295,6 +299,18 @@ def _form_schema(hass: Any, values: dict[str, Any]) -> vol.Schema:
                 "catch_up_minutes", default=values.get("catch_up_minutes") or 0
             ): number(0, 180),
             vol.Required("retries", default=values.get("retries") or 0): number(0, 3),
+            vol.Required(
+                "on_step_error", default=values.get("on_step_error") or "stop"
+            ): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=["stop", "continue"],
+                    translation_key="on_step_error",
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Required(
+                "retry_later_minutes", default=values.get("retry_later_minutes", 5)
+            ): number(0, 120),
             vol.Required("repeat", default=bool(values.get("repeat"))): bool,
             vol.Required(
                 "skip_noop", default=bool(values.get("skip_noop", True))
