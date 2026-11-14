@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.21.1] - 2026-11-14
+
+### Changed
+
+- **Renaming an entity keeps it running.** From Home Assistant 2026.11, when you change one of this integration's entity IDs, the entity moves to its new ID in place instead of being removed and added again, as Home Assistant now expects. Everything keeps working the same.
+
 ## [1.21.0] - 2026-11-14
 
 ### Added
@@ -369,6 +375,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.21.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.21.0...v1.21.1
 [1.21.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.20.0...v1.21.0
 [1.20.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.19.0...v1.20.0
 [1.19.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.18.0...v1.19.0
