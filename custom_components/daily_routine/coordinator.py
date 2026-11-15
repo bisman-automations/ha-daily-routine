@@ -56,7 +56,11 @@ from .const import (
     SIGNAL_ROUTINES_CHANGED,
     STORAGE_KEY,
     STORAGE_VERSION,
+    TRIGGER_ALARM,
+    TRIGGER_CALENDAR_EVENT,
+    TRIGGER_CHEAPEST,
     TRIGGER_EVERYONE_LEAVES,
+    TRIGGER_FORECAST,
     TRIGGER_MODE,
     TRIGGER_PERSON_ARRIVES,
     TRIGGER_PERSON_LEAVES,
@@ -71,11 +75,20 @@ from .const import (
 )
 from .linked import linked_groups
 from .lived_in import LivedIn, clean_settings as clean_lived_in
+from .planned import (
+    alarm_time,
+    cheapest_start,
+    event_starts,
+    forecast_matches,
+    price_slots,
+)
 from .progress import step_label
+from .reliability import DeviceStats
 from .routines import (
     DESIRED_STATE,
     MODES,
     PER_PERSON_TRIGGERS,
+    PLANNED_TRIGGERS,
     PRESENCE_TRIGGERS,
     STATE_TRIGGERS,
     TODO_DONE_TRIGGERS,
@@ -188,6 +201,9 @@ CALENDAR_TIMEOUT_SECONDS = 20
 _CHAIN: ContextVar[tuple[str, ...]] = ContextVar("daily_routine_chain", default=())
 # Minutes in a "wait until" step (tests make it shorter).
 SECONDS_PER_MINUTE = 60
+# "Ask me first": the phone notification's buttons, plus the routine id.
+ASK_RUN_ACTION = "DAILY_ROUTINE_ASK_RUN_"
+ASK_SKIP_ACTION = "DAILY_ROUTINE_ASK_SKIP_"
 # A step's "only if" in words, for the run's details.
 ONLY_IF_SKIPPED = "skipped, its condition wasn't met"
 
@@ -243,6 +259,12 @@ H_VALUE = "value"
 H_HOLD = "state_hold"
 H_STATE = "state_trigger"
 H_DONE = "todo_done"
+H_PLANNED = "planned_source"
+H_FORECAST = "forecast"
+# How far ahead calendars are read for "before an event" triggers.
+EVENTS_AHEAD = timedelta(days=3)
+# How often the weather forecast is read for forecast triggers.
+FORECAST_EVERY = timedelta(minutes=30)
 H_HEALTH = "health"
 H_HEALTH_TIMER = "health_timer"
 H_EXPIRE = "expire"
@@ -442,6 +464,8 @@ class HomeRoutinesCoordinator:
             "notify_services": [],
             "integration_order": [],
             "lived_in": clean_lived_in(None),
+            # Which routine editor opens: simple (a sentence) or full.
+            "editor": "simple",
             **{key: default for key, (default, *_rest) in TIMING_SETTINGS.items()},
         }
         self.lived_in = LivedIn(self)
@@ -450,6 +474,9 @@ class HomeRoutinesCoordinator:
         # A routine's other triggers, each watched like a routine of its own
         # ("<id>~2"); when one fires, the routine itself runs.
         self._aliases: dict[str, dict[str, Any]] = {}
+        # Coming events of the calendars "before an event" triggers use.
+        self._upcoming: dict[str, list[dict[str, Any]]] = {}
+        self._forecast_unsub: Callable[[], None] | None = None
         # How things were just before each routine's last run, for Undo (in memory).
         self._undo: dict[str, dict[str, Any]] = {}
         self._listeners: list[Callable[[], None]] = []
@@ -473,6 +500,9 @@ class HomeRoutinesCoordinator:
             hass, STORAGE_VERSION, STORAGE_KEY
         )
         self.run_log = RunLog(hass)
+        self.device_stats = DeviceStats(hass)
+        # Runs waiting for an answer to "Ask me first": routine id -> answer.
+        self._asks: dict[str, asyncio.Future[str]] = {}
 
     # ----- helpers -----
 
@@ -699,6 +729,7 @@ class HomeRoutinesCoordinator:
             "progress": rt["progress"] if rt["state"] == "running" else None,
             "can_try_again": routine_id in self._retry,
             "can_undo": self.can_undo(routine_id),
+            "ask_until": rt.get("ask_until"),
             "waiting_for": self._unavailable_names(routine),
             "trigger": routine["trigger"],
             "days": routine["days"],
@@ -711,6 +742,7 @@ class HomeRoutinesCoordinator:
     async def async_setup(self) -> None:
         """Load stored routines and settings. Scheduling starts in async_start."""
         await self.run_log.async_load()
+        await self.device_stats.async_load()
         data = await self._store.async_load() or {}
         self.paused = bool(data.get("paused", False))
         self.migrated = bool(data.get("migrated", False))
@@ -733,6 +765,7 @@ class HomeRoutinesCoordinator:
                 d for d in saved.get("integration_order") or [] if isinstance(d, str)
             ],
             "lived_in": _lived_in_or_default(saved.get("lived_in")),
+            "editor": "full" if saved.get("editor") == "full" else "simple",
             **{key: _timing_value(saved.get(key), key) for key in TIMING_SETTINGS},
         }
         for raw in data.get("routines", []):
@@ -752,6 +785,11 @@ class HomeRoutinesCoordinator:
         self._started_at = dt_util.utcnow()
         self._schedule_health_interval()
         self.lived_in.start()
+        self._forecast_unsub = async_track_time_interval(
+            self.hass, self._check_forecasts, FORECAST_EVERY
+        )
+        await self._refresh_upcoming()
+        await self._check_forecasts()
         await self.voice.async_start()
         self._calendar_unsub = async_track_time_interval(
             self.hass, self._on_calendar_interval, CALENDAR_REFRESH
@@ -779,6 +817,10 @@ class HomeRoutinesCoordinator:
             routine_id, what = action[len(TRY_AGAIN_ACTION) :], "Try again"
         elif action.startswith(SKIP_ACTION):
             routine_id, what = action[len(SKIP_ACTION) :], "Skip"
+        elif action.startswith(ASK_RUN_ACTION):
+            routine_id, what = action[len(ASK_RUN_ACTION) :], "Run"
+        elif action.startswith(ASK_SKIP_ACTION):
+            routine_id, what = action[len(ASK_SKIP_ACTION) :], "Don't run"
         else:
             return
         if self._find(routine_id) is None:
@@ -796,6 +838,8 @@ class HomeRoutinesCoordinator:
                 return
             if what == "Skip":
                 await self.async_skip_next(routine_id, True)
+            elif what in ("Run", "Don't run"):
+                self.async_answer(routine_id, what == "Run")
             else:
                 await self.async_try_again(routine_id)
 
@@ -827,6 +871,9 @@ class HomeRoutinesCoordinator:
         self._drop_all_handles()
         self.lived_in.stop()
         self.voice.stop()
+        if self._forecast_unsub is not None:
+            self._forecast_unsub()
+            self._forecast_unsub = None
         if save:
             await self._async_save()
 
@@ -862,6 +909,18 @@ class HomeRoutinesCoordinator:
             c not in self._calendar_days for r in self.routines for c in _calendars(r)
         ):
             self._spawn(self._refresh_calendars())
+        if any(
+            r["trigger"] == TRIGGER_CALENDAR_EVENT
+            and r["watch_entity"] not in self._upcoming
+            for r in [*self.routines, *self._aliases.values()]
+        ):
+            self._spawn(self._refresh_upcoming())
+        if any(
+            r["trigger"] == TRIGGER_FORECAST
+            and self._rt(r["id"]).get("forecast_hit") is None
+            for r in [*self.routines, *self._aliases.values()]
+        ):
+            self._spawn(self._check_forecasts())
 
     # ----- editing (used by the panel, services and migration) -----
 
@@ -1107,11 +1166,15 @@ class HomeRoutinesCoordinator:
         ):
             raise vol.Invalid("The integration order must be a list of integrations.")
         lived_in = clean_lived_in(raw.get("lived_in", self.settings["lived_in"]))
+        editor = raw.get("editor", self.settings.get("editor", "simple"))
+        if editor not in ("simple", "full"):
+            raise vol.Invalid("The editor is simple or full.")
         self.settings = {
             "hidden_people": sorted(set(hidden)),
             "notify_services": sorted(set(services)),
             "integration_order": list(dict.fromkeys(order)),
             "lived_in": lived_in,
+            "editor": editor,
             **timing,
         }
         self.spawn(self.lived_in.async_step(dt_util.now()))
@@ -1230,6 +1293,7 @@ class HomeRoutinesCoordinator:
 
     async def _on_calendar_interval(self, _now: datetime) -> None:
         await self._refresh_calendars()
+        await self._refresh_upcoming()
 
     async def _refresh_calendars(self) -> None:
         """Read today's events from every calendar a condition uses."""
@@ -1628,6 +1692,8 @@ class HomeRoutinesCoordinator:
         if not routine["enabled"]:
             return None
         trigger = routine["trigger"]
+        if trigger in PLANNED_TRIGGERS:
+            return self._next_planned(routine, after)
         if trigger not in (TRIGGER_TIME, TRIGGER_SUNRISE, TRIGGER_SUNSET):
             return None
         offset = timedelta(minutes=routine["offset_minutes"])
@@ -1663,6 +1729,187 @@ class HomeRoutinesCoordinator:
             if candidate > after and self._allowed_day(routine, base):
                 return candidate
             cursor = event_dt + timedelta(minutes=1)
+        return None
+
+    def _next_planned(
+        self, routine: dict[str, Any], after: datetime
+    ) -> datetime | None:
+        """The next run of a trigger planned from another entity."""
+        trigger = routine["trigger"]
+        offset = timedelta(minutes=routine["offset_minutes"])
+        if trigger == TRIGGER_ALARM:
+            alarm = alarm_time(self.hass.states.get(routine["watch_entity"]))
+            if alarm is None:
+                return None
+            when = dt_util.as_local(alarm + offset)
+            return when if when > after and self._allowed_day(routine, when) else None
+        if trigger == TRIGGER_CALENDAR_EVENT:
+            events = self._upcoming.get(routine["watch_entity"]) or []
+            for start in event_starts(events, routine["watch_item"]):
+                when = dt_util.as_local(start + offset)
+                if when > after and self._allowed_day(routine, when):
+                    return when
+            return None
+        # The cheapest slot inside the routine's hours, today or tomorrow. Today's
+        # choice is kept once made, so new prices can't move it into the past.
+        rt = self._rt(routine["id"])
+        state = self.hass.states.get(routine["value_entity"])
+        slots = price_slots(dict(state.attributes), after) if state else []
+        for day_offset in (0, 1):
+            day = dt_util.as_local(after) + timedelta(days=day_offset)
+            begin = datetime.combine(
+                day.date(), _parse_time(routine["active_from"]), tzinfo=day.tzinfo
+            )
+            end = datetime.combine(
+                day.date(), _parse_time(routine["active_to"]), tzinfo=day.tzinfo
+            )
+            if end <= begin:
+                end += timedelta(days=1)
+            key = begin.date().isoformat()
+            kept = (rt.get("cheapest") or {}).get(key)
+            chosen = dt_util.parse_datetime(kept) if kept else None
+            if chosen is None:
+                chosen = cheapest_start(slots, begin, end)
+                if chosen is None:
+                    # Prices not known (yet): the start of the hours.
+                    chosen = begin
+                else:
+                    rt["cheapest"] = {key: chosen.isoformat()}
+            when = dt_util.as_local(chosen)
+            if when > after and self._allowed_day(routine, when):
+                return when
+        return None
+
+    def _watch_planned(self, routine: dict[str, Any]) -> None:
+        """Plan again when the alarm or the prices change."""
+        rid = routine["id"]
+        self._drop_handle(rid, H_PLANNED)
+        trigger = routine["trigger"]
+        entity = (
+            routine["watch_entity"]
+            if trigger == TRIGGER_ALARM
+            else routine["value_entity"]
+            if trigger == TRIGGER_CHEAPEST
+            else None
+        )
+        if not entity:
+            return
+
+        @callback
+        def _changed(_event: Event[EventStateChangedData]) -> None:
+            self._schedule_one(routine, dt_util.now())
+            self._notify_listeners()
+
+        self._set_handle(
+            rid,
+            H_PLANNED,
+            async_track_state_change_event(self.hass, [entity], _changed),
+        )
+
+    async def _refresh_upcoming(self) -> None:
+        """Read the coming days' events for "before an event" triggers, and plan them."""
+        wanted = sorted(
+            {
+                r["watch_entity"]
+                for r in [*self.routines, *self._aliases.values()]
+                if r["trigger"] == TRIGGER_CALENDAR_EVENT
+            }
+        )
+        now = dt_util.now()
+        for entity_id in wanted:
+            events = await self._read_events(
+                entity_id, now - timedelta(days=1), now + EVENTS_AHEAD
+            )
+            if events is not None:
+                self._upcoming[entity_id] = events
+        for gone in set(self._upcoming) - set(wanted):
+            del self._upcoming[gone]
+        for routine in [*self.routines, *self._aliases.values()]:
+            if routine["trigger"] == TRIGGER_CALENDAR_EVENT:
+                self._schedule_one(routine, dt_util.now())
+        self._notify_listeners()
+
+    async def _read_events(
+        self, entity_id: str, start: datetime, end: datetime
+    ) -> list[dict[str, Any]] | None:
+        if self.hass.states.get(
+            entity_id
+        ) is None or not self.hass.services.has_service("calendar", "get_events"):
+            return None
+        try:
+            async with asyncio.timeout(CALENDAR_TIMEOUT_SECONDS):
+                response = await self.hass.services.async_call(
+                    "calendar",
+                    "get_events",
+                    {
+                        "entity_id": entity_id,
+                        "start_date_time": start.isoformat(),
+                        "end_date_time": end.isoformat(),
+                    },
+                    blocking=True,
+                    return_response=True,
+                )
+        except Exception as err:  # noqa: BLE001 - the routine just isn't planned
+            _LOGGER.warning("Couldn't read %s: %s", entity_id, err)
+            return None
+        calendar = (response or {}).get(entity_id)
+        events = calendar.get("events") if isinstance(calendar, dict) else None
+        return (
+            [e for e in events if isinstance(e, dict)]
+            if isinstance(events, list)
+            else []
+        )
+
+    async def _check_forecasts(self, _now: datetime | None = None) -> None:
+        """Run forecast routines when the forecast newly shows what they watch for."""
+        routines = [
+            r
+            for r in [*self.routines, *self._aliases.values()]
+            if r["trigger"] == TRIGGER_FORECAST and r["enabled"]
+        ]
+        forecasts: dict[str, list[dict[str, Any]] | None] = {}
+        now = dt_util.now()
+        for routine in routines:
+            entity = routine["watch_entity"]
+            if entity not in forecasts:
+                forecasts[entity] = await self._read_forecast(entity)
+            forecast = forecasts[entity]
+            if forecast is None:
+                continue  # unknown: no change either way
+            rt = self._rt(routine["id"])
+            hit = forecast_matches(
+                forecast,
+                now,
+                routine["forecast_hours"],
+                routine["watch_states"],
+                routine["value_threshold"],
+            )
+            was = rt.get("forecast_hit")
+            rt["forecast_hit"] = hit
+            if hit and was is False and self._allowed_day(routine, now):
+                self._spawn(self._execute_routine(routine, now, scheduled=True))
+
+    async def _read_forecast(self, entity_id: str) -> list[dict[str, Any]] | None:
+        if self.hass.states.get(
+            entity_id
+        ) is None or not self.hass.services.has_service("weather", "get_forecasts"):
+            return None
+        for kind in ("hourly", "twice_daily", "daily"):
+            try:
+                async with asyncio.timeout(CALENDAR_TIMEOUT_SECONDS):
+                    response = await self.hass.services.async_call(
+                        "weather",
+                        "get_forecasts",
+                        {"entity_id": entity_id, "type": kind},
+                        blocking=True,
+                        return_response=True,
+                    )
+            except Exception:  # noqa: BLE001 - not every forecast type is offered
+                continue
+            found = (response or {}).get(entity_id)
+            entries = found.get("forecast") if isinstance(found, dict) else None
+            if isinstance(entries, list) and entries:
+                return [e for e in entries if isinstance(e, dict)]
         return None
 
     def _schedule_one(self, routine: dict[str, Any], after: datetime) -> None:
@@ -2137,12 +2384,14 @@ class HomeRoutinesCoordinator:
                 del self._runtime[rid]
         for alias in self._aliases.values():
             self._rt(alias["id"])
+            self._watch_planned(alias)
             self._schedule_one(alias, now)
             self._watch_presence(alias)
             self._watch_value(alias)
             self._watch_state(alias)
         for routine in self.routines:
             self._rt(routine["id"])
+            self._watch_planned(routine)
             self._schedule_one(routine, now)
             self._watch_presence(routine)
             self._watch_value(routine)
@@ -2325,6 +2574,13 @@ class HomeRoutinesCoordinator:
                 self._notify_listeners()
                 return False
 
+        if (
+            scheduled
+            and routine.get("ask_first")
+            and not await self._ask_first(routine)
+        ):
+            return False
+
         rt["state"] = "running"
         rt["last_run"] = now.isoformat()
         self._keep_for_undo(routine, now)
@@ -2492,26 +2748,31 @@ class HomeRoutinesCoordinator:
         now: datetime,
         *,
         scheduled: bool,
+        track: bool = True,
     ) -> _Run | None:
-        """Run steps in order. None: held for an unavailable list (nothing done yet)."""
+        """Run steps in order. None: held for an unavailable list (nothing done yet).
+
+        track=False runs steps of a "together" step: the card shows that step.
+        """
         run = _Run()
         acted = False
         rt = self._rt(routine["id"])
         started = dt_util.now().isoformat()
         for position, (index, action, only) in enumerate(steps):
-            rt["progress"] = {
-                "step": position + 1,
-                "total": len(steps),
-                "label": step_label(self.hass, action, self._routine_names()),
-                "started": started,
-                "step_started": dt_util.now().isoformat(),
-                "until": (
-                    (dt_util.now() + timedelta(seconds=action["delay"])).isoformat()
-                    if "delay" in action
-                    else None
-                ),
-            }
-            self._notify_listeners()
+            if track:
+                rt["progress"] = {
+                    "step": position + 1,
+                    "total": len(steps),
+                    "label": step_label(self.hass, action, self._routine_names()),
+                    "started": started,
+                    "step_started": dt_util.now().isoformat(),
+                    "until": (
+                        (dt_util.now() + timedelta(seconds=action["delay"])).isoformat()
+                        if "delay" in action
+                        else None
+                    ),
+                }
+                self._notify_listeners()
             ok, reason = self._check(self._source(routine), dt_util.now())
             if not ok:
                 _LOGGER.warning(
@@ -2530,6 +2791,31 @@ class HomeRoutinesCoordinator:
 
             if "delay" in action:
                 await asyncio.sleep(action["delay"])
+                continue
+
+            if "together" in action:
+                acted = True
+                results = await asyncio.gather(
+                    *(
+                        self._run_step_list(
+                            routine,
+                            [(index, sub, None)],
+                            now,
+                            scheduled=False,
+                            track=False,
+                        )
+                        for sub in action["together"]
+                    )
+                )
+                done = [r for r in results if r is not None]
+                for sub_run in done:
+                    run.details.extend(sub_run.details)
+                    run.failures.extend(sub_run.failures)
+                bad = [r.result for r in done if r.result != "success"]
+                if bad and routine["on_step_error"] != "continue":
+                    run.result = bad[0]
+                    run.stopped_at = index
+                    break
                 continue
 
             if "wait_until" in action:
@@ -2768,6 +3054,16 @@ class HomeRoutinesCoordinator:
                 )
             for entity_id in await self._wait_for_state(stuck, wanted, verify):
                 failed[entity_id] = "didn't change"
+            for entity_id in stuck:
+                if entity_id not in failed:
+                    self.device_stats.record(
+                        entity_id, "retried", "needed the command again"
+                    )
+        for entity_id in entities:
+            if entity_id in failed:
+                self.device_stats.record(entity_id, "failed", failed[entity_id])
+            elif entity_id not in (stuck if wanted and verify else []):
+                self.device_stats.record(entity_id, "ok")
         return failed
 
     async def _run_linked(
@@ -2973,7 +3269,12 @@ class HomeRoutinesCoordinator:
     def _keep_for_undo(self, routine: dict[str, Any], now: datetime) -> None:
         """Note how the devices this routine changes are now, for Undo."""
         entities: list[str] = []
-        for action in routine["actions"]:
+        steps = [
+            step
+            for action in routine["actions"]
+            for step in action.get("together", [action])
+        ]
+        for action in steps:
             if "service" in action:
                 domain = action["service"].split(".", 1)[0]
                 entities.extend(self._resolve_targets(action.get("target"), domain))
@@ -3046,6 +3347,96 @@ class HomeRoutinesCoordinator:
             self.revision += 1
             await self._async_save()
         self._notify_listeners()
+
+    async def _ask_first(self, routine: dict[str, Any]) -> bool:
+        """Ask on the phone and the card whether to run now. True: run it."""
+        rid = routine["id"]
+        rt = self._rt(rid)
+        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self._asks[rid] = future
+        minutes = routine["ask_minutes"]
+        rt["state"] = "asking"
+        rt["ask_until"] = (
+            dt_util.now() + timedelta(seconds=minutes * SECONDS_PER_MINUTE)
+        ).isoformat()
+        self._notify_listeners()
+        default = "runs" if routine["ask_default"] == "run" else "is skipped"
+        self._send_notification(
+            f"Run '{routine['name']}' now? With no answer in {minutes} min, it {default}.",
+            f"daily_routine_ask_{rid}",
+            actions=[
+                {"action": f"{ASK_RUN_ACTION}{rid}", "title": "Run"},
+                {"action": f"{ASK_SKIP_ACTION}{rid}", "title": "Skip"},
+            ],
+        )
+        answer = routine["ask_default"]
+        answered = False
+        try:
+            async with asyncio.timeout(minutes * SECONDS_PER_MINUTE):
+                answer = await future
+                answered = True
+        except TimeoutError:
+            pass
+        finally:
+            self._asks.pop(rid, None)
+            rt["ask_until"] = None
+        if answer == "run":
+            return True
+        reason = "asked_skip" if answered else "no_answer_skip"
+        rt["state"] = "skipped"
+        rt["last_result"] = reason
+        self._record(rid, "skipped", reason)
+        self._fire_event(EVENT_ROUTINE_SKIPPED, routine, reason)
+        self._notify_listeners()
+        return False
+
+    def async_answer(self, routine_id: str, run: bool) -> bool:
+        """Answer "Ask me first": run or skip. False when nothing is asking."""
+        future = self._asks.get(routine_id)
+        if future is None or future.done():
+            return False
+        future.set_result("run" if run else "skip")
+        return True
+
+    async def async_copy_to_rooms(
+        self, routine_id: str, rooms: list[str]
+    ) -> list[dict[str, Any]]:
+        """Copy a routine to other rooms: steps aimed at its room aim at each new one."""
+        routine = self._find(routine_id)
+        if routine is None:
+            raise vol.Invalid(f"No routine with id '{routine_id}'.")
+        names = {a["id"]: a["name"] for a in list_areas(self.hass) if a["id"]}
+        copies = []
+        for room in rooms:
+            if room not in names:
+                raise vol.Invalid(f"No room '{room}'.")
+            if room == routine["room"]:
+                continue
+            new_id = self._free_id(f"{routine_id}_{slugify(room)}"[:64])
+            raw = {
+                **routine,
+                "id": new_id,
+                "name": f"{routine['name']} ({names[room]})",
+                "room": room,
+                "device_id": None,
+                "skip_next": False,
+                "paused_until": None,
+                "companion_of": None,
+                "actions": [
+                    _moved_action(a, routine["room"], room) for a in routine["actions"]
+                ],
+            }
+            copies.append(await self.async_save_routine(raw))
+        return copies
+
+    def _free_id(self, wanted: str) -> str:
+        taken = {r["id"] for r in self.routines}
+        candidate, number = wanted, 2
+        while candidate in taken:
+            suffix = f"_{number}"
+            candidate = wanted[: 64 - len(suffix)] + suffix
+            number += 1
+        return candidate
 
     async def async_start_run(self, routine_id: str) -> dict[str, Any]:
         """Run now from the dashboard: start it and answer at once.
@@ -3314,6 +3705,20 @@ def _lived_in_or_default(raw: Any) -> dict[str, Any]:
         return clean_lived_in(raw)
     except vol.Invalid:
         return clean_lived_in(None)
+
+
+def _moved_action(action: dict[str, Any], old: str | None, new: str) -> dict[str, Any]:
+    """A step copied to another room: aimed at the new room where it was aimed at the old."""
+    if "together" in action:
+        return {
+            **action,
+            "together": [_moved_action(a, old, new) for a in action["together"]],
+        }
+    target = action.get("target")
+    if not target or not old or old not in target.get("area_id", []):
+        return action
+    areas = [new if a == old else a for a in target["area_id"]]
+    return {**action, "target": {**target, "area_id": areas}}
 
 
 def _weather_ok(state: State | None, cond: dict[str, Any]) -> bool:

@@ -8,11 +8,12 @@ from typing import TYPE_CHECKING, Any
 from homeassistant.util import dt as dt_util
 
 from .const import TRIGGER_MANUAL, TRIGGER_SUNRISE, TRIGGER_SUNSET, TRIGGER_TIME
+from .routines import PLANNED_TRIGGERS
 
 if TYPE_CHECKING:
     from .coordinator import HomeRoutinesCoordinator
 
-SCHEDULED = (TRIGGER_TIME, TRIGGER_SUNRISE, TRIGGER_SUNSET)
+SCHEDULED = (TRIGGER_TIME, TRIGGER_SUNRISE, TRIGGER_SUNSET, *PLANNED_TRIGGERS)
 
 
 def today(coordinator: HomeRoutinesCoordinator, now: datetime) -> dict[str, Any]:

@@ -23,13 +23,22 @@ const TRIGGER_LABELS = {
   state_is: "When a device changes to a value",
   todo_done: "When an item is checked off a to-do list",
   mode_changes: "When the house mode changes",
+  alarm: "Before (or after) my phone's alarm",
+  calendar_event: "Before (or after) a calendar event",
+  forecast: "When the forecast shows rain, snow or a freeze",
+  cheapest: "At the cheapest electricity hour",
   manual: "Only when I press Run",
 };
+// The simple editor's optional sections, added with a chip.
+const SIMPLE_SECTIONS = [
+  ["more", "Or also when"], ["conditions", "Only if"], ["dates", "Only some dates or hours"],
+  ["ask", "Ask me first"], ["notify", "Notify me"], ["skip", "Skip or pause"], ["options", "More options"],
+];
 // House modes, in the order they're offered.
 const MODES = [["home", "Home"], ["away", "Away"], ["night", "Night"], ["guests", "Guests"], ["vacation", "Vacation"]];
 const modeName = (mode) => (MODES.find(([id]) => id === mode) || [mode, mode])[1];
 // Triggers a routine can have as well as its own ("Or also when").
-const MORE_TRIGGER_KINDS = ["time", "sunrise", "sunset", "everyone_leaves", "someone_arrives", "person_leaves", "person_arrives", "value_above", "value_below", "state_is", "mode_changes"];
+const MORE_TRIGGER_KINDS = ["time", "sunrise", "sunset", "everyone_leaves", "someone_arrives", "person_leaves", "person_arrives", "value_above", "value_below", "state_is", "mode_changes", "alarm", "calendar_event"];
 const MAX_MORE_TRIGGERS = 4;
 const WEATHER_NAMES = {
   "clear-night": "Clear (night)", cloudy: "Cloudy", exceptional: "Exceptional", fog: "Fog", hail: "Hail", lightning: "Lightning",
@@ -38,6 +47,33 @@ const WEATHER_NAMES = {
 };
 // What a step's "only if" can check.
 const ONLY_IF_KINDS = [["", "Always"], ["state", "A device's state"], ["mode", "The house mode"], ["workday", "Workday or day off"], ["weather", "The weather"]];
+// "Together" steps become steps marked "at the same time as the step before".
+function flatSteps(actions) {
+  return (actions || []).flatMap((a) => (a.together
+    ? a.together.map((sub, j) => (j ? { ...sub, __withPrev: true } : { ...sub }))
+    : [a]));
+}
+
+// Steps marked "at the same time as the step before" are grouped into one
+// "together" step, as the server stores them.
+function groupSteps(raws, steps) {
+  const out = [];
+  const can = (raw) => ["service", "todo", "run_routine", "set_mode"].some((k) => k in raw);
+  raws.forEach((raw, i) => {
+    if (!steps[i].withPrev || !out.length) {
+      out.push(raw);
+      return;
+    }
+    const prev = out[out.length - 1];
+    if (!can(raw) || !(prev.together || can(prev))) {
+      throw new Error(`Step ${i + 1}: only actions, to-dos, routines and house modes can run at the same time as the step before.`);
+    }
+    if (prev.together) prev.together.push(raw);
+    else out[out.length - 1] = { together: [prev, raw] };
+  });
+  return out;
+}
+
 function cloneCond(c) {
   return { ...c, people: [...(c.people || [])], sensors: [...(c.sensors || [])], modes: [...(c.modes || [])], conditions: [...(c.conditions || [])] };
 }
@@ -60,7 +96,7 @@ function condToRaw(c) {
 const PRESENCE_TRIGGERS = ["everyone_leaves", "someone_arrives", "person_leaves", "person_arrives"];
 // Triggers that react to something happening. A run they start doesn't wait the
 // rest of the day for its conditions by default: the moment has passed.
-const EVENT_TRIGGERS = [...PRESENCE_TRIGGERS, "value_above", "value_below", "state_is", "todo_done", "mode_changes"];
+const EVENT_TRIGGERS = [...PRESENCE_TRIGGERS, "value_above", "value_below", "state_is", "todo_done", "mode_changes", "forecast"];
 const defaultWait = (trigger) => (EVENT_TRIGGERS.includes(trigger) ? "no" : "day");
 const PER_PERSON_TRIGGERS = ["person_leaves", "person_arrives"];
 const VALUE_TRIGGERS = ["value_above", "value_below"];
@@ -110,7 +146,7 @@ const TODO_OUTCOME_LABELS = {
   would_remove: "would be removed",
   not_due: "not due in the chosen window",
 };
-const STATE_LABELS = { idle: "Ready", waiting: "Waiting", held: "Waiting for list", running: "Running", skipped: "Skipped", error: "Error" };
+const STATE_LABELS = { idle: "Ready", waiting: "Waiting", held: "Waiting for list", running: "Running", asking: "Asking", skipped: "Skipped", error: "Error" };
 const REASON_LABELS = {
   someone_home: "someone is still in that place",
   sensors_active: "motion right now",
@@ -126,6 +162,8 @@ const REASON_LABELS = {
   calendar_not_met: "the calendar doesn't allow it today",
   paused_until: "paused for a while",
   skipped_once: "skipped once, as asked",
+  asked_skip: "you answered Skip",
+  no_answer_skip: "nobody answered, so it was skipped",
   wrong_mode: "the house isn't in the right mode",
   workday_not_met: "it isn't the right kind of day (workday or day off)",
   weather_not_met: "the weather doesn't match",
@@ -167,7 +205,9 @@ const ACTIONS = [
   { service: "climate.turn_off", label: "Turn off the thermostat" },
   { service: "vacuum.start", label: "Start the vacuum" },
   { service: "vacuum.return_to_base", label: "Send the vacuum home" },
-  { service: "notify.persistent_notification", label: "Show a Home Assistant notification" },
+  { service: "notify.persistent_notification", label: "Show a Home Assistant notification", untargeted: true, fields: [
+    { key: "message", label: "Message", type: "text", placeholder: "for example Rain is coming" },
+  ] },
   { service: "daily_routine.remember_states", label: "Remember which lights and switches are on", domains: ["light", "switch", "fan"], fields: [
     { key: "name", label: "Remember as", type: "text", placeholder: "for example Before we left" },
   ] },
@@ -680,6 +720,26 @@ class DailyRoutinePanel extends HTMLElement {
     this.shadowRoot.addEventListener("click", (e) => this._onClick(e));
     this.shadowRoot.addEventListener("change", (e) => this._onField(e));
     this.shadowRoot.addEventListener("input", (e) => this._onField(e, true));
+    // Drag a folded step to move it.
+    this.shadowRoot.addEventListener("dragstart", (e) => {
+      const li = e.target.closest?.(".step-fold");
+      if (!li) return;
+      this._dragFrom = Number(li.dataset.step);
+      e.dataTransfer?.setData("text/plain", li.dataset.step);
+    });
+    this.shadowRoot.addEventListener("dragover", (e) => {
+      if (this._dragFrom !== undefined && e.target.closest?.(".step-fold")) e.preventDefault();
+    });
+    this.shadowRoot.addEventListener("drop", (e) => {
+      const li = e.target.closest?.(".step-fold");
+      if (!li || this._dragFrom === undefined || !this._draft) return;
+      e.preventDefault();
+      const to = Number(li.dataset.step);
+      const [moved] = this._draft.actions.splice(this._dragFrom, 1);
+      this._draft.actions.splice(to, 0, moved);
+      this._dragFrom = undefined;
+      this._render();
+    });
     // Remember whether "Going away?" is open across redraws (toggle doesn't bubble).
     this.shadowRoot.addEventListener("toggle", (e) => {
       if (e.target?.classList?.contains("away")) this._awayOpen = e.target.open;
@@ -872,6 +932,18 @@ class DailyRoutinePanel extends HTMLElement {
     if (routine.trigger === "mode_changes") {
       return `House mode changes to ${(routine.modes || []).map(modeName).join(" or ")}`;
     }
+    const offsetText = (m) => (m ? `${Math.abs(m)} min ${m < 0 ? "before" : "after"}` : "At");
+    if (routine.trigger === "alarm") return `${offsetText(routine.offset_minutes)} ${this._nameFor(routine.watch_entity)}`;
+    if (routine.trigger === "calendar_event") {
+      const what = routine.watch_item ? `“${routine.watch_item}”` : "any event";
+      return `${offsetText(routine.offset_minutes)} ${what} in ${this._nameFor(routine.watch_entity)}`;
+    }
+    if (routine.trigger === "forecast") {
+      const kinds = (routine.watch_states || []).map((k) => WEATHER_NAMES[k] || k).join(", ");
+      const cold = routine.value_threshold != null ? `below ${routine.value_threshold}°` : "";
+      return `${[kinds, cold].filter(Boolean).join(" or ")} forecast within ${routine.forecast_hours || 3} h`;
+    }
+    if (routine.trigger === "cheapest") return `Cheapest hour between ${hhmm(routine.active_from)} and ${hhmm(routine.active_to)}`;
     const windowText = routine.active_from && routine.active_to ? ` · only ${hhmm(routine.active_from)}–${hhmm(routine.active_to)}` : "";
     if (VALUE_TRIGGERS.includes(routine.trigger)) {
       const level = `${routine.value_threshold}${this._unitSuffix(routine.value_entity)}`;
@@ -983,7 +1055,7 @@ class DailyRoutinePanel extends HTMLElement {
       people: [], sensors: [], clear_minutes: 0,
       conditions: [], conditions_match: "all", repeat: false, catch_up_minutes: 0, retries: 0, skip_noop: true, wait: "day", wait_until: "12:00", wait_minutes: 5,
       notify_on_run: false, notify_on_skip: false, notify_on_error: true, notify_on_health: false, wait_when_unavailable: false,
-      modes: [], more_triggers: [],
+      modes: [], more_triggers: [], forecast_kinds: [], forecast_hours: 3, ask_first: false, ask_minutes: 10, ask_default: "run",
       actions: [{ kind: "service", service: "", targetMode: roomId ? "area" : "entities", area: roomId || "", entities: [], data: "" }],
       isNew: true,
     };
@@ -1008,11 +1080,16 @@ class DailyRoutinePanel extends HTMLElement {
       draft.conditions.push({ kind: "sensors", mode: "quiet", minutes: spec.quietMinutes, sensors: houseSensors });
     }
     if (spec.modes) draft.modes = [...spec.modes];
+    for (const key of ["offset_minutes", "watch_entity", "watch_item", "value_entity", "forecast_hours", "active_from", "active_to"]) {
+      if (spec[key] !== undefined) draft[key] = spec[key];
+    }
+    if (spec.forecast_kinds) draft.forecast_kinds = [...spec.forecast_kinds];
     if (spec.actions) {
       draft.actions = spec.actions.map((a) => (a.kind
         ? { service: "", targetMode: "none", area: "", entities: [], data: "", ...a }
-        : { kind: "service", service: a.service, targetMode: a.targetMode, area: roomId || "", entities: [], data: "" }));
+        : { kind: "service", service: a.service, targetMode: a.targetMode, area: roomId || "", entities: [...(a.entities || [])], data: "", fields: { ...(a.fields || {}) } }));
     }
+    if (draft.actions.length === 1) draft.actions[0]._open = true;
     return draft;
   }
 
@@ -1036,11 +1113,16 @@ class DailyRoutinePanel extends HTMLElement {
       notify_on_health: Boolean(routine.notify_on_health),
       wait_when_unavailable: Boolean(routine.wait_when_unavailable),
       modes: [...(routine.modes || [])],
+      forecast_kinds: routine.trigger === "forecast" ? [...(routine.watch_states || [])] : [],
+      forecast_hours: routine.forecast_hours || 3,
+      ask_first: Boolean(routine.ask_first),
+      ask_minutes: routine.ask_minutes || 10,
+      ask_default: routine.ask_default || "run",
       more_triggers: (routine.more_triggers || []).map((t) => ({
         ...t, people: [...(t.people || [])], modes: [...(t.modes || [])], watch_states: (t.watch_states || []).join(", "),
         value_threshold: t.value_threshold ?? "", value_entity: t.value_entity || "", watch_entity: t.watch_entity || "",
       })),
-      actions: routine.actions.map((a) => {
+      actions: flatSteps(routine.actions).map((a) => {
         const blank = { service: "", targetMode: "none", area: "", entities: [], data: "" };
         if ("run_routine" in a) return { ...blank, kind: "routine", routine: a.run_routine };
         if ("set_mode" in a) return { ...blank, kind: "mode", mode: a.set_mode };
@@ -1069,7 +1151,13 @@ class DailyRoutinePanel extends HTMLElement {
           voice: spec?.voice ? entities[0] || "" : "", fields,
           data: Object.keys(rest).length ? JSON.stringify(rest, null, 2) : "",
         };
-      }).map((step, i) => (routine.actions[i].only_if ? { ...step, onlyIf: cloneCond(routine.actions[i].only_if) } : step)),
+      }).map((step, i, all) => {
+        const source = flatSteps(routine.actions)[i];
+        const out = source.only_if ? { ...step, onlyIf: cloneCond(source.only_if) } : step;
+        if (source.__withPrev) out.withPrev = true;
+        if (all.length === 1) out._open = true;
+        return out;
+      }),
       isNew: false,
     };
   }
@@ -1124,6 +1212,7 @@ class DailyRoutinePanel extends HTMLElement {
       if (!cond?.kind || "delay" in raw) return raw;
       return { ...raw, only_if: condToRaw(cond) };
     });
+    const grouped = groupSteps(actions, draft.actions);
     return {
       id: draft.id || slugify(draft.name),
       name: draft.name.trim(),
@@ -1133,7 +1222,7 @@ class DailyRoutinePanel extends HTMLElement {
       zone: draft.zone || "zone.home",
       value_entity: draft.value_entity || null,
       watch_entity: draft.watch_entity || null,
-      watch_states: splitStates(draft.watch_states),
+      watch_states: draft.trigger === "forecast" ? [...(draft.forecast_kinds || [])] : splitStates(draft.watch_states),
       hold_minutes: Number(draft.hold_minutes) || 0,
       watch_item: String(draft.watch_item || "").trim(),
       value_threshold: draft.value_threshold === "" || draft.value_threshold == null ? null : Number(draft.value_threshold),
@@ -1159,6 +1248,7 @@ class DailyRoutinePanel extends HTMLElement {
         people: [...(t.people || [])], zone: t.zone || "zone.home", modes: [...(t.modes || [])],
         value_entity: t.value_entity || null, value_threshold: t.value_threshold === "" || t.value_threshold == null ? null : Number(t.value_threshold),
         watch_entity: t.watch_entity || null, watch_states: splitStates(t.watch_states || ""), hold_minutes: Number(t.hold_minutes) || 0,
+        watch_item: String(t.watch_item || "").trim(),
       })),
       conditions_match: draft.conditions_match === "any" ? "any" : "all",
       wait: ["day", "until", "minutes", "no"].includes(draft.wait) ? draft.wait : "day",
@@ -1180,7 +1270,11 @@ class DailyRoutinePanel extends HTMLElement {
       notify_on_error: draft.notify_on_error,
       notify_on_health: Boolean(draft.notify_on_health),
       wait_when_unavailable: Boolean(draft.wait_when_unavailable),
-      actions,
+      ask_first: Boolean(draft.ask_first),
+      ask_minutes: Math.max(1, Math.min(60, Number(draft.ask_minutes) || 10)),
+      ask_default: draft.ask_default === "skip" ? "skip" : "run",
+      forecast_hours: Math.max(1, Math.min(48, Number(draft.forecast_hours) || 3)),
+      actions: grouped,
     };
   }
 
@@ -1210,8 +1304,10 @@ class DailyRoutinePanel extends HTMLElement {
           this._view = { name: "templates", room };
           break;
         case "template": {
-          const template = TEMPLATES.find((t) => t.id === el.dataset.tpl);
-          this._draft = this._applyTemplate(template, room);
+          const template = TEMPLATES.find((t) => t.id === el.dataset.tpl) || this._suggestions().find((t) => t.id === el.dataset.tpl);
+          this._draft = this._applyTemplate(template, template?.room ?? room);
+          this._editorSession = null;
+          this._simpleOpen = null;
           this._view = { name: "editor", room };
           this._preview = null;
           this._notice = null;
@@ -1221,6 +1317,8 @@ class DailyRoutinePanel extends HTMLElement {
           const routine = this._data.routines.find((r) => r.id === el.dataset.id);
           if (!routine) return;
           this._draft = this._draftFromRoutine(routine);
+          this._editorSession = null;
+          this._simpleOpen = null;
           if (STATE_TRIGGERS.includes(routine.trigger)) this._loadStateHints(routine.watch_entity);
           this._view = { name: "editor", room: routine.room || null };
           this._preview = null;
@@ -1395,13 +1493,13 @@ class DailyRoutinePanel extends HTMLElement {
           await this._call({ type: `${DOMAIN}/pause`, paused: !this._data.paused });
           break;
         case "add-step":
-          this._draft.actions.push({ kind: "service", service: "", targetMode: this._draft.room ? "area" : "entities", area: this._draft.room || "", entities: [], data: "" });
+          this._draft.actions.push({ _open: true, kind: "service", service: "", targetMode: this._draft.room ? "area" : "entities", area: this._draft.room || "", entities: [], data: "" });
           break;
         case "add-delay":
-          this._draft.actions.push({ kind: "delay", seconds: 5, service: "", targetMode: "none", area: "", entities: [], data: "" });
+          this._draft.actions.push({ _open: true, kind: "delay", seconds: 5, service: "", targetMode: "none", area: "", entities: [], data: "" });
           break;
         case "add-kind": {
-          const blank = { service: "", targetMode: "none", area: "", entities: [], data: "" };
+          const blank = { _open: true, service: "", targetMode: "none", area: "", entities: [], data: "" };
           const kind = el.dataset.kind;
           if (kind === "wait_until") this._draft.actions.push({ ...blank, kind, wEntity: "", wStates: "", wMinutes: 10, wTimeout: "continue" });
           else if (kind === "routine") this._draft.actions.push({ ...blank, kind, routine: "" });
@@ -1411,6 +1509,48 @@ class DailyRoutinePanel extends HTMLElement {
         case "clear-field": {
           const step = this._draft.actions[Number(el.dataset.i)];
           if (step?.fields) delete step.fields[el.dataset.key];
+          break;
+        }
+        case "answer": {
+          const run = el.dataset.run === "1";
+          await this._call({ type: `${DOMAIN}/routine/answer`, routine_id: el.dataset.id, run });
+          this._showNotice(run ? "Running it now." : "Skipped this time.");
+          return;
+        }
+        case "copy-open":
+          this._copyFor = el.dataset.id;
+          break;
+        case "copy-cancel":
+          this._copyFor = null;
+          break;
+        case "copy-do": {
+          const rooms = [...this.shadowRoot.querySelectorAll("[data-copy-room]")].filter((b) => b.checked).map((b) => b.dataset.copyRoom);
+          if (!rooms.length) {
+            this._showNotice("Pick at least one room.", true);
+            return;
+          }
+          const result = await this._call({ type: `${DOMAIN}/routine/copy`, routine_id: el.dataset.id, rooms });
+          this._copyFor = null;
+          this._showNotice(`Copied to ${result.routines.length} room${result.routines.length === 1 ? "" : "s"}.`);
+          await this._load(true);
+          return;
+        }
+        case "editor-default":
+          return;
+        case "open-section":
+          this._simpleOpen?.add(el.dataset.key);
+          break;
+        case "close-section":
+          this._simpleOpen?.delete(el.dataset.key);
+          break;
+        case "switch-editor":
+          // Only the view changes; the routine being edited stays as it is.
+          this._editorSession = el.dataset.mode;
+          this._simpleOpen = null;
+          break;
+        case "toggle-step": {
+          const step = this._draft.actions[Number(el.dataset.i)];
+          if (step) step._open = !step._open;
           break;
         }
         case "add-more-trigger":
@@ -1428,7 +1568,7 @@ class DailyRoutinePanel extends HTMLElement {
           break;
         }
         case "add-todo":
-          this._draft.actions.push({ kind: "todo", todoOp: "add", todoList: "", todoItem: "", service: "", targetMode: "none", area: "", entities: [], data: "" });
+          this._draft.actions.push({ _open: true, kind: "todo", todoOp: "add", todoList: "", todoItem: "", service: "", targetMode: "none", area: "", entities: [], data: "" });
           break;
         case "remove-step":
           this._draft.actions.splice(Number(el.dataset.i), 1);
@@ -1538,6 +1678,18 @@ class DailyRoutinePanel extends HTMLElement {
       this._setMode(el.value);
       return;
     }
+    if (!live && el.dataset.editorDefault !== undefined) {
+      this._saveSettings({ editor: el.value });
+      return;
+    }
+    if (!live && el.dataset.editorOwn !== undefined) {
+      try {
+        if (el.value) localStorage.setItem("daily-routine-editor", el.value);
+        else localStorage.removeItem("daily-routine-editor");
+      } catch (_err) { /* private browsing */ }
+      this._showNotice("Saved for this device.");
+      return;
+    }
     if (el.dataset.lived !== undefined) {
       if (!live) this._saveLivedIn();
       return;
@@ -1590,7 +1742,21 @@ class DailyRoutinePanel extends HTMLElement {
       const field = el.dataset.f;
       if (field === "watch_entity" && !live) this._loadStateHints(value);
       if (field === "trigger" && d.isNew && d.wait === defaultWait(d.trigger)) d.wait = defaultWait(value);
-      if (field === "time") d.time = value.length === 5 ? `${value}:00` : value;
+      if (field === "room") {
+        // Steps aimed at the old room follow the routine to its new room.
+        const old = d.room || "";
+        for (const step of d.actions) {
+          if (step.targetMode === "area" && (step.area === old || !step.area)) {
+            if (value) step.area = value;
+            else step.targetMode = "all_areas";
+          }
+        }
+        d.room = value || null;
+        if (!live) this._render();
+        return;
+      }
+      if (field === "ask_first") d.ask_first = Boolean(value);
+      else if (field === "time") d.time = value.length === 5 ? `${value}:00` : value;
       else if (field === "from_date" || field === "until_date") d[field] = monthDay(value);
       else if (field === "ownOrder") d.integration_order = value ? this._fullOrder(this._data.settings?.integration_order) : null;
       else if (field === "enabled" || field === "skip_next" || field === "repeat" || field === "skip_noop" || field === "notify_on_run" || field === "notify_on_skip" || field === "notify_on_error" || field === "notify_on_health" || field === "wait_when_unavailable") d[field] = Boolean(value);
@@ -1607,6 +1773,11 @@ class DailyRoutinePanel extends HTMLElement {
     if (el.dataset.si !== undefined) {
       const step = d.actions[Number(el.dataset.si)];
       if (!step) return;
+      if (el.dataset.sf === "withPrev") {
+        step.withPrev = Boolean(value);
+        if (!live) this._render();
+        return;
+      }
       if (el.dataset.sf === "actionChoice") {
         if (value === CUSTOM_ACTION) {
           step.custom = true;
@@ -1899,19 +2070,32 @@ class DailyRoutinePanel extends HTMLElement {
           ${this._historyHtml(status)}
           ${this._healthHtml(routine)}
         </div>
-        <span class="pill ${state === "error" ? "error" : state === "waiting" || state === "held" ? "warn" : state === "running" ? "run" : ""}">${esc(STATE_LABELS[state] || state)}</span>
+        <span class="pill ${state === "error" ? "error" : state === "waiting" || state === "held" || state === "asking" ? "warn" : state === "running" ? "run" : ""}">${esc(STATE_LABELS[state] || state)}</span>
       </div>
       <div class="row-actions">
-        <button class="ghost" data-act="run" data-id="${esc(routine.id)}" ${state === "running" ? "disabled" : ""}>${state === "running" ? "Running…" : "Run now"}</button>
+        ${state === "asking" ? `<button class="primary" data-act="answer" data-id="${esc(routine.id)}" data-run="1">Run it</button>
+        <button class="ghost" data-act="answer" data-id="${esc(routine.id)}" data-run="0">Skip it</button>` : `<button class="ghost" data-act="run" data-id="${esc(routine.id)}" ${state === "running" ? "disabled" : ""}>${state === "running" ? "Running…" : "Run now"}</button>`}
         ${status.can_try_again ? `<button class="ghost" data-act="try-again" data-id="${esc(routine.id)}">Try again</button>` : ""}
         ${status.can_undo ? `<button class="ghost" data-act="undo" data-id="${esc(routine.id)}" title="Put things back the way they were before it last ran">Undo</button>` : ""}
         <button class="ghost" data-act="skip-next" data-id="${esc(routine.id)}" data-skip="${routine.skip_next ? "" : "1"}">${routine.skip_next ? "Don't skip" : "Skip next run"}</button>
         <button class="ghost" data-act="edit" data-id="${esc(routine.id)}">Edit</button>
         <button class="ghost" data-act="duplicate" data-id="${esc(routine.id)}">Duplicate</button>
+        ${routine.room ? `<button class="ghost" data-act="copy-open" data-id="${esc(routine.id)}">Copy to rooms</button>` : ""}
         <button class="ghost" data-act="toggle-enabled" data-id="${esc(routine.id)}">${routine.enabled ? "Disable" : "Enable"}</button>
         <button class="ghost danger" data-act="delete" data-id="${esc(routine.id)}">Delete</button>
       </div>
+      ${this._copyFor === routine.id ? this._copyPanel(routine) : ""}
     </article>`;
+  }
+
+  // Copy a routine to other rooms: steps aimed at its room aim at each new room.
+  _copyPanel(routine) {
+    const rooms = (this._data.areas || []).filter((a) => a.id !== routine.room);
+    return `<div class="copy-panel">
+      <p class="small">Copy “${esc(routine.name)}” to these rooms. Steps for ${esc(this._roomName(routine.room))} will be for each new room instead; steps for specific devices stay the same, so check them after.</p>
+      <div class="checks">${rooms.map((a) => `<label class="check"><input type="checkbox" data-copy-room="${esc(a.id)}"> ${esc(a.name)}</label>`).join("")}</div>
+      <div class="row-actions"><button class="primary" data-act="copy-do" data-id="${esc(routine.id)}">Copy</button><button class="ghost" data-act="copy-cancel">Cancel</button></div>
+    </div>`;
   }
 
   _pausedDay(routine) {
@@ -2040,7 +2224,7 @@ class DailyRoutinePanel extends HTMLElement {
           ${this._historyHtml(status)}
           ${this._healthHtml(rule)}
         </div>
-        <span class="pill ${state === "error" ? "error" : state === "waiting" || state === "held" ? "warn" : state === "running" ? "run" : ""}">${esc(STATE_LABELS[state] || state)}</span>
+        <span class="pill ${state === "error" ? "error" : state === "waiting" || state === "held" || state === "asking" ? "warn" : state === "running" ? "run" : ""}">${esc(STATE_LABELS[state] || state)}</span>
       </div>
       <div class="row-actions">
         <button class="ghost" data-act="run" data-id="${esc(rule.id)}">Run now</button>
@@ -2260,6 +2444,12 @@ class DailyRoutinePanel extends HTMLElement {
       <section class="card"><h3>Why runs failed</h3>${reasonList(a.failure_reasons, "No failures in this period.")}</section>
       <section class="card"><h3>Why runs were skipped</h3><p class="muted small">Triggered, but the conditions were not met, so nothing ran.</p>${reasonList(a.skip_reasons, "Nothing was skipped in this period.")}</section>
       <section class="card"><h3>By routine</h3>${byRoutine}</section>
+      <section class="card"><h3>Devices that gave trouble</h3>
+        <p class="muted small">Devices a step couldn't change, or had to send the command to twice, in this period. One that keeps showing up may need a closer look: its batteries, its signal, or its integration.</p>
+        ${(a.devices || []).length ? `<div class="table-wrap"><table><thead><tr><th>Device</th><th>Couldn't change</th><th>Needed a second try</th><th>Worked</th><th>Last problem</th></tr></thead><tbody>${a.devices
+          .map((dv) => `<tr><td>${esc(dv.name)}</td><td>${dv.failed}</td><td>${dv.retried}</td><td>${dv.success_rate === null ? "—" : `${dv.success_rate}%`}</td><td>${dv.last_problem ? `${esc(fmtTime(dv.last_problem.at))}<br><span class="muted small">${esc(dv.last_problem.reason || "")}</span>` : "—"}</td></tr>`)
+          .join("")}</tbody></table></div>` : `<p class="muted small">No device gave trouble in this period.</p>`}
+      </section>
       <section class="card"><h3>Recent activity</h3>${filters}${events}</section>`;
   }
 
@@ -2301,6 +2491,7 @@ class DailyRoutinePanel extends HTMLElement {
         <p class="muted small">Routine runs, skips and failures always appear in Home Assistant. Pick any phones or devices to send them there too.</p>
         <div class="checks">${targets}</div>
       </section>
+      ${this._editorCard()}
       ${this._livedInCard()}
       ${this._renderAccess()}
       ${this._renderIntegrationOrder()}
@@ -2349,6 +2540,25 @@ class DailyRoutinePanel extends HTMLElement {
           <button class="ghost" data-act="order-move" data-scope="${scope}" data-domain="${esc(domain)}" data-by="1" ${i === order.length - 1 ? "disabled" : ""} aria-label="Move ${esc(item.name)} down">↓</button></li>`;
       })
       .join("")}</ol>`;
+  }
+
+  _editorCard() {
+    const shared = this._data.settings?.editor === "full" ? "full" : "simple";
+    let own = "";
+    try {
+      own = localStorage.getItem("daily-routine-editor") || "";
+    } catch (_err) { /* private browsing */ }
+    return `<section class="card">
+      <h3>Routine editor</h3>
+      <p class="muted small"><strong>Simple</strong> starts with one line (when, where, what to do) and adds the rest only when you ask for it. <strong>Full</strong> shows every option at once. Both change the same routine, and you can switch while editing.</p>
+      <label>For everyone<select data-editor-default>
+        <option value="simple" ${shared === "simple" ? "selected" : ""}>Simple</option>
+        <option value="full" ${shared === "full" ? "selected" : ""}>Full</option></select></label>
+      <label>On this device<select data-editor-own>
+        <option value="" ${own ? "" : "selected"}>The same as everyone</option>
+        <option value="simple" ${own === "simple" ? "selected" : ""}>Simple</option>
+        <option value="full" ${own === "full" ? "selected" : ""}>Full</option></select></label>
+    </section>`;
   }
 
   _livedInCard() {
@@ -2558,50 +2768,154 @@ class DailyRoutinePanel extends HTMLElement {
     return matches.map((routine) => this._routineCard(routine, { showRoom: true })).join("");
   }
 
+  // Ideas from this home: what it has (curtains, a phone alarm, locks, motion
+  // sensors...) that no routine uses yet.
+  _suggestions() {
+    const ideas = [];
+    const routines = this._data.routines || [];
+    const used = (pred) => routines.some(pred);
+    const inRoom = (area, domain, cls) => (area.entities || []).filter((e) => e.domain === domain && (!cls || e.device_class === cls));
+    for (const area of this._data.areas || []) {
+      const roomRoutines = routines.filter((r) => r.room === area.id);
+      const covers = inRoom(area, "cover");
+      if (covers.length && !roomRoutines.some((r) => r.actions.some((a) => String(a.service || "").startsWith("cover.")))) {
+        ideas.push({ id: `idea:curtains:${area.id}`, room: area.id, title: `Close ${area.name} curtains at sunset`, hint: `${area.name} has curtains or blinds that no routine moves yet.`,
+          draft: { trigger: "sunset", actions: [{ service: "cover.close_cover", targetMode: "area" }] } });
+      }
+      const motion = (area.entities || []).filter((e) => e.domain === "binary_sensor" && ["motion", "occupancy", "presence"].includes(e.device_class));
+      const lights = inRoom(area, "light");
+      if (motion.length && lights.length && !roomRoutines.some((r) => r.trigger === "room_clear")) {
+        ideas.push({ id: `idea:empty:${area.id}`, room: area.id, title: `${area.name} lights off when it's empty`, hint: `Turns ${area.name}'s lights off once its motion sensors have been quiet for 10 minutes.`,
+          draft: { trigger: "room_clear", clear_minutes: 10, useRoomSensors: true, actions: [{ service: "light.turn_off", targetMode: "area" }] } });
+      }
+      const humidity = inRoom(area, "sensor", "humidity");
+      const fans = [...inRoom(area, "fan"), ...(area.entities || []).filter((e) => e.domain === "switch" && /fan/i.test(e.name || e.entity_id))];
+      if (humidity.length && fans.length && !roomRoutines.some((r) => VALUE_TRIGGERS.includes(r.trigger))) {
+        ideas.push({ id: `idea:fan:${area.id}`, room: area.id, title: `${area.name} fan on when it's steamy`, hint: "Turns the fan on above 70% humidity, and off again below 60%.",
+          draft: { trigger: "value_above", valueClass: "humidity", valueThreshold: 70, offThreshold: 60, actions: [{ service: `${fans[0].domain}.turn_on`, targetMode: "entities", entities: [fans[0].entity_id] }] } });
+      }
+    }
+    for (const alarm of this._data.alarm_sensors || []) {
+      if (used((r) => r.trigger === "alarm" && r.watch_entity === alarm.entity_id)) continue;
+      ideas.push({ id: `idea:wake:${alarm.entity_id}`, room: null, title: `Wake-up lights before ${alarm.name}`, hint: "Fades lights up over 10 minutes, starting 15 minutes before the alarm. Pick the lights.",
+        draft: { trigger: "alarm", watch_entity: alarm.entity_id, offset_minutes: -15, actions: [{ service: "light.turn_on", targetMode: "entities", fields: { brightness_pct: 60, transition: 10 } }] } });
+    }
+    const tracked = this._trackedPeople();
+    const locks = (this._data.areas || []).flatMap((a) => inRoom(a, "lock"));
+    if (tracked.length && locks.length && !used((r) => r.trigger === "everyone_leaves")) {
+      ideas.push({ id: "idea:lockup", room: null, title: "Lock up when everyone leaves", hint: "Locks every door and switches the house to Away once everyone has left.",
+        draft: { trigger: "everyone_leaves", usePeopleList: true, actions: [{ service: "lock.lock", targetMode: "all_areas" }, { kind: "mode", mode: "away" }] } });
+    }
+    const weather = (this._data.weathers || [])[0];
+    if (weather && !used((r) => r.trigger === "forecast")) {
+      ideas.push({ id: "idea:rain", room: null, title: "Tell me when rain is coming", hint: "A notification when rain shows up in the next 3 hours.",
+        draft: { trigger: "forecast", watch_entity: weather.entity_id, forecast_hours: 3, forecast_kinds: ["rainy", "pouring", "lightning-rainy"],
+          actions: [{ service: "notify.persistent_notification", targetMode: "none", fields: { message: "Rain is coming in the next few hours." } }] } });
+    }
+    return ideas.slice(0, 8);
+  }
+
   _renderTemplates() {
     const roomId = this._view.room ?? null;
     const options = TEMPLATES.filter((t) => (roomId ? t.scope !== "house" : t.scope !== "room"));
-    return `<p class="muted">Start from a template, or a blank routine. You can change everything afterwards.</p>
+    const ideas = this._suggestions().filter((i) => !roomId || i.room === roomId);
+    const ideaCards = ideas.length ? `<h2 class="small muted">Ideas for your home</h2><div class="ideas">${ideas.map((t) => `<button class="card template idea" data-act="template" data-tpl="${esc(t.id)}" data-room="${esc(t.room || "")}">
+        <h3>${esc(t.title)}</h3><div class="muted small">${esc(t.hint)}</div></button>`).join("")}</div><h2 class="small muted">Or start from</h2>` : "";
+    return `${ideaCards}<p class="muted">Start from a template, or a blank routine. You can change everything afterwards.</p>
       <div class="grid">${options.map((t) => `<button class="card template" data-act="template" data-tpl="${t.id}" data-room="${esc(roomId || "")}">
         <h3>${esc(t.title)}</h3><div class="muted small">${esc(t.hint)}</div></button>`).join("")}</div>`;
+  }
+
+  // Which editor opens: this device's own choice, else the one in Settings.
+  _editorMode() {
+    if (this._editorSession) return this._editorSession;
+    if (this._editorOverride) return this._editorOverride;
+    try {
+      const own = localStorage.getItem("daily-routine-editor");
+      if (own === "simple" || own === "full") return own;
+    } catch (_err) { /* private browsing */ }
+    return this._data?.settings?.editor === "full" ? "full" : "simple";
   }
 
   _renderEditor() {
     const d = this._draft;
     if (!d) return "";
-    const roomId = d.room || null;
-    const presence = PRESENCE_TRIGGERS.includes(d.trigger);
-    const valueTrigger = VALUE_TRIGGERS.includes(d.trigger);
-    const stateTrigger = STATE_TRIGGERS.includes(d.trigger);
-    const todoDone = TODO_DONE_TRIGGERS.includes(d.trigger);
-    const timeBased = ["time", "sunrise", "sunset"].includes(d.trigger);
-    const sensorsOn = d.trigger === "room_clear";
-    const roomSensors = this._roomSensors(roomId);
-    const sensorOptions = this._data.binary_sensors.map((s) => ({
-      entity_id: s.entity_id, name: s.name, inRoom: (roomId ? this._area(roomId)?.entities || [] : []).some((e) => e.entity_id === s.entity_id),
-    })).sort((a, b) => Number(b.inRoom) - Number(a.inRoom) || a.name.localeCompare(b.name));
+    return this._editorMode() === "simple" ? this._renderSimple(d) : this._renderFull(d);
+  }
 
-    const triggerOptions = Object.entries(TRIGGER_LABELS).map(([value, label]) =>
-      `<option value="${value}" ${d.trigger === value ? "selected" : ""}>${esc(label)}</option>`).join("");
+  _editorSwitch(mode) {
+    const other = mode === "simple" ? "full" : "simple";
+    return `<p class="switch-editor"><button class="link" data-act="switch-editor" data-mode="${other}">${other === "full" ? "Switch to the full editor" : "Switch to the simple editor"}</button></p>`;
+  }
 
-    const days = WEEKDAYS.map((day) => `<label class="chip"><input type="checkbox" data-day="${day}" ${d.days.includes(day) ? "checked" : ""}> ${day}</label>`).join("");
-
-    const pickerPeople = this._pickerPeople(d);
-    const peopleList = pickerPeople.length
-      ? pickerPeople.map((p) => personCheckbox(p, d.people.includes(p.entity_id))).join("")
-      : `<p class="muted small">No people are turned on for routines. Turn them on under Settings.</p>`;
-
-    const sensorList = sensorOptions.length
-      ? sensorOptions.map((s) => checkbox("sensors", s.entity_id, s.name + (s.inRoom ? " (this room)" : ""), d.sensors.includes(s.entity_id))).join("")
-      : `<p class="muted small">No binary sensors found.</p>`;
-
-    const steps = d.actions.map((step, i) => this._stepEditor(step, i, roomId)).join("");
-
-    const conditions = this._conditionRows(d);
-
+  _footer(d) {
     const preview = this._preview ? this._renderPreview(this._preview) : "";
+    return `${preview}
+      ${this._notice ? `<div class="notice ${this._error ? "error" : ""}">${esc(this._notice)}</div>` : ""}
+      <div class="footer">
+        ${d.isNew ? "" : `<button class="ghost danger" data-act="delete">Delete</button>`}
+        <button class="ghost" data-act="cancel">Cancel</button>
+        <button class="ghost" data-act="test">Test (dry run)</button>
+        <button class="primary" data-act="save">Save</button>
+      </div>`;
+  }
 
+  // ----- the simple editor: a sentence, then only what's asked for -----
+
+  _renderSimple(d) {
+    const open = this._simpleOpen || (this._simpleOpen = this._defaultOpen(d));
+    const rooms = (this._data.areas || []).map((a) => `<option value="${esc(a.id)}" ${a.id === d.room ? "selected" : ""}>${esc(a.name)}</option>`).join("");
+    const chips = SIMPLE_SECTIONS
+      .filter(([key]) => !open.has(key) && this._sectionApplies(key, d))
+      .map(([key, label]) => `<button class="chip-add" data-act="open-section" data-key="${key}">+ ${esc(label)}</button>`).join("");
+    const section = (key, title, body) => (open.has(key) && this._sectionApplies(key, d)
+      ? `<section class="card"><div class="step-head"><h3>${esc(title)}</h3><button class="ghost" data-act="close-section" data-key="${key}" aria-label="Hide ${esc(title)}">Hide</button></div>${body}</section>` : "");
+    return `<form class="editor simple" onsubmit="return false">
+      ${this._editorSwitch("simple")}
+      <section class="card sentence">
+        <label class="say"><span class="word">Called</span><input data-f="name" value="${esc(d.name)}" placeholder="Morning curtains"></label>
+        <div class="say"><span class="word">When</span><div class="grow">${this._whenFields(d)}</div></div>
+        <label class="say"><span class="word">In</span><select data-f="room" data-rerender><option value="" ${d.room ? "" : "selected"}>The whole house</option>${rooms}</select></label>
+        <div class="say"><span class="word">Do</span><div class="grow">${this._stepsBody(d)}</div></div>
+        <label class="check"><input type="checkbox" data-f="enabled" ${d.enabled ? "checked" : ""}> Turned on</label>
+      </section>
+      ${chips ? `<div class="chips-add" role="group" aria-label="More options">${chips}</div>` : ""}
+      ${section("more", "Or also when", this._moreTriggers(d, false))}
+      ${section("conditions", "Only if", this._conditionsBody(d))}
+      ${section("dates", "Only some dates or hours", this._datesBody(d))}
+      ${section("ask", "Ask me first", this._askBody(d))}
+      ${section("notify", "Notify me", this._notifyBody(d))}
+      ${section("skip", "Skip or pause", this._skipBody(d))}
+      ${section("options", "More options", this._optionsBody(d))}
+      ${this._footer(d)}
+    </form>`;
+  }
+
+  // Sections a routine already uses start open in the simple editor.
+  _defaultOpen(d) {
+    const open = new Set();
+    if ((d.more_triggers || []).length) open.add("more");
+    if (d.conditions.length) open.add("conditions");
+    if (d.from_date || d.until_date || d.active_from || d.active_to || Number(d.heads_up_minutes)) open.add("dates");
+    if (d.ask_first) open.add("ask");
+    if (d.notify_on_run || d.notify_on_skip || d.notify_on_health) open.add("notify");
+    if (d.skip_next || d.paused_until) open.add("skip");
+    if (Number(d.retries) || d.on_step_error === "continue" || Number(d.cooldown_minutes) || d.repeat || d.integration_order != null || d.device_id) open.add("options");
+    return open;
+  }
+
+  _sectionApplies(key, d) {
+    if (key === "more") return !["manual", "todo_done", "room_clear"].includes(d.trigger);
+    if (key === "ask") return d.trigger !== "manual";
+    return true;
+  }
+
+  // ----- the full editor: every option at once -----
+
+  _renderFull(d) {
+    const roomId = d.room || null;
     return `<form class="editor" onsubmit="return false">
+      ${this._editorSwitch("full")}
       <section class="card">
         <h3>Basics</h3>
         <label>Name<input data-f="name" value="${esc(d.name)}" placeholder="e.g. Morning curtains"></label>
@@ -2613,46 +2927,136 @@ class DailyRoutinePanel extends HTMLElement {
 
       <section class="card">
         <h3>When</h3>
-        <label>Trigger<select data-f="trigger" data-rerender>${triggerOptions}</select></label>
+        ${this._whenFields(d)}
+        ${d.trigger !== "manual" && d.trigger !== "todo_done" && d.trigger !== "room_clear" ? this._moreTriggers(d) : ""}
+        ${this._datesBody(d)}
+        <h4>Extra conditions</h4>
+        ${this._conditionsBody(d)}
+      </section>
+
+      <section class="card">
+        <h3>Do</h3>
+        ${this._stepsBody(d)}
+      </section>
+
+      <section class="card">
+        <h3>Options</h3>
+        ${this._optionsBody(d)}
+        ${d.trigger !== "manual" ? `<h4>Ask me first</h4>${this._askBody(d)}` : ""}
+        <h4>Skip for now</h4>
+        ${this._skipBody(d)}
+        <h4>Notify me</h4>
+        ${this._notifyBody(d)}
+      </section>
+      ${this._footer(d)}
+    </form>`;
+  }
+
+  // ----- sections, shared by both editors -----
+
+  _whenFields(d) {
+    const roomId = d.room || null;
+    const presence = PRESENCE_TRIGGERS.includes(d.trigger);
+    const valueTrigger = VALUE_TRIGGERS.includes(d.trigger);
+    const stateTrigger = STATE_TRIGGERS.includes(d.trigger);
+    const todoDone = TODO_DONE_TRIGGERS.includes(d.trigger);
+    const timeBased = ["time", "sunrise", "sunset"].includes(d.trigger);
+    const planned = ["alarm", "calendar_event", "cheapest", "forecast", "mode_changes"].includes(d.trigger);
+    const sensorsOn = d.trigger === "room_clear";
+    const roomSensors = this._roomSensors(roomId);
+    const sensorOptions = this._data.binary_sensors.map((s) => ({
+      entity_id: s.entity_id, name: s.name, inRoom: (roomId ? this._area(roomId)?.entities || [] : []).some((e) => e.entity_id === s.entity_id),
+    })).sort((a, b) => Number(b.inRoom) - Number(a.inRoom) || a.name.localeCompare(b.name));
+    const triggerOptions = Object.entries(TRIGGER_LABELS).map(([value, label]) =>
+      `<option value="${value}" ${d.trigger === value ? "selected" : ""}>${esc(label)}</option>`).join("");
+    const days = WEEKDAYS.map((day) => `<label class="chip"><input type="checkbox" data-day="${day}" ${d.days.includes(day) ? "checked" : ""}> ${day}</label>`).join("");
+    const pickerPeople = this._pickerPeople(d);
+    const peopleList = pickerPeople.length
+      ? pickerPeople.map((p) => personCheckbox(p, d.people.includes(p.entity_id))).join("")
+      : `<p class="muted small">No people are turned on for routines. Turn them on under Settings.</p>`;
+    const sensorList = sensorOptions.length
+      ? sensorOptions.map((s) => checkbox("sensors", s.entity_id, s.name + (s.inRoom ? " (this room)" : ""), d.sensors.includes(s.entity_id))).join("")
+      : `<p class="muted small">No binary sensors found.</p>`;
+    return `<label>Trigger<select data-f="trigger" data-rerender>${triggerOptions}</select></label>
         ${valueTrigger ? this._valueFields(d, roomId) : ""}
         ${stateTrigger ? this._stateFields(d) : ""}
         ${todoDone ? this._todoDoneFields(d) : ""}
+        ${this._plannedFields(d)}
         ${d.trigger === "mode_changes" ? `<h4>To</h4><div class="chips">${MODES.map(([id, label]) => `<label class="chip"><input type="checkbox" data-list="modes" data-val="${id}" ${(d.modes || []).includes(id) ? "checked" : ""}> ${esc(label)}</label>`).join("")}</div>
         <p class="muted small">Runs when the house mode changes to one of these, from the House mode list at the top, a routine, or an automation.</p>` : ""}
         ${d.trigger === "time" ? `<label>Time<input type="time" data-f="time" value="${esc(hhmm(d.time))}"></label>` : ""}
         ${d.trigger === "sunrise" || d.trigger === "sunset" ? `<label>Offset in minutes (negative is before)<input type="number" min="-720" max="720" data-f="offset_minutes" value="${esc(d.offset_minutes)}"></label>` : ""}
-        ${["time", "sunrise", "sunset"].includes(d.trigger) ? `<label>Vary the time by up to (minutes, earlier or later)<input type="number" min="0" max="120" data-f="random_minutes" value="${esc(d.random_minutes || 0)}"></label>
+        ${timeBased && (this._editorMode() === "full" || Number(d.random_minutes)) ? `<label>Vary the time by up to (minutes, earlier or later)<input type="number" min="0" max="120" data-f="random_minutes" value="${esc(d.random_minutes || 0)}"></label>
         <p class="muted small">A different time each day, so lights while you're away don't look like a timer. 0 runs at the same time every day.</p>` : ""}
-        ${timeBased || valueTrigger || stateTrigger || todoDone ? `<div class="chips">${days}</div>` : ""}
-        ${d.trigger !== "manual" && d.trigger !== "todo_done" && d.trigger !== "room_clear" ? this._moreTriggers(d) : ""}
-        <h4>Only part of the year</h4>
+        ${timeBased || valueTrigger || stateTrigger || todoDone || planned ? `<div class="chips">${days}</div>` : ""}
+        ${presence ? this._zoneField(d) : ""}
+        ${presence ? `<h4>Who</h4><p class="muted small">Pick the people this routine watches. People without location tracking can't be checked.</p><div class="checks">${peopleList}</div>
+        <button class="ghost" data-act="tracked-people">Select everyone with tracking</button>` : ""}
+        ${sensorsOn ? `<h4>Sensors</h4><p class="muted small">The routine runs once these have been quiet for the time below.</p>
+          ${roomId && !roomSensors.length ? `<p class="muted small">This room has no motion sensors yet. Assign one in Home Assistant, or pick another.</p>` : ""}
+          <div class="checks">${sensorList}</div>
+          <label>Quiet for (minutes)<input type="number" min="0" max="1440" data-f="clear_minutes" value="${esc(d.clear_minutes)}"></label>` : ""}`;
+  }
+
+  // Before an alarm or a calendar event, a forecast, or the cheapest hour.
+  _plannedFields(d) {
+    const offset = (help) => `<label>Minutes before (negative) or after<input type="number" min="-720" max="720" data-f="offset_minutes" value="${esc(d.offset_minutes)}"></label>
+      <p class="muted small">${help}</p>`;
+    if (d.trigger === "alarm") {
+      const alarms = this._data.alarm_sensors || [];
+      return `<label>Alarm<select data-f="watch_entity"><option value="">Choose…</option>${alarms.map((a) => `<option value="${esc(a.entity_id)}" ${a.entity_id === d.watch_entity ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></label>
+        ${alarms.length ? "" : `<p class="muted small">Turn on the <strong>Next alarm</strong> sensor in the Home Assistant Companion app on your phone to use this.</p>`}
+        ${offset("For example -15 starts it 15 minutes before the alarm. Days with no alarm set, nothing happens.")}`;
+    }
+    if (d.trigger === "calendar_event") {
+      const calendars = this._calendars();
+      return `<label>Calendar<select data-f="watch_entity"><option value="">Choose…</option>${calendars.map((c) => `<option value="${esc(c.entity_id)}" ${c.entity_id === d.watch_entity ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label>
+        <label>Events with this in the title (empty: every event)<input data-f="watch_item" value="${esc(d.watch_item || "")}" placeholder="for example School"></label>
+        ${offset("For example -30 runs it half an hour before the event starts. All-day events start at midnight.")}`;
+    }
+    if (d.trigger === "forecast") {
+      const weathers = this._data.weathers || [];
+      const kinds = Object.entries(WEATHER_NAMES).map(([id, label]) => `<label class="check"><input type="checkbox" data-list="forecast_kinds" data-val="${id}" ${(d.forecast_kinds || []).includes(id) ? "checked" : ""}> ${esc(label)}</label>`).join("");
+      return `<label>Forecast<select data-f="watch_entity"><option value="">Choose…</option>${weathers.map((w) => `<option value="${esc(w.entity_id)}" ${w.entity_id === d.watch_entity ? "selected" : ""}>${esc(w.name)}</option>`).join("")}</select></label>
+        <label>Within the next (hours)<input type="number" min="1" max="48" data-f="forecast_hours" value="${esc(d.forecast_hours || 3)}"></label>
+        <h4>Any of this weather</h4><div class="checks">${kinds}</div>
+        <label>Or the temperature drops below (optional)<input type="number" step="any" data-f="value_threshold" value="${esc(d.value_threshold ?? "")}"></label>
+        <p class="muted small">Runs once when the forecast starts showing it, and again only after it has cleared.</p>`;
+    }
+    if (d.trigger === "cheapest") {
+      const sensors = (this._data.sensors || []).slice().sort((a, b) => Number(/kwh/i.test(b.unit || "")) - Number(/kwh/i.test(a.unit || "")));
+      return `<label>Electricity price<select data-f="value_entity"><option value="">Choose…</option>${sensors.map((x) => `<option value="${esc(x.entity_id)}" ${x.entity_id === d.value_entity ? "selected" : ""}>${esc(x.name)}${x.unit ? ` (${esc(x.unit)})` : ""}</option>`).join("")}</select></label>
+        <div class="inline"><label>Cheapest hour from<input type="time" data-f="active_from" value="${esc(d.active_from)}"></label>
+        <label>Until<input type="time" data-f="active_to" value="${esc(d.active_to)}"></label></div>
+        <p class="muted small">Works with price integrations that list the day's prices (Nord Pool, Tibber, ENTSO-e and others). If the prices aren't known yet, it runs at the start of the hours.</p>`;
+    }
+    return "";
+  }
+
+  _datesBody(d) {
+    return `<h4>Only part of the year</h4>
         <p class="muted small">Optional, for things like holiday lights or heating. The year doesn't matter; the dates repeat every year, and can run over New Year (1 November to 31 March). Leave both empty to run all year.</p>
         <div class="inline">
           <label>From<input type="date" data-f="from_date" value="${esc(monthDayInput(d.from_date))}"></label>
           <label>Until<input type="date" data-f="until_date" value="${esc(monthDayInput(d.until_date))}"></label>
         </div>
-        ${["time", "sunrise", "sunset"].includes(d.trigger) ? `<label>Heads-up before it runs
+        ${["time", "sunrise", "sunset", "alarm", "calendar_event", "cheapest"].includes(d.trigger) ? `<label>Heads-up before it runs
           <select data-f="heads_up_minutes">${HEADS_UP_CHOICES.map((m) => `<option value="${m}" ${Number(d.heads_up_minutes || 0) === m ? "selected" : ""}>${m ? `${m} minutes before, with a Skip button` : "No"}</option>`).join("")}</select>
         </label>` : ""}
-        ${presence ? this._zoneField(d) : ""}
-        ${presence ? `<h4>Who</h4><p class="muted small">Pick the people this routine watches. People without location tracking can't be checked.</p><div class="checks">${peopleList}</div>
-        <button class="ghost" data-act="tracked-people">Select everyone with tracking</button>` : ""}
-        ${sensorsOn ? `<h4>Sensors</h4><p class="muted small">${d.trigger === "room_clear" ? "The routine runs once these have been quiet for the time below." : "Motion or occupancy sensors that must stay quiet."}</p>
-          ${roomId && !roomSensors.length ? `<p class="muted small">This room has no motion sensors yet. Assign one in Home Assistant, or pick another.</p>` : ""}
-          <div class="checks">${sensorList}</div>
-          <label>Quiet for (minutes)<input type="number" min="0" max="1440" data-f="clear_minutes" value="${esc(d.clear_minutes)}"></label>` : ""}
-        <h4>Only run between</h4>
+        ${d.trigger === "cheapest" ? "" : `<h4>Only run between</h4>
         <p class="muted small">Optional. Outside these hours the routine does nothing. Leave both empty to run at any hour.</p>
         <div class="inline">
           <label>From<input type="time" data-f="active_from" value="${esc(d.active_from)}"></label>
           <label>To<input type="time" data-f="active_to" value="${esc(d.active_to)}"></label>
-        </div>
-        <h4>Extra conditions</h4>
-        <p class="muted small">Only run when these hold. Add as many as you need: who is home or away, sensors that have been quiet or active, or a device's state.</p>
+        </div>`}`;
+  }
+
+  _conditionsBody(d) {
+    return `<p class="muted small">Only run when these hold. Add as many as you need: who is home or away, sensors that have been quiet or active, or a device's state.</p>
         ${d.conditions.length > 1 ? `<label>Run when<select data-f="conditions_match">
           <option value="all" ${d.conditions_match !== "any" ? "selected" : ""}>All of these are true</option>
           <option value="any" ${d.conditions_match === "any" ? "selected" : ""}>Any one of these is true</option></select></label>` : ""}
-        ${conditions}
+        ${this._conditionRows(d)}
         ${d.conditions.length || d.trigger === "everyone_leaves" || d.trigger === "room_clear" ? `<label>If they aren't met when it's time<select data-f="wait" data-rerender>
           <option value="day" ${d.wait === "day" || !d.wait ? "selected" : ""}>Wait, and run as soon as they are (until the end of the day)</option>
           <option value="until" ${d.wait === "until" ? "selected" : ""}>Wait, and run as soon as they are, until…</option>
@@ -2669,20 +3073,46 @@ class DailyRoutinePanel extends HTMLElement {
           <button class="ghost" data-act="add-condition" data-kind="mode">+ House mode</button>
           <button class="ghost" data-act="add-condition" data-kind="workday">+ Workday or day off</button>
           <button class="ghost" data-act="add-condition" data-kind="weather">+ Weather</button>
-        </div>
-      </section>
+        </div>`;
+  }
 
-      <section class="card">
-        <h3>Do</h3>
-        ${steps}
-        <div class="row-actions"><button class="ghost" data-act="add-step">+ Service step</button><button class="ghost" data-act="add-todo">+ To-do step</button><button class="ghost" data-act="add-delay">+ Wait</button>
+  _stepsBody(d) {
+    const roomId = d.room || null;
+    const steps = d.actions.map((step, i) => this._stepEditor(step, i, roomId)).join("");
+    return `<ol class="steps">${steps}</ol>
+        <div class="row-actions"><button class="ghost" data-act="add-step">+ Action</button><button class="ghost" data-act="add-todo">+ To-do</button><button class="ghost" data-act="add-delay">+ Wait</button>
           <button class="ghost" data-act="add-kind" data-kind="wait_until">+ Wait until…</button>
           <button class="ghost" data-act="add-kind" data-kind="routine">+ Run another routine</button>
-          <button class="ghost" data-act="add-kind" data-kind="mode">+ Set the house mode</button></div>
-      </section>
+          <button class="ghost" data-act="add-kind" data-kind="mode">+ Set the house mode</button></div>`;
+  }
 
-      <section class="card">
-        <h3>Options</h3>
+  _askBody(d) {
+    return `<label class="check"><input type="checkbox" data-f="ask_first" data-rerender ${d.ask_first ? "checked" : ""}> Ask on my phone (and the dashboard card) before it runs</label>
+      ${d.ask_first ? `<label>Wait for an answer (minutes)<input type="number" min="1" max="60" data-f="ask_minutes" value="${esc(d.ask_minutes || 10)}"></label>
+      <label>With no answer
+        <select data-f="ask_default">
+          <option value="run" ${d.ask_default !== "skip" ? "selected" : ""}>Run it</option>
+          <option value="skip" ${d.ask_default === "skip" ? "selected" : ""}>Skip it</option>
+        </select></label>
+      <p class="muted small">The question goes to the phones picked under Settings → Notifications, with Run and Skip buttons. Running it yourself with Run now doesn't ask.</p>` : ""}`;
+  }
+
+  _skipBody(d) {
+    return `<label class="check"><input type="checkbox" data-f="skip_next" ${d.skip_next ? "checked" : ""}> Skip the next run (it runs as usual after that)</label>
+        <label>Pause until (the last day it's skipped)<input type="date" data-f="paused_until" value="${esc(d.paused_until || "")}"></label>`;
+  }
+
+  _notifyBody(d) {
+    return `<label class="check"><input type="checkbox" data-f="notify_on_run" ${d.notify_on_run ? "checked" : ""}> When it runs</label>
+        <label class="check"><input type="checkbox" data-f="notify_on_skip" ${d.notify_on_skip ? "checked" : ""}> When it is skipped</label>
+        <label class="check"><input type="checkbox" data-f="notify_on_error" ${d.notify_on_error ? "checked" : ""}> When it fails</label>
+        <label class="check"><input type="checkbox" data-f="notify_on_health" ${d.notify_on_health ? "checked" : ""}> When it needs attention (a device or list is missing or unavailable)</label>`;
+  }
+
+  _optionsBody(d) {
+    const roomId = d.room || null;
+    return `${this._editorMode() === "simple" ? `<label>Linked device<select data-f="device_id">${this._deviceOptions(d.device_id, roomId)}</select></label>
+        ${["time", "sunrise", "sunset"].includes(d.trigger) && !Number(d.random_minutes) ? `<label>Vary the time by up to (minutes, earlier or later)<input type="number" min="0" max="120" data-f="random_minutes" value="0"></label>` : ""}` : ""}
         <label class="check"><input type="checkbox" data-f="repeat" ${d.repeat ? "checked" : ""}> Run every time (not just once a day)</label>
         <label class="check"><input type="checkbox" data-f="skip_noop" ${d.skip_noop ? "checked" : ""}> Skip steps that are already done</label>
         ${EVENT_TRIGGERS.includes(d.trigger) || d.trigger === "room_clear" ? `<label>Not again within (minutes after it ran)<input type="number" min="0" max="1440" data-f="cooldown_minutes" value="${esc(d.cooldown_minutes || 0)}"></label>
@@ -2705,26 +3135,7 @@ class DailyRoutinePanel extends HTMLElement {
         <label>Try that device again later
           <select data-f="retry_later_minutes">${RETRY_LATER_CHOICES.map((m) => `<option value="${m}" ${Number(d.retry_later_minutes) === m ? "selected" : ""}>${m ? `After ${m} minutes (up to 3 times)` : "No"}</option>`).join("")}</select>
         </label>
-        <h4>Skip for now</h4>
-        <label class="check"><input type="checkbox" data-f="skip_next" ${d.skip_next ? "checked" : ""}> Skip the next run (it runs as usual after that)</label>
-        <label>Pause until (the last day it's skipped)<input type="date" data-f="paused_until" value="${esc(d.paused_until || "")}"></label>
-        <label class="check"><input type="checkbox" data-f="wait_when_unavailable" ${d.wait_when_unavailable ? "checked" : ""}> If a to-do list or device is unavailable, wait for it to come back, then run (up to a day)</label>
-        <h4>Notify me</h4>
-        <label class="check"><input type="checkbox" data-f="notify_on_run" ${d.notify_on_run ? "checked" : ""}> When it runs</label>
-        <label class="check"><input type="checkbox" data-f="notify_on_skip" ${d.notify_on_skip ? "checked" : ""}> When it is skipped</label>
-        <label class="check"><input type="checkbox" data-f="notify_on_error" ${d.notify_on_error ? "checked" : ""}> When it fails</label>
-        <label class="check"><input type="checkbox" data-f="notify_on_health" ${d.notify_on_health ? "checked" : ""}> When it needs attention (a device or list is missing or unavailable)</label>
-      </section>
-
-      ${preview}
-      ${this._notice ? `<div class="notice ${this._error ? "error" : ""}">${esc(this._notice)}</div>` : ""}
-      <div class="footer">
-        ${d.isNew ? "" : `<button class="ghost danger" data-act="delete">Delete</button>`}
-        <button class="ghost" data-act="cancel">Cancel</button>
-        <button class="ghost" data-act="test">Test (dry run)</button>
-        <button class="primary" data-act="save">Save</button>
-      </div>
-    </form>`;
+        <label class="check"><input type="checkbox" data-f="wait_when_unavailable" ${d.wait_when_unavailable ? "checked" : ""}> If a to-do list or device is unavailable, wait for it to come back, then run (up to a day)</label>`;
   }
 
   _conditionRows(d) {
@@ -2806,11 +3217,11 @@ class DailyRoutinePanel extends HTMLElement {
   }
 
   // Other triggers for the same routine. Its days, hours, conditions and steps are shared.
-  _moreTriggers(d) {
+  _moreTriggers(d, heading = true) {
     const rows = (d.more_triggers || []).map((t, i) => this._moreTriggerRow(d, t, i)).join("");
     const add = (d.more_triggers || []).length < MAX_MORE_TRIGGERS
       ? `<button class="ghost" data-act="add-more-trigger">+ Or also when…</button>` : "";
-    return `<h4>Or also when</h4>
+    return `${heading ? "<h4>Or also when</h4>" : ""}
       <p class="muted small">More things that start this routine, such as “at 22:00 or when everyone leaves”. They share the days, hours, conditions and steps.</p>
       ${rows}<div class="row-actions">${add}</div>`;
   }
@@ -2834,6 +3245,14 @@ class DailyRoutinePanel extends HTMLElement {
       fields = `<label>Device to watch<select ${a} data-xf="watch_entity">${this._anyEntityOptions(t.watch_entity)}</select></label>
         <label>Changes to<input ${a} data-xf="watch_states" value="${esc(t.watch_states || "")}" placeholder="for example on or locked"></label>
         <label>Hold for (minutes)<input type="number" min="0" max="1440" ${a} data-xf="hold_minutes" value="${esc(t.hold_minutes || 0)}"></label>`;
+    } else if (t.trigger === "alarm") {
+      const alarms = this._data.alarm_sensors || [];
+      fields = `<label>Alarm<select ${a} data-xf="watch_entity"><option value="">Choose…</option>${alarms.map((x) => `<option value="${esc(x.entity_id)}" ${x.entity_id === t.watch_entity ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></label>
+        <label>Minutes before (negative) or after<input type="number" min="-720" max="720" ${a} data-xf="offset_minutes" value="${esc(t.offset_minutes || 0)}"></label>`;
+    } else if (t.trigger === "calendar_event") {
+      fields = `<label>Calendar<select ${a} data-xf="watch_entity"><option value="">Choose…</option>${this._calendars().map((x) => `<option value="${esc(x.entity_id)}" ${x.entity_id === t.watch_entity ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></label>
+        <label>Events with this in the title<input ${a} data-xf="watch_item" value="${esc(t.watch_item || "")}"></label>
+        <label>Minutes before (negative) or after<input type="number" min="-720" max="720" ${a} data-xf="offset_minutes" value="${esc(t.offset_minutes || 0)}"></label>`;
     } else if (t.trigger === "mode_changes") {
       fields = `<div class="chips">${MODES.map(([id, label]) => `<label class="chip"><input type="checkbox" ${a} data-xmode="${id}" ${(t.modes || []).includes(id) ? "checked" : ""}> ${esc(label)}</label>`).join("")}</div>`;
     }
@@ -2924,7 +3343,58 @@ class DailyRoutinePanel extends HTMLElement {
     </div>`;
   }
 
+  // A step folds to one line; tap it to open it, drag it to move it.
   _stepEditor(step, i, roomId) {
+    const summary = this._stepSummary(step);
+    const together = i > 0 && step.withPrev ? `<span class="together-note">At the same time as step ${i}</span>` : "";
+    const head = `<div class="fold-head"><span class="grip" aria-hidden="true" title="Drag to move">⠿</span>
+      <button class="fold-toggle" data-act="toggle-step" data-i="${i}" aria-expanded="${step._open ? "true" : "false"}">
+        <span class="num">${i + 1}</span><span class="what">${esc(summary)}${together}</span><span class="chev" aria-hidden="true">${step._open ? "▾" : "▸"}</span></button></div>`;
+    const withPrev = i > 0 && step._open && !["delay", "wait_until"].includes(step.kind)
+      ? `<label class="check"><input type="checkbox" data-si="${i}" data-sf="withPrev" ${step.withPrev ? "checked" : ""}> At the same time as the step before</label>` : "";
+    return `<li class="step-fold ${step._open ? "open" : ""}" draggable="true" data-step="${i}">${head}
+      ${step._open ? `${withPrev}${this._stepBody(step, i, roomId)}` : ""}</li>`;
+  }
+
+  // One step in a few words, for its folded line.
+  _stepSummary(step) {
+    const names = (ids) => {
+      const list = ids.map((id) => this._nameFor(id));
+      return list.length > 2 ? `${list.slice(0, 2).join(", ")} and ${list.length - 2} more` : list.join(" and ");
+    };
+    let text;
+    if (step.kind === "delay") {
+      const sec = Number(step.seconds) || 0;
+      text = sec >= 60 ? `Wait ${Math.round(sec / 6) / 10} minutes` : `Wait ${sec} seconds`;
+    } else if (step.kind === "wait_until") text = step.wEntity ? `Wait until ${this._nameFor(step.wEntity)} is ${step.wStates || "…"}` : "Wait until a device changes";
+    else if (step.kind === "routine") text = `Run ${this._data.routines.find((r) => r.id === step.routine)?.name || "another routine"}`;
+    else if (step.kind === "mode") text = `Set the house to ${modeName(step.mode || "home")}`;
+    else if (step.kind === "todo") {
+      const op = { add: "Add", complete: "Check off", remove: "Remove" }[step.todoOp] || "Change";
+      text = `${op} “${step.todoItem || "…"}”${step.todoList ? ` on ${this._nameFor(step.todoList)}` : ""}`;
+    } else {
+      const spec = actionSpec(step.service);
+      const label = spec?.label || step.service || "Choose an action";
+      let where = "";
+      if (step.targetMode === "area" && step.area) where = this._area(step.area)?.name || step.area;
+      else if (step.targetMode === "all_areas") where = "every room";
+      else if (step.targetMode === "entities" && step.entities.length) where = names(step.entities);
+      const bits = Object.entries(step.fields || {}).filter(([, v]) => v !== "" && v != null).map(([k, v]) => {
+        const f = spec?.fields?.find((x) => x.key === k);
+        if (!f) return "";
+        if (f.type === "pct" || f.type === "percent") return `${v}%`;
+        if (f.type === "color") return "color";
+        if (f.type === "kelvin") return `${v} K`;
+        if (f.type === "minutes") return `over ${v} min`;
+        return `${f.label.toLowerCase()} ${v}`;
+      }).filter(Boolean);
+      text = [label, where].filter(Boolean).join(": ") + (bits.length ? ` · ${bits.join(", ")}` : "");
+    }
+    if (step.onlyIf?.kind) text += " · only if…";
+    return text;
+  }
+
+  _stepBody(step, i, roomId) {
     const last = this._draft.actions.length - 1;
     const head = `<div class="step-head"><strong>Step ${i + 1}</strong>
       <div class="row-actions">
@@ -3141,6 +3611,27 @@ const STYLES = `<style>
   .tl.skipped { border-left-color: var(--warning-color, #ffa600); }
   .tl.running { border-left-color: var(--primary-color, #03a9f4); }
   .tl-time { font-variant-numeric: tabular-nums; color: var(--secondary-text-color); padding-top: 2px; }
+  .steps { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+  .step-fold { border: 1px solid var(--divider-color, #ddd); border-radius: 12px; padding: 6px 10px; background: var(--card-background-color, #fff); }
+  .step-fold.open { padding-bottom: 12px; }
+  .fold-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .grip { cursor: grab; color: var(--secondary-text-color); user-select: none; }
+  .fold-toggle { flex: 1; display: flex; gap: 10px; align-items: center; text-align: left; background: none; border: 0; padding: 6px 0; font: inherit; color: var(--primary-text-color); cursor: pointer; min-width: 0; }
+  .fold-toggle .num { flex: none; width: 24px; height: 24px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 13px; background: var(--secondary-background-color, #eee); }
+  .fold-toggle .what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .together-note { display: block; font-size: 12px; color: var(--primary-color, #03a9f4); }
+  .fold-toggle .chev { color: var(--secondary-text-color); }
+  .step-fold .step { border: 0; padding: 0; margin: 0; }
+  .sentence .say { display: grid; grid-template-columns: 64px 1fr; gap: 8px; align-items: start; margin-bottom: 10px; }
+  .sentence .say > .word { font-weight: 600; padding-top: 10px; color: var(--primary-color); }
+  .sentence .say > .grow { min-width: 0; }
+  .sentence label.say { flex-direction: unset; }
+  .chips-add { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
+  .chip-add { font: inherit; border-radius: 999px; padding: 8px 14px; border: 1px dashed var(--primary-color, #03a9f4); background: transparent; color: var(--primary-color, #03a9f4); cursor: pointer; }
+  .switch-editor { margin: 0 0 8px; text-align: right; }
+  button.link { background: none; border: 0; padding: 4px 0; color: var(--primary-color, #03a9f4); font: inherit; cursor: pointer; text-decoration: underline; }
+  .copy-panel { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: var(--secondary-background-color, #f2f2f2); }
+  .ideas { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); margin-bottom: 16px; }
   .picker-search { width: 100%; box-sizing: border-box; margin: 6px 0 4px; padding: 8px 10px; font: inherit; border-radius: 8px;
     border: 1px solid var(--divider-color, #ddd); background: var(--card-background-color, #fff); color: var(--primary-text-color); }
   input[type="color"] { width: 56px; height: 36px; padding: 2px; flex: none; }

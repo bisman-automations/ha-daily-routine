@@ -9,7 +9,11 @@ from typing import Any
 from .const import (
     MAX_ACTIONS,
     MAX_RANDOM_MINUTES,
+    TRIGGER_ALARM,
+    TRIGGER_CALENDAR_EVENT,
+    TRIGGER_CHEAPEST,
     TRIGGER_EVERYONE_LEAVES,
+    TRIGGER_FORECAST,
     TRIGGER_MODE,
     TRIGGER_PERSON_ARRIVES,
     TRIGGER_PERSON_LEAVES,
@@ -63,8 +67,12 @@ STATE_TRIGGERS = (TRIGGER_STATE_IS,)
 # Watch a to-do list and run when an item on it is checked off.
 TODO_DONE_TRIGGERS = (TRIGGER_TODO_DONE,)
 WATCH_TRIGGERS = (*STATE_TRIGGERS, *TODO_DONE_TRIGGERS)
+# Triggers planned ahead from what another entity says (an alarm, a calendar
+# event, electricity prices), like a time trigger.
+PLANNED_TRIGGERS = (TRIGGER_ALARM, TRIGGER_CALENDAR_EVENT, TRIGGER_CHEAPEST)
 REPEATING_TRIGGERS = (
     TRIGGER_MODE,
+    TRIGGER_FORECAST,
     *PRESENCE_TRIGGERS,
     TRIGGER_ROOM_CLEAR,
     *VALUE_TRIGGERS,
@@ -100,6 +108,10 @@ MORE_TRIGGER_KINDS = (
     TRIGGER_VALUE_BELOW,
     TRIGGER_STATE_IS,
     TRIGGER_MODE,
+    TRIGGER_ALARM,
+    TRIGGER_CALENDAR_EVENT,
+    TRIGGER_FORECAST,
+    TRIGGER_CHEAPEST,
 )
 TRIGGER_FIELDS = (
     "trigger",
@@ -113,6 +125,8 @@ TRIGGER_FIELDS = (
     "watch_states",
     "hold_minutes",
     "modes",
+    "watch_item",
+    "forecast_hours",
 )
 
 
@@ -342,7 +356,27 @@ def _normalize_action(raw: Any, index: int) -> dict[str, Any]:
     return action
 
 
+# Steps run at the same time: up to this many in one "together" step.
+MAX_TOGETHER = 10
+TOGETHER_KINDS = {"service", "todo", "run_routine", "set_mode"}
+
+
 def _normalize_step(raw: dict[str, Any], index: int) -> dict[str, Any]:
+    if "together" in raw:
+        items = _as_list(raw.get("together"))
+        if not 2 <= len(items) <= MAX_TOGETHER:
+            raise vol.Invalid(
+                f"Step {index}: run 2 to {MAX_TOGETHER} things at the same time."
+            )
+        together = []
+        for item in items:
+            if not isinstance(item, dict) or not set(item) & TOGETHER_KINDS:
+                raise vol.Invalid(
+                    f"Step {index}: only actions, to-dos, routines and house modes "
+                    "can run at the same time."
+                )
+            together.append(_normalize_action(item, index))
+        return {"together": together}
     if "todo" in raw:
         return {"todo": normalize_todo_step(raw["todo"], index)}
     if "run_routine" in raw:
@@ -408,7 +442,7 @@ def _normalize_step(raw: dict[str, Any], index: int) -> dict[str, Any]:
 
 
 # Steps that change something (waiting alone does nothing).
-DOING_STEPS = {"service", "todo", "run_routine", "set_mode"}
+DOING_STEPS = {"service", "todo", "run_routine", "set_mode", "together"}
 
 
 def _presence_condition(
@@ -670,6 +704,8 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
     device_id = (device_raw or "").strip() or None
 
     value_entity = str(raw.get("value_entity") or "").strip() or None
+    if trigger not in (*VALUE_TRIGGERS, TRIGGER_CHEAPEST):
+        value_entity = None
     value_threshold: float | None = None
     off_threshold: float | None = None
     if trigger in VALUE_TRIGGERS:
@@ -690,16 +726,59 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
             if off_threshold >= value_threshold:
                 raise vol.Invalid("The turn-off level must be below the turn-on level.")
 
+    forecast_hours = 0
+    if trigger == TRIGGER_ALARM:
+        entity = str(raw.get("watch_entity") or "").strip()
+        if not ENTITY_ID_RE.fullmatch(entity) or not entity.startswith(
+            ("sensor.", "input_datetime.")
+        ):
+            raise vol.Invalid("Pick the alarm (a phone's Next alarm sensor).")
+    if trigger == TRIGGER_CALENDAR_EVENT:
+        entity = str(raw.get("watch_entity") or "").strip()
+        if not entity.startswith("calendar.") or not ENTITY_ID_RE.fullmatch(entity):
+            raise vol.Invalid("Pick the calendar.")
+    if trigger == TRIGGER_FORECAST:
+        entity = str(raw.get("watch_entity") or "").strip()
+        if not entity.startswith("weather.") or not ENTITY_ID_RE.fullmatch(entity):
+            raise vol.Invalid("Pick the weather forecast.")
+        kinds = [str(w) for w in _as_list(raw.get("watch_states"))]
+        if any(w not in WEATHER_STATES for w in kinds):
+            raise vol.Invalid("Pick kinds of weather from the list.")
+        if not kinds and raw.get("value_threshold") in (None, ""):
+            raise vol.Invalid(
+                "Pick the kinds of weather, or a temperature it drops below."
+            )
+        forecast_hours = _int(raw.get("forecast_hours") or 3, 1, 48, "Within")
+    if trigger == TRIGGER_CHEAPEST:
+        entity = str(raw.get("value_entity") or "").strip()
+        if not entity.startswith("sensor.") or not ENTITY_ID_RE.fullmatch(entity):
+            raise vol.Invalid("Pick the electricity price sensor.")
+        if not raw.get("active_from") or not raw.get("active_to"):
+            raise vol.Invalid(
+                "Set the hours to choose the cheapest one from, under Only run between."
+            )
+
     modes: list[str] = []
     if trigger == TRIGGER_MODE:
         modes = _modes(raw.get("modes"))
         if not modes:
             raise vol.Invalid("Pick the house modes that start it.")
 
+    if trigger == TRIGGER_FORECAST and raw.get("value_threshold") not in (None, ""):
+        value_threshold = _number(raw.get("value_threshold"), "The temperature")
+
     watch_entity: str | None = None
     watch_states: list[str] = []
     watch_item = ""
     hold_minutes = 0
+    if trigger in (TRIGGER_ALARM, TRIGGER_CALENDAR_EVENT, TRIGGER_FORECAST):
+        watch_entity = str(raw.get("watch_entity") or "").strip()
+    if trigger == TRIGGER_CALENDAR_EVENT:
+        watch_item = _item_name(raw.get("watch_item"))
+    if trigger == TRIGGER_FORECAST:
+        watch_states = [
+            w for w in WEATHER_STATES if w in _as_list(raw.get("watch_states"))
+        ]
     if trigger in WATCH_TRIGGERS:
         watch_entity = str(raw.get("watch_entity") or "").strip() or None
         if trigger in TODO_DONE_TRIGGERS:
@@ -733,7 +812,11 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         raise vol.Invalid(
             "Add at least one step that does something (waits alone do nothing)."
         )
-    if any(action.get("run_routine") == rid for action in actions):
+    if any(
+        step.get("run_routine") == rid
+        for action in actions
+        for step in [action, *action.get("together", [])]
+    ):
         raise vol.Invalid("A routine can't run itself.")
 
     kind = "todo" if raw.get("kind") == "todo" else "routine"
@@ -758,6 +841,7 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "watch_states": watch_states,
         "hold_minutes": hold_minutes,
         "modes": modes,
+        "forecast_hours": forecast_hours,
         "watch_item": watch_item,
         "active_from": active_from,
         "active_to": active_to,
@@ -822,8 +906,26 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "notify_on_health": bool(raw.get("notify_on_health", False)),
         "wait_when_unavailable": bool(raw.get("wait_when_unavailable", False)),
         "more_triggers": more_triggers,
+        # Ask on the phone (and the card) before a scheduled run: Run or Skip,
+        # and what happens when nobody answers in time.
+        "ask_first": bool(raw.get("ask_first", False)),
+        "ask_minutes": _int(
+            raw.get("ask_minutes") or DEFAULT_ASK_MINUTES, 1, 60, "Wait for an answer"
+        ),
+        "ask_default": _ask_default(raw.get("ask_default")),
         "actions": actions,
     }
+
+
+DEFAULT_ASK_MINUTES = 10
+ASK_DEFAULTS = ("run", "skip")
+
+
+def _ask_default(value: Any) -> str:
+    value = value or "run"
+    if value not in ASK_DEFAULTS:
+        raise vol.Invalid("With no answer, it runs or skips.")
+    return str(value)
 
 
 def _more_triggers(

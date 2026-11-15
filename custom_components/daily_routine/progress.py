@@ -76,6 +76,9 @@ def step_label(
     if "todo" in action:
         step = action["todo"]
         return f"{TODO_VERBS.get(step['op'], step['op'])} “{step['item']}”"
+    if "together" in action:
+        parts = [step_label(hass, sub, routine_names) for sub in action["together"]]
+        return f"At the same time: {'; '.join(parts)}"
     if "run_routine" in action:
         other = (routine_names or {}).get(action["run_routine"], action["run_routine"])
         return f"Run {other}"

@@ -5,6 +5,27 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.24.0] - 2026-11-15
+
+### Added
+
+- **Before your alarm.** A routine can run a set time before a phone's next alarm (the Companion app's Next alarm sensor) or a date-and-time helper, such as wake-up lights 15 minutes before. When the alarm moves, so does the routine; with no alarm set, it doesn't run.
+- **Before a calendar event.** Run a set time before events in a calendar, all of them or only ones whose name has some text, such as "School". The next three days are read every half hour.
+- **When the forecast says so.** Run when rain, snow or another kind of weather shows up in the next hours of the forecast, or the temperature will drop below a level. It runs once when the forecast changes to match, not again until it stops matching.
+- **In the cheapest hour.** With an electricity price sensor (Nord Pool, ENTSO-e, Tibber and others that list prices by the hour), run in the cheapest hour inside the hours you pick, such as the dishwasher between midnight and 06:00. Once chosen, the day's hour stays put. Without prices it runs at the start of the hours.
+- **Ask me first.** A routine can ask before it runs on its own: a notification with **Run** and **Don't run** buttons on your phone, and the same on its card. Nobody answers within the minutes you choose, and it does what you picked: run anyway, or skip. **Run now** never asks.
+- **Steps at the same time.** Tick **At the same time as the step before** to start steps together, such as closing every room's curtains at once, instead of one after another.
+- **Copy to other rooms.** **Copy to rooms** on a routine's card makes a copy for each room you tick. Steps for the routine's room are for the new room instead; steps for specific devices stay as they are.
+- **A dashboard card.** Add the **Daily Routine** card to any dashboard to see what's running (with its progress), what's asking, and what's next today, with **Run now** and **Skip**. It can show one room or only whole-house routines.
+- **Devices that gave trouble.** The Activity tab lists devices a step couldn't change, or had to send the command to twice, with how often each worked and its last problem, so a device with a weak signal or low batteries stands out.
+- **A simple editor.** New routines open as one sentence: what it's called, when, in which room, and what to do. Everything else (more triggers, conditions, dates and hours, Ask me first, notifications, skip and pause, options) is a button that adds just that part. **Switch to the full editor** shows every option at once. Under **Settings**, **Routine editor** picks which one opens, for everyone and, if you like, differently on this device.
+- **Ideas for your home.** **+ New routine** suggests routines from what your home has and no routine does yet, such as closing curtains at sunset, a steamy bathroom's fan, wake-up lights before your phone's alarm, locking up when everyone leaves, and a heads-up when rain is coming.
+
+### Changed
+
+- **Shorter editor.** Steps fold to one line saying what they do; tap one to change it, and drag steps to reorder them.
+- **Everyone allowed to see Daily Routine can use Run now, Skip, Try again and Undo**, on the page and on the dashboard card. Changing routines and settings is still for admins.
+
 ## [1.23.0] - 2026-11-14
 
 ### Added
@@ -403,6 +424,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.24.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.23.0...v1.24.0
 [1.23.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.22.0...v1.23.0
 [1.22.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.21.1...v1.22.0
 [1.21.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.21.0...v1.21.1

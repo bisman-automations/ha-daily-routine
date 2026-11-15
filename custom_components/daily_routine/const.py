@@ -29,6 +29,14 @@ TRIGGER_VALUE_BELOW = "value_below"
 TRIGGER_STATE_IS = "state_is"
 TRIGGER_TODO_DONE = "todo_done"
 TRIGGER_MODE = "mode_changes"
+# Before (or after) a time a sensor gives, such as a phone's next alarm.
+TRIGGER_ALARM = "alarm"
+# Before (or after) an event in a calendar starts.
+TRIGGER_CALENDAR_EVENT = "calendar_event"
+# When the weather forecast shows rain, snow, a freeze... within some hours.
+TRIGGER_FORECAST = "forecast"
+# At the cheapest electricity hour in the routine's hours.
+TRIGGER_CHEAPEST = "cheapest"
 
 TRIGGERS = (
     TRIGGER_TIME,
@@ -45,6 +53,10 @@ TRIGGERS = (
     TRIGGER_STATE_IS,
     TRIGGER_TODO_DONE,
     TRIGGER_MODE,
+    TRIGGER_ALARM,
+    TRIGGER_CALENDAR_EVENT,
+    TRIGGER_FORECAST,
+    TRIGGER_CHEAPEST,
 )
 
 ROUTINE_SUBENTRY = "routine"

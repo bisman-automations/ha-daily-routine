@@ -23,6 +23,7 @@
 - **See what's running.** A routine that's running shows **Running** and a progress bar on its card ("Step 2 of 4 · Close Bedroom curtains", with a countdown for waits), and it's listed at the top of the Rooms page. **Run now** starts it straight away, and the card and Activity update as it goes.
 - **Today.** One page with everything still planned today, in time order, each with **Run now** and **Skip**, and everything that already ran.
 - **House modes.** Home, Away, Night, Guests or Vacation, chosen at the top of the page, from a routine step, or from the **House mode** entity. Routines can run only in some modes, or start when the mode changes.
+- **Routine editor.** Simple (a sentence, then only what you add) or Full (every option), for everyone, and optionally a different one on this device.
 - **Lived-in lights.** While you're away, lights you pick turn on and off at random in the evening so the house looks lived in.
 - **Undo.** Put the lights, switches, fans, curtains, locks and thermostats a routine changed back how they were before it ran, for two hours afterwards.
 - **Assist.** "Run bedtime", "skip the morning curtains", "set the house to night" and "what's the next routine?" work by voice or by typing to Assist.
@@ -92,8 +93,12 @@ Then open **Daily Routine** in the sidebar. Rooms come from your Home Assistant 
 ## Using the sidebar
 
 1. **Whole house** or a **room card** → **+ New routine**.
-2. Pick a template (for example *Open curtains* or *Lights off when vacant*), or start blank.
-3. Set **When**, **Do**, and **Options**. Use **Test (dry run)** to check it, then **Save**.
+2. Pick one of the **Ideas for your home** (routines your home's devices could use and none does yet), a template (for example *Open curtains* or *Lights off when vacant*), or start blank.
+3. Fill in the sentence: what it's called, **When**, **In** which room, and what to **Do**. Add anything else with the buttons under it (**Or also when**, **Only if**, **Ask me first** and so on). Use **Test (dry run)** to check it, then **Save**.
+
+That's the simple editor. **Switch to the full editor** shows every option at once; both change the same routine. Under **Settings**, **Routine editor** picks which one opens, for everyone and, if you like, differently on this device.
+
+Steps fold to one line saying what they do. Tap one to change it, drag them to reorder, and tick **At the same time as the step before** to start steps together instead of one after another.
 
 Room routines target the room itself, so lights or covers you add to that room later are included without editing the routine.
 
@@ -110,7 +115,20 @@ The **House mode** list at the top of the page (administrators) switches the hou
 
 Wherever you pick devices, a long list has a search box above it. Each step's action shows its own settings as fields (brightness, color, speed, position, a thermostat's mode, and for any other action the settings Home Assistant describes for it), so nothing needs typing as JSON.
 
-Each routine card has **Run now**, **Undo** (for two hours after it ran), **Edit**, **Duplicate**, **Enable/Disable**, and **Delete**. Under the routine's details, **Recent runs** lists its last five runs, including skips and failures and why they happened. A yellow warning appears on the card when something the routine needs is missing or unavailable, such as a device or to-do list. Duplicate opens a copy you can change before saving. In the editor, **Linked device** picks the device the routine belongs to. Each device is shown with the integration it comes from, such as *Office Curtains (SwitchBot Cloud)*, so devices with the same name can be told apart. Only real devices are offered, not services such as a Music Assistant player or another integration's service; a routine already linked to one keeps it until you change it.
+Each routine card has **Run now**, **Undo** (for two hours after it ran), **Edit**, **Duplicate**, **Copy to rooms**, **Enable/Disable**, and **Delete**. **Copy to rooms** makes a copy for each room you tick: steps for the routine's room are for the new room instead, and steps for specific devices stay as they are. Under the routine's details, **Recent runs** lists its last five runs, including skips and failures and why they happened. A yellow warning appears on the card when something the routine needs is missing or unavailable, such as a device or to-do list. Duplicate opens a copy you can change before saving. In the editor, **Linked device** picks the device the routine belongs to. Each device is shown with the integration it comes from, such as *Office Curtains (SwitchBot Cloud)*, so devices with the same name can be told apart. Only real devices are offered, not services such as a Music Assistant player or another integration's service; a routine already linked to one keeps it until you change it.
+
+## Dashboard card
+
+Add the **Daily Routine** card to any dashboard (**Edit dashboard** → **Add card**, or in YAML):
+
+```yaml
+type: custom:daily-routine-card
+title: Routines     # optional
+room: kitchen       # optional: one room's routines, or "house" for whole-house ones
+limit: 5            # optional: how many coming up
+```
+
+It shows what's running with its progress, routines asking whether to run (**Run it** / **Skip it**), and what's next today with **Run now** and **Skip**. Everyone allowed to see Daily Routine can use it.
 
 ## Routines as devices
 
@@ -188,6 +206,7 @@ The **Activity** tab shows how routines have been doing, for **Today**, the **7 
 - **Runs per day:** a bar for each day, split into succeeded, failed and skipped.
 - **Why runs failed** and **Why runs were skipped:** each reason with how often it happened, in plain words, such as *Action not found* or *Conditions were not met by the end of the day*.
 - **By routine:** each routine's counts, its last run and its last failure.
+- **Devices that gave trouble:** devices a step couldn't change, or had to send the command to twice, with how often each worked and its last problem. One that keeps showing up may need its batteries, its signal or its integration checked.
 - **Recent activity:** the latest events, filterable to succeeded, failed or skipped.
 
 The history is saved with Home Assistant, keeps the last 30 days, and is removed for a routine when that routine is deleted.
@@ -205,7 +224,12 @@ The history is saved with Home Assistant, keeps the last 30 days, and is removed
 
 | Field | Meaning |
 |-------|---------|
-| Trigger | `time`, `sunrise`, `sunset`, `everyone_leaves`, `someone_arrives`, `person_leaves`, `person_arrives`, `room_clear`, `value_above`, `value_below`, `state_is`, `todo_done`, `mode_changes`, or `manual` |
+| Trigger | `time`, `sunrise`, `sunset`, `everyone_leaves`, `someone_arrives`, `person_leaves`, `person_arrives`, `room_clear`, `value_above`, `value_below`, `state_is`, `todo_done`, `mode_changes`, `alarm`, `calendar_event`, `forecast`, `cheapest`, or `manual` |
+| Before an alarm | For `alarm`: a phone's Next alarm sensor (from the Companion app) or a date-and-time helper, and how many minutes before (or after) it runs. It follows the alarm when it moves, and doesn't run when no alarm is set |
+| Before a calendar event | For `calendar_event`: the calendar, optional text the event's name must contain (such as "School"), and how many minutes before it runs. All-day events start at midnight |
+| Forecast | For `forecast`: a weather entity, the kinds of weather to look for and/or a temperature it must drop below, and how many hours ahead to look (1 to 48, default 3). The forecast is read every 30 minutes, and it runs when the forecast changes to match, not again until it stops matching |
+| Cheapest hour | For `cheapest`: an electricity price sensor that lists prices by the hour or quarter hour, and the hours to pick from (such as 00:00 to 06:00). It runs in the cheapest slot inside them. Once chosen, the day's slot stays put; without prices it runs at the start of the hours |
+| Ask me first | For runs it starts on its own: a notification (Companion app phones get **Run** and **Don't run** buttons) and **Run it** / **Skip it** on the card. If nobody answers within the minutes you choose (1 to 60, default 10), it runs anyway or skips, as you pick. **Run now** never asks |
 | Or also when | Up to 4 more triggers for the same routine: a time, sunrise or sunset, people leaving or arriving, a sensor's level, a device's state, or the house mode changing. They share the routine's days, hours, conditions and steps. The card shows each one, and **Next** is the soonest |
 | House mode | For **When the house mode changes**: the modes that start it. It runs when the house changes to one of them |
 | Device and states | For a device-state trigger: the device to watch, the states it changes to (several, separated by commas, such as `on, off`), and an optional hold time in minutes. The routine runs when the device changes into one of those states, not while it stays in them. A change to another state during the hold time cancels the run |
@@ -233,7 +257,7 @@ The history is saved with Home Assistant, keeps the last 30 days, and is removed
 | Skip the next run | The next time the routine would run on its own, it doesn't, and then it carries on as usual. Also on each routine's card: **Skip next run** |
 | Pause until | The routine doesn't run on its own through this day, then carries on. **Run now** still works. To pause many routines at once while you're away, use **Going away?** on the Routines tab |
 | Wait for an unavailable list or device | Off by default. When a to-do list (or the device the routine watches) is unavailable when the routine should run, for example while iCloud is having trouble, the run waits instead of failing. The card shows **Waiting for list**, and the routine runs as soon as the list is back. You aren't told it needs attention unless the list stays unavailable for a whole day; then the waiting run is dropped (and you're told it was skipped, if **On skip** is on). A list that is gone from Home Assistant altogether is still announced right away. A waiting run is forgotten if Home Assistant restarts |
-| Steps | Actions chosen by name, such as "Turn off lights" (with a room, specific devices, or no target), or any service under "Other (advanced)", plus waits. **Set speaker volume**, **Say something on a speaker** (a voice, a speaker and what to say), **Set the thermostat** (a temperature), **Turn off the thermostat**, **Play media**, **Start the vacuum** and **Send the vacuum home** ask for their settings in plain fields. **Turn on lights** can set a brightness, and **Turn on lights** and **Turn off lights** can fade over a number of minutes (the lights need to support fading; most smart bulbs do). **Remember which lights and switches are on** keeps, under a name you choose, the lights, switches and fans that are on in the room or devices you pick, with each light's brightness and color; **Put back what was on** turns exactly those back on and then forgets them. **Wait until…** pauses until a device shows a state (a garage door closed, say) for up to the minutes you choose, then either goes on or stops the routine. **Run another routine** runs it as if you pressed Run now (its conditions apply) and waits for it to finish; a routine can't run itself, directly or through others. **Set the house mode** switches the mode. Any step except a wait can have **Only if** (a device's state, the house mode, workday or day off, or the weather): when it doesn't hold, that step is skipped and the rest still run |
+| Steps | Actions chosen by name, such as "Turn off lights" (with a room, specific devices, or no target), or any service under "Other (advanced)", plus waits. **Set speaker volume**, **Say something on a speaker** (a voice, a speaker and what to say), **Set the thermostat** (a temperature), **Turn off the thermostat**, **Play media**, **Start the vacuum** and **Send the vacuum home** ask for their settings in plain fields. **Turn on lights** can set a brightness, and **Turn on lights** and **Turn off lights** can fade over a number of minutes (the lights need to support fading; most smart bulbs do). **Remember which lights and switches are on** keeps, under a name you choose, the lights, switches and fans that are on in the room or devices you pick, with each light's brightness and color; **Put back what was on** turns exactly those back on and then forgets them. **Wait until…** pauses until a device shows a state (a garage door closed, say) for up to the minutes you choose, then either goes on or stops the routine. **Run another routine** runs it as if you pressed Run now (its conditions apply) and waits for it to finish; a routine can't run itself, directly or through others. **Set the house mode** switches the mode. **At the same time as the step before** starts a step together with the one before it (up to 10 at once; waits can't be started together); if one of them can't change a device, the others still finish. Any step except a wait can have **Only if** (a device's state, the house mode, workday or day off, or the weather): when it doesn't hold, that step is skipped and the rest still run |
 | Notify | On run, on skip, on failure, and when it needs attention (a device or list is missing or unavailable). The attention message is sent once a problem has lasted a minute, and again only after it clears and returns. Choosing **Show a Home Assistant notification** as a notify target doesn't add a second copy: the Home Assistant notification is always shown |
 
 ### Trigger notes

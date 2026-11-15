@@ -47,6 +47,7 @@ BRAND_DIR = Path(__file__).parent / "brand"
 _PANEL_REGISTERED = f"{DOMAIN}_panel_registered"
 _STATIC_REGISTERED = f"{DOMAIN}_panel_static_registered"
 _API_REGISTERED = f"{DOMAIN}_panel_api_registered"
+_CARD_REGISTERED = f"{DOMAIN}_card_registered"
 
 SENSOR_CLASSES = ("motion", "occupancy", "presence", "moving")
 
@@ -200,8 +201,30 @@ def _overview(
         "mode": coordinator.mode,
         "workday_sensors": _platform_entities(hass, "binary_sensor", "workday"),
         "weathers": [e for e in all_entities if e["entity_id"].startswith("weather.")],
+        "alarm_sensors": _alarm_sensors(hass),
         "lived_in": coordinator.lived_in.status(dt_util.now()),
     }
+
+
+def _alarm_sensors(hass: HomeAssistant) -> list[dict[str, str]]:
+    """Time sensors a routine can run before, such as a phone's Next alarm, and
+    date-and-time helpers. Next alarm sensors first."""
+    found = []
+    for state in hass.states.async_all(("sensor", "input_datetime")):
+        if (
+            state.domain == "sensor"
+            and state.attributes.get("device_class") != "timestamp"
+        ):
+            continue
+        if state.domain == "input_datetime" and not (
+            state.attributes.get("has_date") and state.attributes.get("has_time")
+        ):
+            continue
+        found.append({"entity_id": state.entity_id, "name": state.name})
+    return sorted(
+        found,
+        key=lambda e: ("alarm" not in e["entity_id"], e["name"].lower()),
+    )
 
 
 def _platform_entities(
@@ -239,6 +262,8 @@ def async_setup_panel_api(hass: HomeAssistant) -> None:
         ws_save_settings,
         ws_status,
         ws_subscribe,
+        ws_answer,
+        ws_copy,
         ws_today,
         ws_undo,
         ws_set_mode,
@@ -292,7 +317,56 @@ async def ws_activity(
         for r in coordinator.routines
         if r["enabled"] and (problems := coordinator.health(r))
     ]
+    summary["devices"] = coordinator.device_stats.summary(
+        {"today": 1, "7d": 7, "30d": 30}[msg["window"]], now
+    )
     connection.send_result(msg["id"], summary)
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/routine/answer",
+        vol.Required("routine_id"): str,
+        vol.Required("run"): bool,
+    }
+)
+@require_access
+@callback
+def ws_answer(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Answer "Ask me first" from the card: run it now, or skip it."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    answered = coordinator.async_answer(msg["routine_id"], msg["run"])
+    connection.send_result(msg["id"], {"answered": answered})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/routine/copy",
+        vol.Required("routine_id"): str,
+        vol.Required("rooms"): [str],
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_copy(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Copy a routine to other rooms."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    try:
+        copies = await coordinator.async_copy_to_rooms(msg["routine_id"], msg["rooms"])
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "invalid_routine", str(err))
+        return
+    connection.send_result(msg["id"], {"routines": copies})
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/integrations"})
@@ -469,7 +543,7 @@ async def ws_delete_routine(
         vol.Required("routine_id"): str,
     }
 )
-@websocket_api.require_admin
+@require_access
 @websocket_api.async_response
 async def ws_try_again(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
@@ -489,7 +563,7 @@ async def ws_try_again(
 @websocket_api.websocket_command(
     {vol.Required("type"): f"{DOMAIN}/routine/run", vol.Required("routine_id"): str}
 )
-@websocket_api.require_admin
+@require_access
 @websocket_api.async_response
 async def ws_run_routine(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
@@ -549,7 +623,7 @@ async def ws_set_paused(
         vol.Optional("skip", default=True): bool,
     }
 )
-@websocket_api.require_admin
+@require_access
 @websocket_api.async_response
 async def ws_skip_next(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
@@ -609,7 +683,7 @@ def ws_today(
 @websocket_api.websocket_command(
     {vol.Required("type"): f"{DOMAIN}/routine/undo", vol.Required("routine_id"): str}
 )
-@websocket_api.require_admin
+@require_access
 @websocket_api.async_response
 async def ws_undo(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
@@ -632,7 +706,7 @@ async def ws_undo(
 @websocket_api.websocket_command(
     {vol.Required("type"): f"{DOMAIN}/mode/set", vol.Required("mode"): vol.In(MODES)}
 )
-@websocket_api.require_admin
+@require_access
 @websocket_api.async_response
 async def ws_set_mode(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
@@ -685,6 +759,10 @@ async def async_register_panel(hass: HomeAssistant, *, update: bool = False) -> 
             ]
         )
         hass.data[_STATIC_REGISTERED] = True
+    if not hass.data.get(_CARD_REGISTERED):
+        # The dashboard card, on every dashboard.
+        frontend.add_extra_js_url(hass, f"{STATIC_URL}/daily-routine-card.js")
+        hass.data[_CARD_REGISTERED] = True
 
     require_admin = not await access.async_listed_non_admins()
     wanted = "admin" if require_admin else "all"

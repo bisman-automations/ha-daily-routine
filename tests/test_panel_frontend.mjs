@@ -79,7 +79,14 @@ function makePanel() {
   panel.attachShadow();
   panel._data = structuredClone(overview);
   panel._me = { allowed: true, is_admin: false };
+  // These tests check the full editor; the simple one has its own tests.
+  panel._editorOverride = "full";
   return panel;
+}
+
+// Steps start folded to one line; open them all to check their fields.
+function openSteps(panel) {
+  for (const step of panel._draft.actions) step._open = true;
 }
 
 test("panel element is registered", () => {
@@ -363,6 +370,7 @@ test("the action dropdown shows plain labels, never service ids", () => {
   const panel = makePanel();
   panel._draft = panel._applyTemplate({ title: "Off", draft: { trigger: "time", time: "07:00:00", actions: [{ service: "light.turn_off", targetMode: "area" }] } }, "kitchen");
   panel._view = { name: "editor", room: "kitchen" };
+  openSteps(panel);
   panel._render();
   const html = panel.shadowRoot.innerHTML;
   assert.match(html, /<option value="light.turn_off" selected>Turn off lights<\/option>/);
@@ -377,11 +385,13 @@ test("choosing Other shows a service name box, and picking a labelled action hid
   panel._view = { name: "editor", room: "kitchen" };
   panel._draft.actions[0].custom = true;
   panel._draft.actions[0].service = "";
+  openSteps(panel);
   panel._render();
   assert.match(panel.shadowRoot.innerHTML, /data-sf="service"/);
 
   panel._draft.actions[0].custom = false;
   panel._draft.actions[0].service = "fan.turn_on";
+  openSteps(panel);
   panel._render();
   assert.doesNotMatch(panel.shadowRoot.innerHTML, /data-sf="service"/);
 });
@@ -995,10 +1005,12 @@ test("a complete step offers the due-date choices, and a add step does not", () 
   panel._draft = panel._newDraft(null);
   panel._draft.actions = [{ kind: "todo", todoOp: "complete", todoList: "todo.groceries", todoItem: "Milk", todoDue: "any", todoOverdue: true, todoUndated: false, service: "", targetMode: "none", area: "", entities: [], data: "" }];
   panel._view = { name: "editor", room: null };
+  openSteps(panel);
   panel._render();
   assert.match(panel.shadowRoot.innerHTML, /data-sf="todoDue"/);
   assert.match(panel.shadowRoot.innerHTML, /<option value="0"[^>]*>Due today only<\/option>/);
   panel._draft.actions[0].todoOp = "add";
+  openSteps(panel);
   panel._render();
   assert.doesNotMatch(panel.shadowRoot.innerHTML, /data-sf="todoDue"/);
 });
@@ -1200,6 +1212,7 @@ test("plain actions ask for their settings instead of JSON, and round-trip", () 
   assert.equal(draft.actions[2].data, "");
   panel._draft = draft;
   panel._view = { name: "editor", room: "kitchen" };
+  openSteps(panel);
   panel._render();
   const html = panel.shadowRoot.innerHTML;
   assert.match(html, /Say something on a speaker/);
@@ -1507,6 +1520,7 @@ test("more triggers, new steps and only-if round-trip through the editor", () =>
   };
   panel._draft = panel._draftFromRoutine(routine);
   panel._view = { name: "editor", room: "kitchen" };
+  openSteps(panel);
   panel._render();
   const html = panel.shadowRoot.innerHTML;
   assert.match(html, /Or also when/);
@@ -1627,4 +1641,146 @@ test("light colors and white temperature are fields", () => {
   const draft = panel._draftFromRoutine(stored);
   assert.equal(draft.actions[0].fields.rgb_color, "#ff8000");
   assert.deepEqual(panel._draftToRaw(draft).actions[0].data, { rgb_color: [255, 128, 0], color_temp_kelvin: 2700 });
+});
+
+// ----- 1.24.0 -----
+
+test("the simple editor starts with a sentence and adds the rest from chips", () => {
+  const panel = makePanel();
+  panel._editorOverride = null;
+  panel._draft = panel._draftFromRoutine(overview.routines[0]);
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+  let html = panel.shadowRoot.innerHTML;
+  assert.match(html, /class="editor simple"/);
+  assert.match(html, /<span class="word">When<\/span>/);
+  assert.match(html, /data-act="open-section" data-key="ask">\+ Ask me first/);
+  assert.match(html, /Switch to the full editor/);
+  assert.doesNotMatch(html, /<h3>Ask me first<\/h3>/);
+  panel._simpleOpen.add("ask");
+  panel._render();
+  html = panel.shadowRoot.innerHTML;
+  assert.match(html, /<h3>Ask me first<\/h3>/);
+  panel._editorSession = "full";
+  panel._render();
+  assert.doesNotMatch(panel.shadowRoot.innerHTML, /class="editor simple"/);
+  assert.match(panel.shadowRoot.innerHTML, /Switch to the simple editor/);
+});
+
+test("the editor follows Settings unless this device picked its own", () => {
+  const panel = makePanel();
+  panel._editorOverride = null;
+  assert.equal(panel._editorMode(), "simple");
+  panel._data.settings.editor = "full";
+  assert.equal(panel._editorMode(), "full");
+  panel._view = { name: "settings" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /Routine editor/);
+  assert.match(panel.shadowRoot.innerHTML, /data-editor-default>[\s\S]*value="full" selected/);
+});
+
+test("steps fold to one line and steps at the same time round-trip", () => {
+  const panel = makePanel();
+  const routine = {
+    ...overview.routines[0],
+    actions: [
+      { together: [
+        { service: "light.turn_off", target: { area_id: ["kitchen"] }, data: {} },
+        { service: "fan.turn_off", target: { entity_id: ["fan.bathroom_fan"] }, data: {} },
+      ] },
+      { delay: 30 },
+    ],
+  };
+  panel._draft = panel._draftFromRoutine(routine);
+  assert.equal(panel._draft.actions.length, 3);
+  assert.equal(panel._draft.actions[1].withPrev, true);
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /data-act="toggle-step"/);
+  openSteps(panel);
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /class="step-fold/);
+  assert.match(html, /draggable/);
+  assert.match(html, /At the same time as the step before/);
+  const raw = panel._draftToRaw(panel._draft);
+  assert.deepEqual(raw.actions, routine.actions);
+});
+
+test("before an alarm, a calendar event, the forecast and the cheapest hour round-trip", () => {
+  const panel = makePanel();
+  panel._data.alarm_sensors = [{ entity_id: "sensor.phone_next_alarm", name: "Phone Next alarm" }];
+  panel._data.weathers = [{ entity_id: "weather.home", name: "Home" }];
+  const cases = [
+    { trigger: "alarm", watch_entity: "sensor.phone_next_alarm", offset_minutes: -15 },
+    { trigger: "calendar_event", watch_entity: "calendar.family", watch_item: "School", offset_minutes: -30 },
+    { trigger: "forecast", watch_entity: "weather.home", watch_states: ["rainy"], forecast_hours: 6 },
+    { trigger: "cheapest", value_entity: "sensor.price", active_from: "00:00", active_to: "06:00" },
+  ];
+  for (const extra of cases) {
+    const routine = { ...overview.routines[0], sensors: [], clear_minutes: 0, ...extra };
+    panel._draft = panel._draftFromRoutine(routine);
+    panel._view = { name: "editor", room: "kitchen" };
+    panel._render();
+    const raw = panel._draftToRaw(panel._draft);
+    assert.equal(raw.trigger, extra.trigger);
+    for (const [key, value] of Object.entries(extra)) assert.deepEqual(raw[key], value, `${extra.trigger}: ${key}`);
+    assert.ok(panel._describeTrigger(routine).length > 0);
+  }
+});
+
+test("Ask me first round-trips and an asking routine shows Run it and Skip it", () => {
+  const panel = makePanel();
+  const routine = { ...overview.routines[0], ask_first: true, ask_minutes: 5, ask_default: "skip" };
+  panel._draft = panel._draftFromRoutine(routine);
+  const raw = panel._draftToRaw(panel._draft);
+  assert.equal(raw.ask_first, true);
+  assert.equal(raw.ask_minutes, 5);
+  assert.equal(raw.ask_default, "skip");
+  panel._data.statuses.kitchen_lights = { state: "asking", ask_until: "2026-11-14T07:10:00", conditions_ok: true };
+  panel._view = { name: "room", room: "kitchen" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /data-act="answer"[^>]*>Run it/);
+  assert.match(html, /Skip it/);
+});
+
+test("Copy to rooms lists the other rooms", () => {
+  const panel = makePanel();
+  panel._copyFor = "kitchen_lights";
+  panel._view = { name: "room", room: "kitchen" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /data-copy-room="bedroom"/);
+  assert.doesNotMatch(html, /data-copy-room="kitchen"/);
+  assert.match(html, /data-act="copy-do" data-id="kitchen_lights"/);
+});
+
+test("ideas come from what the home has and no routine covers yet", () => {
+  const panel = makePanel();
+  panel._data.alarm_sensors = [{ entity_id: "sensor.phone_next_alarm", name: "Phone Next alarm" }];
+  panel._data.weathers = [{ entity_id: "weather.home", name: "Home" }];
+  const ideas = panel._suggestions().map((i) => i.id);
+  assert.ok(ideas.includes("idea:fan:bathroom"));
+  assert.ok(ideas.includes("idea:wake:sensor.phone_next_alarm"));
+  assert.ok(ideas.includes("idea:rain"));
+  // The kitchen already turns its lights off when it's empty.
+  assert.ok(!ideas.includes("idea:empty:kitchen"));
+  panel._view = { name: "templates", room: null };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /Ideas for your home/);
+});
+
+test("Activity lists devices that gave trouble", () => {
+  const panel = makePanel();
+  panel._view = { name: "activity" };
+  panel._activity = {
+    ...structuredClone(activityFixture),
+    devices: [{ entity_id: "light.porch", name: "Porch light", ok: 3, retried: 1, failed: 2, success_rate: 67, last_problem: { at: "2026-11-14T07:00:00", reason: "didn't change" } }],
+  };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Devices that gave trouble/);
+  assert.match(html, /Porch light/);
+  assert.match(html, /67%/);
 });
