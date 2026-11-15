@@ -6,6 +6,7 @@ It is kept apart from the routine store so it can grow and be pruned on its own.
 from __future__ import annotations
 
 from collections import Counter, deque
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -273,3 +274,56 @@ def needs_attention(
                 }
             )
     return sorted(found, key=lambda r: r["score"])
+
+
+def away_text(
+    events: list[dict[str, Any]], since: datetime, routines: list[dict[str, Any]]
+) -> str:
+    """What ran while the house was Away or on Vacation, in one line."""
+    names = {r["id"]: r["name"] for r in routines}
+    recent = [e for e in events if _when(e) >= since]
+    if not recent:
+        return "Welcome home. No routines ran while you were away."
+    ran = sum(1 for e in recent if e["outcome"] == "ran")
+    failed = sorted(
+        {
+            names.get(e["routine_id"], e.get("name", ""))
+            for e in recent
+            if e["outcome"] == "failed"
+        }
+    )
+    skipped = sum(1 for e in recent if e["outcome"] == "skipped")
+    parts = [f"{ran} {'run' if ran == 1 else 'runs'} worked"]
+    if failed:
+        parts.append(f"{', '.join(failed)} failed")
+    if skipped:
+        parts.append(f"{skipped} skipped")
+    return "Welcome home. While you were away: " + ", ".join(parts) + "."
+
+
+def missed_today(
+    routines: list[dict[str, Any]],
+    events: list[dict[str, Any]],
+    now: datetime,
+    allowed_today: Callable[[dict[str, Any]], bool],
+) -> list[str]:
+    """Routines at a set time whose time today has passed with nothing in the
+    run log since (not run, skipped or failed): missed while Home Assistant
+    was off. Ones still inside their catch-up window are left to catch up."""
+    local = dt_util.as_local(now)
+    missed = []
+    for routine in routines:
+        if routine["trigger"] != "time" or not routine.get("enabled", True):
+            continue
+        if not allowed_today(routine):
+            continue
+        hour, minute, *_ = (int(p) for p in routine["time"].split(":"))
+        target = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if target > local:
+            continue
+        if local < target + timedelta(minutes=routine.get("catch_up_minutes") or 0):
+            continue
+        if any(e["routine_id"] == routine["id"] and _when(e) >= target for e in events):
+            continue
+        missed.append(routine["id"])
+    return missed

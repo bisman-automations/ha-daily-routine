@@ -165,6 +165,11 @@ class DailyRoutineCard extends HTMLElement {
           <button class="ghost" data-act="skip" data-id="${esc(p.routine_id)}" data-skip="${p.skip_next ? "" : "1"}">${p.skip_next ? "Don't skip" : "Skip"}</button></div></div></li>`);
       }
       body = rows.length ? `<ul>${rows.join("")}</ul>` : `<p class="muted">Nothing else planned today.</p>`;
+      if (this._config.buttons) {
+        // Room looks and other Run-now routines, as big buttons.
+        const manual = Object.entries(statuses).filter(([, st]) => st.trigger === "manual" && st.enabled !== false && this._inRoom(st.room) && this._inGroup(st.group));
+        if (manual.length) body = `<div class="presets">${manual.map(([id, st]) => `<button data-act="run" data-id="${esc(id)}">${esc(st.name)}</button>`).join("")}</div>${body}`;
+      }
       const wifi = this._status?.guest_wifi;
       if (wifi) {
         body = `<div class="wifi"><div class="small">Guest Wi-Fi</div><div><span class="small">Network</span> <strong>${esc(wifi.ssid)}</strong></div>
@@ -198,6 +203,8 @@ class DailyRoutineCard extends HTMLElement {
       .progress { height: 6px; border-radius: 3px; background: var(--secondary-background-color, #eee); overflow: hidden; margin: 6px 0 2px; }
       .bar { height: 100%; background: var(--primary-color, #03a9f4); transition: width .4s ease; }
       .note { color: var(--error-color); font-size: 13px; }
+      .presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; margin-bottom: 10px; }
+      .presets button { font-size: 15px; padding: 12px; }
       .wifi { padding: 10px 12px; margin-bottom: 10px; border-radius: 12px; background: var(--secondary-background-color, #f3f3f3); font-size: 18px; }
       .mono { font-family: var(--code-font-family, monospace); }
     </style>
@@ -215,6 +222,6 @@ if (!customElements.get("daily-routine-card")) {
   window.customCards.push({
     type: "daily-routine-card",
     name: "Daily Routine",
-    description: "Today's routines: what's running, what's next, with Run now and Skip. Set group to show one group.",
+    description: "Today's routines: what's running, what's next, with Run now and Skip. Set group to show one group, and buttons: true for one-tap Run now buttons.",
   });
 }

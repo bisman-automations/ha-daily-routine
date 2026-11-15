@@ -107,6 +107,7 @@ from .progress import step_label
 from .quiet_hours import clean_quiet, in_quiet, is_loud, quiet_or_default
 from .reliability import DeviceStats
 from .routines import (
+    CHARGING_STATES,
     DESIRED_STATE,
     MODES,
     PER_PERSON_TRIGGERS,
@@ -123,7 +124,7 @@ from .routines import (
     normalize_routine,
     uses_conditions,
 )
-from .run_log import RunLog, needs_attention
+from .run_log import RunLog, away_text, missed_today, needs_attention
 from .schema import vol
 from .todo import (
     FAILED_OUTCOMES,
@@ -230,6 +231,8 @@ _CONDITION_REASON = {
     "weather": "weather_not_met",
     "day_type": "day_type_not_met",
     "forecast": "forecast_not_met",
+    "charging": "charging_not_met",
+    "value": "value_not_met",
 }
 # Power is read again this long after a run (energy.SETTLE_SECONDS; tests shorten it).
 POWER_SETTLE_SECONDS = 60
@@ -249,6 +252,7 @@ SECONDS_PER_MINUTE = 60
 # "Ask me first": the phone notification's buttons, plus the routine id.
 ASK_RUN_ACTION = "DAILY_ROUTINE_ASK_RUN_"
 ASK_SKIP_ACTION = "DAILY_ROUTINE_ASK_SKIP_"
+RUN_MISSED_ACTION = "DAILY_ROUTINE_RUN_MISSED"
 # A step's "only if" in words, for the run's details.
 ONLY_IF_SKIPPED = "skipped, its condition wasn't met"
 
@@ -279,6 +283,8 @@ def _watched_entities(routine: dict[str, Any]) -> list[str]:
             entities.extend(cond["people"])
         elif cond["kind"] == "sensors":
             entities.extend(cond["sensors"])
+        elif cond["kind"] == "charging":
+            entities.extend(cond["entities"])
         elif "entity_id" in cond:
             entities.append(cond["entity_id"])
     return entities
@@ -365,6 +371,7 @@ REASON_WORDS = {
     "paused_until": "paused",
     "cooldown": "it ran a moment ago",
     "skip_mode": "the house was in a mode it doesn't run in",
+    "skip_date": "it was a day it's set to skip",
     "calendar_hold": "a calendar hold was on",
     "skipped_once": "skipped once",
     "trigger_ended": "what started it was over",
@@ -597,6 +604,8 @@ class HomeRoutinesCoordinator:
         self._forecast_cache: dict[str, list[dict[str, Any]]] = {}
         # Who just arrived (or left), by routine id: "{who}" in a step's text.
         self._who: dict[str, str] = {}
+        # Routines the restart report named, for Run them now.
+        self._missed: list[str] = []
         # Power before and after each run, per routine (energy.py).
         self.power: dict[str, list[dict[str, Any]]] = {}
         self.voice = Voice(self)
@@ -920,6 +929,9 @@ class HomeRoutinesCoordinator:
             "holds": _holds_or_none(saved.get("holds")),
             "quiet_hours": quiet_or_default(saved.get("quiet_hours")),
             "guest_wifi": guest_wifi_or_none(saved.get("guest_wifi")),
+            "missed_report": bool(saved.get("missed_report")),
+            "away_summary": bool(saved.get("away_summary")),
+            "away_since": saved.get("away_since"),
             **{key: _timing_value(saved.get(key), key) for key in TIMING_SETTINGS},
         }
         for raw in data.get("routines", []):
@@ -973,9 +985,17 @@ class HomeRoutinesCoordinator:
                 )
             )
 
+    async def _run_missed_from(self, event: Event) -> None:
+        access = await async_get_access(self.hass)
+        if await access.async_allows_context(event.context):
+            await self.async_run_missed()
+
     @callback
     def _on_notification_action(self, event: Event) -> None:
         action = str(event.data.get("action") or "")
+        if action == RUN_MISSED_ACTION:
+            self._spawn(self._run_missed_from(event))
+            return
         if action.startswith(TRY_AGAIN_ACTION):
             routine_id, what = action[len(TRY_AGAIN_ACTION) :], "Try again"
         elif action.startswith(SKIP_ACTION):
@@ -1008,12 +1028,44 @@ class HomeRoutinesCoordinator:
 
         self._spawn(_try())
 
+    def _report_missed(self, now: datetime) -> None:
+        """After a restart, one notification naming routines whose time today
+        passed while Home Assistant was off, with a Run them now button."""
+        if not self.settings.get("missed_report"):
+            return
+        self._missed = missed_today(
+            self.routines,
+            self.run_log.events(),
+            now,
+            lambda r: self._allowed_day(r, now),
+        )
+        if not self._missed:
+            return
+        names = [r["name"] for r in self.routines if r["id"] in self._missed]
+        self._spawn(
+            self._notify(
+                f"Missed while Home Assistant was off: {', '.join(names)}.",
+                f"{DOMAIN}_missed",
+                [{"action": RUN_MISSED_ACTION, "title": "Run them now"}],
+            )
+        )
+
+    async def async_run_missed(self) -> list[str]:
+        """Run the routines the restart report named (Run them now)."""
+        ran = []
+        for routine_id in self._missed:
+            if self._find(routine_id) is not None and await self.async_run(routine_id):
+                ran.append(routine_id)
+        self._missed = []
+        return ran
+
     def _schedule_startup_catch_up(self) -> None:
         @callback
         def _later(_now: datetime) -> None:
             now = dt_util.now()
             for routine in self.routines:
                 self._maybe_catch_up(routine, now)
+            self._report_missed(now)
             self._check_states_changed_while_stopped()
             self._check_done_after_startup()
 
@@ -1356,9 +1408,16 @@ class HomeRoutinesCoordinator:
             "weekly_report": weekly,
             "holds": holds,
             "quiet_hours": quiet,
+            "missed_report": bool(
+                raw.get("missed_report", self.settings.get("missed_report"))
+            ),
+            "away_summary": bool(
+                raw.get("away_summary", self.settings.get("away_summary"))
+            ),
             "guest_wifi": guest_wifi,
             # Set by going on vacation, not by the Settings tab.
             "vacation": self.settings.get("vacation"),
+            "away_since": self.settings.get("away_since"),
             **timing,
         }
         self.away.start()
@@ -1395,9 +1454,11 @@ class HomeRoutinesCoordinator:
             raise vol.Invalid(f"Unknown house mode '{mode}'.")
         if mode == self.mode:
             return
+        before = self.mode
         self.mode = mode
-        await self._async_save()
         now = dt_util.now()
+        self._away_summary(before, mode, now)
+        await self._async_save()
         for routine in [*self.routines, *self._aliases.values()]:
             if (
                 routine["trigger"] == TRIGGER_MODE
@@ -1410,6 +1471,22 @@ class HomeRoutinesCoordinator:
             self._evaluate_pending(routine)
         self.spawn(self.lived_in.async_step(now))
         self._notify_listeners()
+
+    def _away_summary(self, before: str, mode: str, now: datetime) -> None:
+        """Back from Away or Vacation: say what ran while you were gone."""
+        away = ("away", "vacation")
+        if mode in away and before not in away:
+            self.settings["away_since"] = now.isoformat()
+            return
+        if before not in away or mode in away:
+            return
+        since = self.settings.pop("away_since", None)
+        if not since or not self.settings.get("away_summary"):
+            return
+        text = away_text(
+            self.run_log.events(), datetime.fromisoformat(since), self.routines
+        )
+        self._spawn(self._notify(text, f"{DOMAIN}_away_summary"))
 
     async def async_set_paused(self, paused: bool) -> None:
         self.paused = paused
@@ -1479,6 +1556,20 @@ class HomeRoutinesCoordinator:
             return (state.state == "on") == (cond["when"] == "workday")
         if cond["kind"] == "weather":
             return _weather_ok(self.hass.states.get(cond["entity_id"]), cond)
+        if cond["kind"] == "charging":
+            # Every phone on its charger; one unknown fails closed.
+            for entity_id in cond["entities"]:
+                state = self.hass.states.get(entity_id)
+                if state is None or state.state not in CHARGING_STATES:
+                    return False
+            return True
+        if cond["kind"] == "value":
+            level = _as_float(self.hass.states.get(cond["entity_id"]))
+            if level is None:
+                return False  # unknown: fail closed
+            if cond["below"] is not None and not level < cond["below"]:
+                return False
+            return cond["above"] is None or level > cond["above"]
         if cond["kind"] == "day_type":
             today = self.day_type(now, cond.get("person"))
             return today is not None and today in cond["types"]
@@ -2862,6 +2953,12 @@ class HomeRoutinesCoordinator:
             self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "calendar_hold")
             self._notify_listeners()
             return False
+        if scheduled and today in routine.get("skip_dates", []):
+            # A day it's set to skip (a holiday, a day off).
+            self._record(rid, "skipped", "skip_date")
+            self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "skip_date")
+            self._notify_listeners()
+            return False
         if scheduled and self.mode in routine.get("skip_modes", []):
             # Not in this house mode (a bedtime lockup while there are guests).
             self._record(rid, "skipped", "skip_mode")
@@ -4035,6 +4132,8 @@ class HomeRoutinesCoordinator:
             reasons.append("calendar_hold")
         if self.mode in routine.get("skip_modes", []):
             reasons.append("skip_mode")
+        if now.date().isoformat() in routine.get("skip_dates", []):
+            reasons.append("skip_date")
         if not self._allowed_day(routine, now):
             reasons.append("not_today")
         if self._cooling_down(routine, now):

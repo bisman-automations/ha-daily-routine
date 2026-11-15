@@ -2254,3 +2254,37 @@ test("lived-in lights can copy last week", () => {
   panel._render();
   assert.match(panel.shadowRoot.innerHTML, /<option value="last_week" selected>Like last week/);
 });
+
+test("phones charging and sensor level conditions round-trip", () => {
+  const panel = makePanel();
+  panel._data.all_entities = [...(panel._data.all_entities || []), { entity_id: "sensor.pixel_battery_state", name: "Pixel battery state" }];
+  panel._data.sensors = [{ entity_id: "sensor.rain_today", name: "Rain today", unit: "mm" }];
+  const routine = { ...panel._data.routines[0], conditions: [{ kind: "charging", entities: ["sensor.pixel_battery_state"] }, { kind: "value", entity_id: "sensor.rain_today", below: 5, above: null }] };
+  const draft = panel._draftFromRoutine(routine);
+  const raw = panel._draftToRaw(draft);
+  assert.deepEqual(raw.conditions[0], { kind: "charging", entities: ["sensor.pixel_battery_state"] });
+  assert.deepEqual(raw.conditions[1], { kind: "value", entity_id: "sensor.rain_today", below: 5, above: null });
+  const rows = panel._conditionRows(draft);
+  assert.match(rows, /data-ccharge="sensor.pixel_battery_state" checked/);
+  assert.match(rows, /Rain today \(mm\)/);
+});
+
+test("skip days round-trip and copy to next week", () => {
+  const panel = makePanel();
+  const draft = panel._draftFromRoutine({ ...panel._data.routines[0], skip_dates: ["2030-12-24", "2030-12-25"] });
+  assert.deepEqual(panel._draftToRaw(draft).skip_dates, ["2030-12-24", "2030-12-25"]);
+  panel._draft = draft;
+  panel._view = { name: "editor" };
+  panel._editorOverride = "full";
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /data-act="skip-date-week"/);
+});
+
+test("restart report and coming-home summary settings show", () => {
+  const panel = makePanel();
+  panel._data.settings.missed_report = true;
+  panel._view = { name: "settings" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /data-report-setting="missed_report" checked/);
+  assert.match(panel.shadowRoot.innerHTML, /data-report-setting="away_summary" >/);
+});

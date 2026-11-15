@@ -26,6 +26,8 @@
 - **Quiet hours.** Times when routines leave the speakers alone, except routines allowed to use them (an alarm).
 - **Battery check and checklists.** A step that names every low battery in one notification, and one that shows a checklist on the dashboard and waits until it's all ticked off.
 - **Hot days.** A routine can run earlier (or later) when the forecast says the day will be hot.
+- **Skip days.** Pick days a routine doesn't run on its own, such as holidays.
+- **After a restart, and coming home.** Optional notifications naming routines missed while Home Assistant was off (with **Run them now**), and what ran while you were away.
 - **Not working well.** Routines that keep failing or being skipped are listed at the top of the Routines tab.
 - **Guest Wi-Fi.** While the house is in Guests mode, the guest network and password show on the Today tab and the dashboard card.
 - **House modes.** Home, Away, Night, Guests or Vacation, chosen at the top of the page, from a routine step, or from the **House mode** entity. Routines can run only in some modes, or start when the mode changes.
@@ -48,7 +50,7 @@
 - **Put things back.** One routine remembers which lights, switches and fans are on (and how the lights look), and another turns exactly those back on, for example when you leave and come home.
 - **Fades and part of the year.** Light steps can fade in or out over minutes, and a routine can run only between two dates each year, such as November to March.
 - **Retries and catch-up.** Retry a failed step, and run a missed time-based routine if Home Assistant restarted a few minutes late.
-- **Extra conditions.** Run only when the conditions hold: who is home or away, sensors quiet or active for a while, an entity in a given state (for example guest mode is off), a calendar day, the house mode, workdays or days off (with the Workday integration), or the weather (raining, sunny, or the temperature). A single step can have its own **Only if**, so the rest of the routine still runs.
+- **Extra conditions.** Run only when the conditions hold: every phone you tick is charging, a sensor is below or above a level (such as today's rain), who is home or away, sensors quiet or active for a while, an entity in a given state (for example guest mode is off), a calendar day, the house mode, workdays or days off (with the Workday integration), or the weather (raining, sunny, or the temperature). A single step can have its own **Only if**, so the rest of the routine still runs.
 - **Notifications** on run, skip, or failure (failures are on by default).
 - **Status sensors** per routine (`idle`, `waiting`, `running`, `skipped`, `error`) for dashboards and automations.
 
@@ -138,9 +140,10 @@ title: Routines     # optional
 room: kitchen       # optional: one room's routines, or "house" for whole-house ones
 limit: 5            # optional: how many coming up
 group: Bedtime      # optional: only this group's routines
+buttons: true       # optional: Run now routines as big buttons
 ```
 
-It shows the guest Wi-Fi while the house is in Guests mode, what's running with its progress, routines asking whether to run (**Run it** / **Skip it**), and what's next today with **Run now** and **Skip**. Everyone allowed to see Daily Routine can use it. With `group`, administrators also get a button to pause the group for today, or resume it.
+With `buttons: true` it also shows routines that only run when you press Run now (such as a room's looks) as big buttons. It shows the guest Wi-Fi while the house is in Guests mode, what's running with its progress, routines asking whether to run (**Run it** / **Skip it**), and what's next today with **Run now** and **Skip**. Everyone allowed to see Daily Routine can use it. With `group`, administrators also get a button to pause the group for today, or resume it.
 
 ## Routines as devices
 
@@ -231,6 +234,7 @@ The history is saved with Home Assistant, keeps the last 30 days, and is removed
 - **Lived-in lights.** While the house is in Away or Vacation mode (you can pick other modes), the lights and switches you pick turn on and off at random (or, with **Like last week**, as you switched them by hand on the same evening a week earlier, back to random on an evening with nothing to copy) between sunset (or a time you choose) and a time such as 23:00, changing one every 8 to 25 minutes and keeping about half of them on. Only the lights it turned on are turned off again, at the end of the evening and as soon as the house leaves those modes.
 - **Calendar holds.** Calendars (and, optionally, words in an event's title, such as `babysitter, vacation`) that hold routines back: while such an event is on, routines don't run on their own. Tick **Run even during a calendar hold** on a routine that should anyway. **Run now** always works.
 - **Quiet hours.** Between two times you pick (they can cross midnight), routines leave the speakers alone: text to speech, playing on a speaker, turning the volume up and **Say the day ahead** are skipped, and the run says why. Turning a speaker down, pausing or turning it off still works. Tick **Use the speakers during quiet hours too** on a routine that should anyway, such as an alarm.
+- **After a restart, and coming home.** Tick to get, after Home Assistant restarts, one notification naming the routines at a set time whose time today passed while it was off (and that didn't catch up), with a **Run them now** button; and, when the house leaves Away or Vacation, one saying how many runs worked, which failed and how many were skipped while you were gone. Both are off until you tick them.
 - **Guest Wi-Fi.** The guest network's name and password. While the house is in Guests mode, the Today tab and the dashboard card show them; in other modes they're hidden.
 - **Weekly report.** Once a week, on the day and at the time you pick, a notification of the last seven days: how many runs worked, failed or were skipped, which routines failed most, and which didn't run at all. **Send it now** sends it straight away.
 - **Kinds of day.** Name the kinds of day your routines care about, such as School day, Holiday or Work from home, each with the calendar that says so and, optionally, words its event's title has (such as `no school, holiday`; none: any event). A kind of day can be **For** one person, from their own calendar; a **Kind of day** condition can then follow that person's (their own kinds first, then everyone's). Each day is the first kind with a matching event today, so put the more specific ones first; any other day is a **Normal day**. Routines use them with **+ Kind of day** (a condition, or a step's **Only if**), and the Today tab says what kind of day it is. The **Kind of day** sensor has the same, for automations and other integrations. A calendar that can't be read blocks the run.

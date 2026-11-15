@@ -159,7 +159,12 @@ CONDITION_KINDS = (
     "weather",
     "day_type",
     "forecast",
+    "charging",
+    "value",
 )
+# What counts as charging, for phones' battery state and charging sensors.
+CHARGING_STATES = ("on", "charging", "full")
+MAX_SKIP_DATES = 31
 FORECAST_WHEN = ("coming", "not_coming")
 WORKDAY_WHEN = ("workday", "day_off")
 # The weather: what it's doing (rainy, sunny...), or the temperature.
@@ -726,6 +731,27 @@ def _normalize_condition(raw: Any, index: int) -> dict[str, Any]:
         if when not in WORKDAY_WHEN:
             raise vol.Invalid("A workday condition is on workdays, or days off.")
         return {"kind": "workday", "entity_id": entity_id, "when": when}
+    if kind == "charging":
+        entities = [str(e).strip() for e in _as_list(raw.get("entities"))]
+        entities = list(dict.fromkeys(e for e in entities if e))
+        if not entities or not all(
+            ENTITY_ID_RE.fullmatch(e)
+            and e.split(".", 1)[0] in ("sensor", "binary_sensor")
+            for e in entities
+        ):
+            raise vol.Invalid("Pick the phones' charging sensors for this condition.")
+        return {"kind": "charging", "entities": entities}
+    if kind == "value":
+        entity_id = str(raw.get("entity_id") or "").strip()
+        if not ENTITY_ID_RE.fullmatch(entity_id):
+            raise vol.Invalid("Pick the sensor for this condition.")
+        below = raw.get("below")
+        above = raw.get("above")
+        below = None if below in (None, "") else _number(below, "Below")
+        above = None if above in (None, "") else _number(above, "Above")
+        if below is None and above is None:
+            raise vol.Invalid("Give a level the sensor has to be below or above.")
+        return {"kind": "value", "entity_id": entity_id, "below": below, "above": above}
     if kind == "weather":
         entity_id = str(raw.get("entity_id") or "").strip()
         if not ENTITY_ID_RE.fullmatch(entity_id) or not entity_id.startswith(
@@ -881,6 +907,23 @@ def _conditions_from(
 
 
 MAX_TICKS = 12
+
+
+def _skip_dates(raw: Any) -> list[str]:
+    """Days a routine doesn't run on its own: ISO dates, sorted, today on."""
+    today = date.today().isoformat()
+    days = []
+    for value in _as_list(raw):
+        try:
+            day = date.fromisoformat(str(value)).isoformat()
+        except ValueError as err:
+            raise vol.Invalid("Skip days are dates like 2026-12-24.") from err
+        if day >= today:
+            days.append(day)
+    days = sorted(set(days))
+    if len(days) > MAX_SKIP_DATES:
+        raise vol.Invalid(f"Skip at most {MAX_SKIP_DATES} days.")
+    return days
 
 
 def normalize_routine(raw: Any) -> dict[str, Any]:
@@ -1084,6 +1127,8 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "ignore_holds": bool(raw.get("ignore_holds", False)),
         # Speaker steps still run during quiet hours (Settings), for alarms.
         "loud_ok": bool(raw.get("loud_ok", False)),
+        # Scheduled runs don't happen on these days (ISO dates).
+        "skip_dates": _skip_dates(raw.get("skip_dates")),
         # On hot days (by the forecast), its time moves by some minutes.
         "hot_shift": clean_hot_shift(
             raw.get("hot_shift"),
