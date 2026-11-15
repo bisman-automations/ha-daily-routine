@@ -16,6 +16,7 @@ from .const import DOMAIN
 from .coordinator import HomeRoutinesCoordinator
 from .devices import async_ensure_hub
 from .legacy import is_legacy, legacy_routines
+from .routines import MODES
 from .runtime import DATA_PRIMARY, DailyRoutineConfigEntry, get_coordinator
 from .schema import vol
 
@@ -24,7 +25,7 @@ _LOGGER = logging.getLogger(__name__)
 # Set up from config entries only (the sidebar and devices are created from the entry).
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
-PLATFORMS = [Platform.SENSOR, Platform.SWITCH]
+PLATFORMS = [Platform.SELECT, Platform.SENSOR, Platform.SWITCH]
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -153,6 +154,36 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
                 vol.Optional("forget", default=True): bool,
             }
         ),
+    )
+
+    async def set_mode_service(call: ServiceCall) -> None:
+        coordinator = _coordinator()
+        await async_ensure_allowed(hass, call.context)
+        await coordinator.async_set_mode(call.data["mode"])
+
+    async def undo_service(call: ServiceCall) -> None:
+        coordinator = _coordinator()
+        await async_ensure_allowed(hass, call.context)
+        try:
+            await coordinator.async_undo(call.data["routine_id"])
+        except vol.Invalid as err:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="run_failed",
+                translation_placeholders={"error": str(err)},
+            ) from err
+
+    hass.services.async_register(
+        DOMAIN,
+        "set_mode",
+        set_mode_service,
+        schema=vol.Schema({vol.Required("mode"): vol.In(MODES)}),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "undo_routine",
+        undo_service,
+        schema=vol.Schema({vol.Required("routine_id"): str}),
     )
     return True
 

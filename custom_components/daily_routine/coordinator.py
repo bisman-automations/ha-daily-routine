@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from collections.abc import Callable, Coroutine
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, time as dt_time, timedelta
 import hashlib
@@ -56,6 +57,7 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
     TRIGGER_EVERYONE_LEAVES,
+    TRIGGER_MODE,
     TRIGGER_PERSON_ARRIVES,
     TRIGGER_PERSON_LEAVES,
     TRIGGER_ROOM_CLEAR,
@@ -68,8 +70,11 @@ from .const import (
     WEEKDAYS,
 )
 from .linked import linked_groups
+from .lived_in import LivedIn, clean_settings as clean_lived_in
+from .progress import step_label
 from .routines import (
     DESIRED_STATE,
+    MODES,
     PER_PERSON_TRIGGERS,
     PRESENCE_TRIGGERS,
     STATE_TRIGGERS,
@@ -91,6 +96,8 @@ from .todo import (
     item_key,
     list_items,
 )
+from .undo import UNDO_FOR, restore, snapshot
+from .voice import Voice
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -168,10 +175,21 @@ _CONDITION_REASON = {
     "sensors": "sensors_not_met",
     "state": "extra_condition_not_met",
     "calendar": "calendar_not_met",
+    "mode": "wrong_mode",
+    "workday": "workday_not_met",
+    "weather": "weather_not_met",
 }
 # How often calendars used by conditions are read again (and after midnight).
 CALENDAR_REFRESH = timedelta(minutes=30)
 CALENDAR_TIMEOUT_SECONDS = 20
+
+
+# The routines a "run another routine" step came through, so a loop is refused.
+_CHAIN: ContextVar[tuple[str, ...]] = ContextVar("daily_routine_chain", default=())
+# Minutes in a "wait until" step (tests make it shorter).
+SECONDS_PER_MINUTE = 60
+# A step's "only if" in words, for the run's details.
+ONLY_IF_SKIPPED = "skipped, its condition wasn't met"
 
 
 def random_shift(routine_id: str, day: str, minutes: int) -> timedelta:
@@ -190,6 +208,9 @@ def _watched_entities(routine: dict[str, Any]) -> list[str]:
     entities: list[str] = []
     if routine["trigger"] == TRIGGER_EVERYONE_LEAVES:
         entities.extend(routine["people"])
+    for more in routine.get("more_triggers") or []:
+        if more["trigger"] == TRIGGER_EVERYONE_LEAVES:
+            entities.extend(more["people"])
     if routine["trigger"] == TRIGGER_ROOM_CLEAR:
         entities.extend(routine["sensors"])
     for cond in routine["conditions"]:
@@ -197,13 +218,17 @@ def _watched_entities(routine: dict[str, Any]) -> list[str]:
             entities.extend(cond["people"])
         elif cond["kind"] == "sensors":
             entities.extend(cond["sensors"])
-        else:
+        elif "entity_id" in cond:
             entities.append(cond["entity_id"])
     return entities
 
 
 def _calendars(routine: dict[str, Any]) -> list[str]:
-    return [c["entity_id"] for c in routine["conditions"] if c["kind"] == "calendar"]
+    conditions = [
+        *routine["conditions"],
+        *(a["only_if"] for a in routine["actions"] if a.get("only_if")),
+    ]
+    return [c["entity_id"] for c in conditions if c["kind"] == "calendar"]
 
 
 def _all_people(routine: dict[str, Any]) -> list[str]:
@@ -391,6 +416,8 @@ def _blank_runtime() -> dict[str, Any]:
         "health_alerted": False,  # in memory: a problem was already announced
         "unavailable_since": None,  # in memory: when a needed list or device went unavailable
         "held_run": None,  # in memory: a run waiting for a list or device to come back
+        "progress": None,  # in memory: the step a running routine is on, for its card
+        "started_by": None,  # in memory: the other trigger that started this run
     }
 
 
@@ -408,13 +435,23 @@ class HomeRoutinesCoordinator:
         self._last_on: dict[str, datetime] = {}
         self.paused = False
         self.migrated = False
+        # The house mode (home, away, night, guests or vacation).
+        self.mode = "home"
         self.settings: dict[str, Any] = {
             "hidden_people": [],
             "notify_services": [],
             "integration_order": [],
+            "lived_in": clean_lived_in(None),
             **{key: default for key, (default, *_rest) in TIMING_SETTINGS.items()},
         }
+        self.lived_in = LivedIn(self)
+        self.voice = Voice(self)
         self._runtime: dict[str, dict[str, Any]] = {}
+        # A routine's other triggers, each watched like a routine of its own
+        # ("<id>~2"); when one fires, the routine itself runs.
+        self._aliases: dict[str, dict[str, Any]] = {}
+        # How things were just before each routine's last run, for Undo (in memory).
+        self._undo: dict[str, dict[str, Any]] = {}
         self._listeners: list[Callable[[], None]] = []
         self._handles: dict[tuple[str, str], Callable[[], None]] = {}
         # What a run couldn't do, for Try again and the tries planned later.
@@ -620,6 +657,18 @@ class HomeRoutinesCoordinator:
         """Recent runs for a routine, newest first."""
         return list(reversed(self._history.get(routine_id, ())))
 
+    def _routine_names(self) -> dict[str, str]:
+        return {r["id"]: r["name"] for r in self.routines}
+
+    def _next_run_of(self, routine_id: str) -> str | None:
+        """The soonest planned run, over the routine's triggers."""
+        times = [self._rt(routine_id)["next_run"]] + [
+            self._rt(a["id"])["next_run"] for a in self._aliases_of(routine_id)
+        ]
+        known = [dt_util.parse_datetime(t) for t in times if t]
+        found = [t for t in known if t is not None]
+        return min(found).isoformat() if found else None
+
     def get_status(self, routine_id: str) -> dict[str, Any] | None:
         routine = self._find(routine_id)
         if routine is None:
@@ -635,7 +684,7 @@ class HomeRoutinesCoordinator:
             "last_run": rt["last_run"],
             "last_result": rt["last_result"],
             "history": self.get_history(routine_id),
-            "next_run": rt["next_run"],
+            "next_run": self._next_run_of(routine_id),
             "clear_since": rt["clear_since"].isoformat() if rt["clear_since"] else None,
             "conditions_ok": ok,
             "block_reason": reason,
@@ -647,7 +696,9 @@ class HomeRoutinesCoordinator:
                 else None
             ),
             "held": rt["held_run"] is not None,
+            "progress": rt["progress"] if rt["state"] == "running" else None,
             "can_try_again": routine_id in self._retry,
+            "can_undo": self.can_undo(routine_id),
             "waiting_for": self._unavailable_names(routine),
             "trigger": routine["trigger"],
             "days": routine["days"],
@@ -663,6 +714,12 @@ class HomeRoutinesCoordinator:
         data = await self._store.async_load() or {}
         self.paused = bool(data.get("paused", False))
         self.migrated = bool(data.get("migrated", False))
+        saved_mode = data.get("mode")
+        self.mode = (
+            saved_mode
+            if isinstance(saved_mode, str) and saved_mode in MODES
+            else "home"
+        )
         saved = data.get("settings") or {}
         services = saved.get("notify_services")
         if services is None and saved.get("notify_service"):
@@ -675,6 +732,7 @@ class HomeRoutinesCoordinator:
             "integration_order": [
                 d for d in saved.get("integration_order") or [] if isinstance(d, str)
             ],
+            "lived_in": _lived_in_or_default(saved.get("lived_in")),
             **{key: _timing_value(saved.get(key), key) for key in TIMING_SETTINGS},
         }
         for raw in data.get("routines", []):
@@ -693,6 +751,8 @@ class HomeRoutinesCoordinator:
         self._start_all(catch_up=False)
         self._started_at = dt_util.utcnow()
         self._schedule_health_interval()
+        self.lived_in.start()
+        await self.voice.async_start()
         self._calendar_unsub = async_track_time_interval(
             self.hass, self._on_calendar_interval, CALENDAR_REFRESH
         )
@@ -765,6 +825,8 @@ class HomeRoutinesCoordinator:
             self._calendar_unsub()
             self._calendar_unsub = None
         self._drop_all_handles()
+        self.lived_in.stop()
+        self.voice.stop()
         if save:
             await self._async_save()
 
@@ -776,6 +838,7 @@ class HomeRoutinesCoordinator:
         return {
             "routines": self.routines,
             "paused": self.paused,
+            "mode": self.mode,
             "migrated": self.migrated,
             "settings": self.settings,
             "runtime": runtime,
@@ -914,6 +977,21 @@ class HomeRoutinesCoordinator:
         self._entry_id = entry_id
 
     @callback
+    def spawn(self, coro: Coroutine[Any, Any, Any]) -> None:
+        self._spawn(coro)
+
+    def notify_listeners(self) -> None:
+        self._notify_listeners()
+
+    async def call_service(
+        self,
+        domain: str,
+        service: str,
+        data: dict[str, Any],
+        target: dict[str, Any] | None,
+    ) -> BaseException | None:
+        return await self._call_service(domain, service, data, target)
+
     def _spawn(self, coro: Coroutine[Any, Any, Any]) -> None:
         """Run work the entry owns: unloading waits for it to finish."""
         if (entry := self._entry()) is not None:
@@ -1028,16 +1106,41 @@ class HomeRoutinesCoordinator:
             isinstance(d, str) and DOMAIN_RE.fullmatch(d) for d in order
         ):
             raise vol.Invalid("The integration order must be a list of integrations.")
+        lived_in = clean_lived_in(raw.get("lived_in", self.settings["lived_in"]))
         self.settings = {
             "hidden_people": sorted(set(hidden)),
             "notify_services": sorted(set(services)),
             "integration_order": list(dict.fromkeys(order)),
+            "lived_in": lived_in,
             **timing,
         }
+        self.spawn(self.lived_in.async_step(dt_util.now()))
         self._schedule_health_interval()
         await self._async_save()
         self._notify_listeners()
         return self.settings
+
+    async def async_set_mode(self, mode: str) -> None:
+        """Switch the house mode, and run what starts when it changes to that mode."""
+        if mode not in MODES:
+            raise vol.Invalid(f"Unknown house mode '{mode}'.")
+        if mode == self.mode:
+            return
+        self.mode = mode
+        await self._async_save()
+        now = dt_util.now()
+        for routine in [*self.routines, *self._aliases.values()]:
+            if (
+                routine["trigger"] == TRIGGER_MODE
+                and routine["enabled"]
+                and mode in routine["modes"]
+                and self._allowed_day(routine, now)
+            ):
+                self._spawn(self._execute_routine(routine, now, scheduled=True))
+        for routine in self.routines:
+            self._evaluate_pending(routine)
+        self.spawn(self.lived_in.async_step(now))
+        self._notify_listeners()
 
     async def async_set_paused(self, paused: bool) -> None:
         self.paused = paused
@@ -1098,6 +1201,15 @@ class HomeRoutinesCoordinator:
             return self._sensors_ok(cond, now)
         if cond["kind"] == "calendar":
             return self._calendar_ok(cond, now)
+        if cond["kind"] == "mode":
+            return self.mode in cond["modes"]
+        if cond["kind"] == "workday":
+            state = self.hass.states.get(cond["entity_id"])
+            if state is None or state.state not in ("on", "off"):
+                return False  # unknown: fail closed
+            return (state.state == "on") == (cond["when"] == "workday")
+        if cond["kind"] == "weather":
+            return _weather_ok(self.hass.states.get(cond["entity_id"]), cond)
         return self._state_is(cond["entity_id"], cond["state"])
 
     def _calendar_ok(self, cond: dict[str, Any], now: datetime) -> bool:
@@ -1419,6 +1531,7 @@ class HomeRoutinesCoordinator:
         rt["pending_date"] = None
         rt["pending_since"] = None
         self._drop_handle(rid, H_EXPIRE)
+        rt["started_by"] = None
         if rt["state"] == "waiting":
             rt["state"] = "idle"
 
@@ -1453,7 +1566,8 @@ class HomeRoutinesCoordinator:
         if not routine["enabled"] or self.paused:
             self._clear_pending(routine)
             return
-        if not self._trigger_holds(routine):
+        source = self._source(routine)
+        if not self._trigger_holds(source):
             # What started the run is over (everyone left again, the door closed):
             # running now would be for something that no longer happened.
             self._clear_pending(routine)
@@ -1463,7 +1577,7 @@ class HomeRoutinesCoordinator:
             self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "trigger_ended")
             self._notify_listeners()
             return
-        ok, _reason = self._check(routine, now)
+        ok, _reason = self._check(source, now)
         if ok:
             self._clear_pending(routine)
             self._spawn(self._execute_routine(routine, now, scheduled=True))
@@ -1489,6 +1603,8 @@ class HomeRoutinesCoordinator:
             if trigger == TRIGGER_PERSON_ARRIVES:
                 return any(place == key for place in places)
             return any(place is not None and place != key for place in places)
+        if trigger == TRIGGER_MODE:
+            return self.mode in routine["modes"]
         if trigger in STATE_TRIGGERS:
             state = self.hass.states.get(routine["watch_entity"])
             return state is not None and state.state in routine["watch_states"]
@@ -1980,12 +2096,51 @@ class HomeRoutinesCoordinator:
             if routine["trigger"] in TODO_DONE_TRIGGERS and routine["enabled"]:
                 self._spawn(self._check_done(routine))
 
+    def _build_aliases(self) -> None:
+        self._aliases = {}
+        for routine in self.routines:
+            for number, more in enumerate(routine.get("more_triggers") or [], start=2):
+                alias_id = f"{routine['id']}~{number}"
+                self._aliases[alias_id] = {
+                    **routine,
+                    **more,
+                    "id": alias_id,
+                    "alias_of": routine["id"],
+                    "more_triggers": [],
+                    "off_threshold": None,
+                    "heads_up_minutes": 0,
+                    "catch_up_minutes": 0,
+                }
+
+    def _aliases_of(self, routine_id: str) -> list[dict[str, Any]]:
+        return [a for a in self._aliases.values() if a["alias_of"] == routine_id]
+
+    def alias_routines(self, routine_id: str) -> list[dict[str, Any]]:
+        """A routine's other triggers, each as a routine of its own."""
+        return self._aliases_of(routine_id)
+
+    def planned_run(self, trigger_id: str) -> datetime | None:
+        """When a routine (or one of its other triggers) is next planned to run."""
+        return dt_util.parse_datetime(self._rt(trigger_id)["next_run"] or "")
+
+    def _source(self, routine: dict[str, Any]) -> dict[str, Any]:
+        """The trigger a run came from: the routine, or one of its other triggers."""
+        started_by = self._rt(routine["id"]).get("started_by")
+        return self._aliases.get(started_by or "", routine)
+
     def _start_all(self, *, catch_up: bool) -> None:
         now = dt_util.now()
-        ids = {r["id"] for r in self.routines}
+        self._build_aliases()
+        ids = {r["id"] for r in self.routines} | set(self._aliases)
         for rid in list(self._runtime):
             if rid not in ids:
                 del self._runtime[rid]
+        for alias in self._aliases.values():
+            self._rt(alias["id"])
+            self._schedule_one(alias, now)
+            self._watch_presence(alias)
+            self._watch_value(alias)
+            self._watch_state(alias)
         for routine in self.routines:
             self._rt(routine["id"])
             self._schedule_one(routine, now)
@@ -2100,6 +2255,13 @@ class HomeRoutinesCoordinator:
     async def _execute_routine(
         self, routine: dict[str, Any], now: datetime, *, scheduled: bool
     ) -> bool:
+        if main_id := routine.get("alias_of"):
+            # Another of the routine's triggers: run the routine itself.
+            main = self._find(main_id)
+            if main is None:
+                return False
+            self._rt(main_id)["started_by"] = routine["id"]
+            return await self._execute_routine(main, now, scheduled=scheduled)
         rid = routine["id"]
         rt = self._rt(rid)
         today = now.date().isoformat()
@@ -2127,7 +2289,7 @@ class HomeRoutinesCoordinator:
             self._notify_listeners()
             return False
 
-        ok, reason = self._check(routine, now)
+        ok, reason = self._check(self._source(routine), now)
         if not ok:
             if scheduled and rt["pending_date"] is not None:
                 self._notify_listeners()  # already waiting
@@ -2165,6 +2327,7 @@ class HomeRoutinesCoordinator:
 
         rt["state"] = "running"
         rt["last_run"] = now.isoformat()
+        self._keep_for_undo(routine, now)
         self._notify_listeners()
         self._fire_event(EVENT_ROUTINE_STARTED, routine)
 
@@ -2203,6 +2366,7 @@ class HomeRoutinesCoordinator:
         """Record a run (or a later try), notify, and plan another try when one is due."""
         rid = routine["id"]
         rt = self._rt(rid)
+        rt["started_by"] = None
         self._drop_handle(rid, "retry_later")
         self._retry.pop(rid, None)
         result = run.result
@@ -2315,11 +2479,40 @@ class HomeRoutinesCoordinator:
         *,
         scheduled: bool,
     ) -> _Run | None:
+        """Run steps in order, showing which one is running on the routine's card."""
+        try:
+            return await self._run_step_list(routine, steps, now, scheduled=scheduled)
+        finally:
+            self._rt(routine["id"])["progress"] = None
+
+    async def _run_step_list(
+        self,
+        routine: dict[str, Any],
+        steps: list[tuple[int, dict[str, Any], dict[str, Any] | None]],
+        now: datetime,
+        *,
+        scheduled: bool,
+    ) -> _Run | None:
         """Run steps in order. None: held for an unavailable list (nothing done yet)."""
         run = _Run()
         acted = False
-        for index, action, only in steps:
-            ok, reason = self._check(routine, dt_util.now())
+        rt = self._rt(routine["id"])
+        started = dt_util.now().isoformat()
+        for position, (index, action, only) in enumerate(steps):
+            rt["progress"] = {
+                "step": position + 1,
+                "total": len(steps),
+                "label": step_label(self.hass, action, self._routine_names()),
+                "started": started,
+                "step_started": dt_util.now().isoformat(),
+                "until": (
+                    (dt_util.now() + timedelta(seconds=action["delay"])).isoformat()
+                    if "delay" in action
+                    else None
+                ),
+            }
+            self._notify_listeners()
+            ok, reason = self._check(self._source(routine), dt_util.now())
             if not ok:
                 _LOGGER.warning(
                     "Routine '%s' stopped: conditions no longer pass (%s).",
@@ -2329,8 +2522,56 @@ class HomeRoutinesCoordinator:
                 run.result = f"conditions_failed_mid_run:{reason}"
                 break
 
+            if (cond := action.get("only_if")) and not self._condition_ok(
+                cond, dt_util.now()
+            ):
+                run.details.append(f"Step {index + 1} {ONLY_IF_SKIPPED}")
+                continue
+
             if "delay" in action:
                 await asyncio.sleep(action["delay"])
+                continue
+
+            if "wait_until" in action:
+                wait = action["wait_until"]
+                seconds = wait["minutes"] * SECONDS_PER_MINUTE
+                rt["progress"]["until"] = (
+                    dt_util.now() + timedelta(seconds=seconds)
+                ).isoformat()
+                self._notify_listeners()
+                if await self._wait_until_state(
+                    wait["entity_id"], wait["states"], seconds
+                ):
+                    continue
+                text = (
+                    f"{self._entity_name(wait['entity_id'])} didn't change "
+                    f"within {wait['minutes']} min"
+                )
+                if wait["on_timeout"] == "continue":
+                    run.details.append(text)
+                    continue
+                run.failures.append(_Failure(index, "wait_until", None, text))
+                run.result = "error:wait_until"
+                run.stopped_at = index
+                break
+
+            if "run_routine" in action:
+                acted = True
+                text, failed = await self._run_other(routine, action["run_routine"])
+                if not failed:
+                    if text:
+                        run.details.append(text)
+                    continue
+                run.failures.append(_Failure(index, "run_routine", None, text))
+                if routine["on_step_error"] == "continue":
+                    continue
+                run.result = "error:run_routine"
+                run.stopped_at = index
+                break
+
+            if "set_mode" in action:
+                acted = True
+                await self.async_set_mode(action["set_mode"])
                 continue
 
             if "todo" in action:
@@ -2677,6 +2918,98 @@ class HomeRoutinesCoordinator:
                 return left
             await asyncio.sleep(VERIFY_POLL_SECONDS)
 
+    async def _wait_until_state(
+        self, entity_id: str, states: list[str], seconds: float
+    ) -> bool:
+        """Wait up to that long for a device to show one of the states."""
+        reached = asyncio.Event()
+
+        def _now_in() -> bool:
+            state = self.hass.states.get(entity_id)
+            return state is not None and state.state in states
+
+        if _now_in():
+            return True
+
+        @callback
+        def _changed(_event: Event[EventStateChangedData]) -> None:
+            if _now_in():
+                reached.set()
+
+        unsub = async_track_state_change_event(self.hass, [entity_id], _changed)
+        try:
+            async with asyncio.timeout(seconds):
+                await reached.wait()
+        except TimeoutError:
+            return _now_in()
+        finally:
+            unsub()
+        return True
+
+    async def _run_other(
+        self, routine: dict[str, Any], other_id: str
+    ) -> tuple[str, bool]:
+        """Run another routine as a step. Returns (what happened, whether it failed)."""
+        other = self._find(other_id)
+        if other is None:
+            return "The routine to run isn't there any more", True
+        chain = (*_CHAIN.get(), routine["id"])
+        if other_id in chain:
+            return f"{other['name']} would run itself in a loop", True
+        if self._rt(other_id)["state"] == "running":
+            return f"{other['name']} was already running", False
+        token = _CHAIN.set(chain)
+        try:
+            ran = await self._execute_routine(other, dt_util.now(), scheduled=False)
+        finally:
+            _CHAIN.reset(token)
+        if ran:
+            return f"Ran {other['name']}", False
+        if self._rt(other_id)["state"] == "error":
+            return f"{other['name']} failed", True
+        reason = self._rt(other_id)["last_result"] or "its conditions weren't met"
+        return f"{other['name']} didn't run ({reason})", False
+
+    def _keep_for_undo(self, routine: dict[str, Any], now: datetime) -> None:
+        """Note how the devices this routine changes are now, for Undo."""
+        entities: list[str] = []
+        for action in routine["actions"]:
+            if "service" in action:
+                domain = action["service"].split(".", 1)[0]
+                entities.extend(self._resolve_targets(action.get("target"), domain))
+        saved = snapshot(self.hass, entities)
+        if saved:
+            self._undo[routine["id"]] = {"at": now.isoformat(), "states": saved}
+        else:
+            self._undo.pop(routine["id"], None)
+
+    def can_undo(self, routine_id: str) -> bool:
+        kept = self._undo.get(routine_id)
+        if kept is None or self._rt(routine_id)["state"] == "running":
+            return False
+        at = dt_util.parse_datetime(kept["at"])
+        return at is not None and dt_util.now() - at < UNDO_FOR
+
+    async def async_undo(self, routine_id: str) -> list[str]:
+        """Put back what the routine's last run changed. Returns what was put back."""
+        routine = self._find(routine_id)
+        if routine is None:
+            raise vol.Invalid(f"No routine with id '{routine_id}'.")
+        if not self.can_undo(routine_id):
+            raise vol.Invalid(f"There's nothing to undo for '{routine['name']}'.")
+        kept = self._undo.pop(routine_id)
+        failed = await restore(self.hass, kept["states"], self._call_service)
+        put_back = [e for e in kept["states"] if e not in failed]
+        if failed:
+            names = _join([self._entity_name(e) for e in failed])
+            self._record(routine_id, "failed", f"Undo: {names} couldn't be put back")
+        else:
+            self._record(routine_id, "ran", "Undone: put back as it was before")
+        self._notify_listeners()
+        if failed:
+            raise HomeAssistantError(f"{names} couldn't be put back")
+        return put_back
+
     def paused_until(self, routine: dict[str, Any]) -> str | None:
         """The day a routine is paused through; a turn-off routine follows its routine."""
         owner = (
@@ -2714,6 +3047,34 @@ class HomeRoutinesCoordinator:
             await self._async_save()
         self._notify_listeners()
 
+    async def async_start_run(self, routine_id: str) -> dict[str, Any]:
+        """Run now from the dashboard: start it and answer at once.
+
+        A routine that can't run (turned off, conditions not met) is recorded
+        straight away and answered with the reason. One already running isn't
+        started a second time.
+        """
+        routine = self._find(routine_id)
+        if routine is None:
+            raise vol.Invalid(f"No routine with id '{routine_id}'.")
+        if self._rt(routine_id)["state"] == "running":
+            return {"started": False, "ran": False, "reason": "already_running"}
+        now = dt_util.now()
+        ok, reason = self._check(routine, now)
+        if not routine["enabled"] or not ok:
+            await self._execute_routine(routine, now, scheduled=False)
+            return {
+                "started": False,
+                "ran": False,
+                "reason": "disabled" if not routine["enabled"] else reason,
+            }
+        # Shown as running before the reply, so the card changes at once.
+        self._rt(routine_id)["started_by"] = None
+        self._rt(routine_id)["state"] = "running"
+        self._notify_listeners()
+        self._spawn(self._execute_routine(routine, now, scheduled=False))
+        return {"started": True, "ran": None, "reason": None}
+
     async def async_run(self, routine_id: str) -> bool:
         """Manual run: conditions still apply, the once-a-day rule does not."""
         routine = self._find(routine_id)
@@ -2727,8 +3088,25 @@ class HomeRoutinesCoordinator:
         ok, reason = self._check(routine, now)
         steps: list[dict[str, Any]] = []
         for action in routine["actions"]:
+            if (cond := action.get("only_if")) and not self._condition_ok(cond, now):
+                steps.append(
+                    {
+                        "type": "only_if",
+                        "label": step_label(self.hass, action, self._routine_names()),
+                    }
+                )
+                continue
             if "delay" in action:
                 steps.append({"type": "delay", "seconds": action["delay"]})
+                continue
+            if not ({"service", "todo"} & set(action)):
+                # Run a routine, wait until, house mode: described, not tried.
+                steps.append(
+                    {
+                        "type": "other",
+                        "label": step_label(self.hass, action, self._routine_names()),
+                    }
+                )
                 continue
             if "todo" in action:
                 step = action["todo"]
@@ -2896,10 +3274,10 @@ def _companion_for(routine: dict[str, Any]) -> dict[str, Any] | None:
         return None
     actions: list[dict[str, Any]] = []
     for action in routine["actions"]:
-        if "todo" in action:
-            continue  # a to-do step is not reversed; the turn-back-off routine leaves it out
         if "service" not in action:
-            actions.append(action)
+            if "delay" in action:
+                actions.append(action)
+            # To-do, run-a-routine, mode and wait steps aren't reversed.
             continue
         opposite = OPPOSITE_SERVICES.get(action["service"])
         if opposite is None:
@@ -2929,6 +3307,30 @@ def _companion_for(routine: dict[str, Any]) -> dict[str, Any] | None:
         "notify_on_error": routine["notify_on_error"],
         "companion_of": routine["id"],
     }
+
+
+def _lived_in_or_default(raw: Any) -> dict[str, Any]:
+    try:
+        return clean_lived_in(raw)
+    except vol.Invalid:
+        return clean_lived_in(None)
+
+
+def _weather_ok(state: State | None, cond: dict[str, Any]) -> bool:
+    """What the weather is doing, or its temperature. Unknown fails closed."""
+    if state is None or state.state in UNKNOWN_STATES:
+        return False
+    if cond["test"] == "is":
+        return state.state in cond["conditions"]
+    if cond["test"] == "is_not":
+        return state.state not in cond["conditions"]
+    try:
+        temperature = float(state.attributes["temperature"])
+    except KeyError, TypeError, ValueError:
+        return False
+    if cond["test"] == "above":
+        return temperature > cond["value"]
+    return temperature < cond["value"]
 
 
 def _as_float(state: State | None) -> float | None:

@@ -79,3 +79,31 @@ put_back_states:
       default: true
       selector:
         boolean:
+set_mode:
+  name: Set the house mode
+  description: Switch the house mode. Routines that start when the house changes to that mode run, and routines limited to some modes follow it.
+  fields:
+    mode:
+      name: Mode
+      description: The house mode.
+      required: true
+      example: night
+      selector:
+        select:
+          options:
+            - home
+            - away
+            - night
+            - guests
+            - vacation
+undo_routine:
+  name: Undo a routine's last run
+  description: Put the lights, switches, fans, curtains, locks and thermostats a routine changed back the way they were just before its last run (within two hours).
+  fields:
+    routine_id:
+      name: Routine ID
+      description: The id of the routine to undo.
+      required: true
+      example: bedtime
+      selector:
+        text:

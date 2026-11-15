@@ -292,7 +292,7 @@ test("notification targets are checkboxes labelled by name, never by entity id",
   assert.match(html, /data-notify-target="notify.mobile_app_tablet"\s+>/);
   assert.match(html, /Alex(&#39;|')s phone/);
   assert.match(html, /Kitchen tablet/);
-  assert.doesNotMatch(html, /<option/);
+  assert.doesNotMatch(html, /<option[^>]*notify\./);
   assert.doesNotMatch(html, />notify\.mobile_app/);
 });
 
@@ -1445,4 +1445,138 @@ test("integration order: Settings lists linked integrations, and a routine can h
   assert.deepEqual(panel._draftToRaw(panel._draft).integration_order, ["matter", "switchbot", "switchbot_cloud"]);
   panel._draft.integration_order = null;
   assert.equal(panel._draftToRaw(panel._draft).integration_order, null);
+});
+
+// ----- 1.22.0 -----
+
+test("a running routine shows its step and a progress bar, and Run now is held", () => {
+  const panel = makePanel();
+  panel._data.statuses.kitchen_lights = {
+    state: "running", conditions_ok: true,
+    progress: { step: 2, total: 4, label: "Close Bedroom curtains", started: new Date().toISOString(), until: null },
+  };
+  panel._view = { name: "room", room: "kitchen" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Step 2 of 4 · Close Bedroom curtains/);
+  assert.match(html, /role="progressbar"[^>]*aria-valuenow="1"/);
+  assert.match(html, /width:25%/);
+  assert.match(html, /disabled>Running…/);
+  panel._view = { name: "rooms" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /Running now/);
+  assert.match(panel.shadowRoot.innerHTML, /1 running/);
+});
+
+test("a run just started shows Starting… before the first step arrives", () => {
+  const panel = makePanel();
+  panel._data.statuses.kitchen_lights = { state: "running", progress: null };
+  panel._view = { name: "room", room: "kitchen" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /progress indeterminate/);
+  assert.match(panel.shadowRoot.innerHTML, /Starting…/);
+});
+
+test("pushed run states redraw the cards and reload Activity when it changes", () => {
+  const panel = makePanel();
+  let loaded = 0;
+  panel._loadActivity = () => { loaded += 1; };
+  panel._view = { name: "activity" };
+  panel._onStatus({ revision: 1, paused: false, statuses: overview.statuses, log_count: 3, mode: "night" });
+  assert.equal(panel._data.mode, "night");
+  panel._onStatus({ revision: 1, paused: false, statuses: overview.statuses, log_count: 4, mode: "night" });
+  assert.equal(loaded, 1);
+  clearInterval(panel._ticker);
+});
+
+test("more triggers, new steps and only-if round-trip through the editor", () => {
+  const panel = makePanel();
+  const routine = {
+    ...overview.routines[0], trigger: "time", sensors: [], clear_minutes: 0,
+    more_triggers: [
+      { trigger: "everyone_leaves", time: "07:00:00", offset_minutes: 0, people: ["person.alex"], zone: "zone.home", modes: [], value_entity: null, value_threshold: null, watch_entity: null, watch_states: [], hold_minutes: 0 },
+      { trigger: "mode_changes", time: "07:00:00", offset_minutes: 0, people: [], zone: "zone.home", modes: ["night"], value_entity: null, value_threshold: null, watch_entity: null, watch_states: [], hold_minutes: 0 },
+    ],
+    actions: [
+      { run_routine: "other" },
+      { set_mode: "away" },
+      { wait_until: { entity_id: "cover.garage", states: ["closed"], minutes: 5, on_timeout: "stop" } },
+      { service: "light.turn_off", target: { area_id: ["kitchen"] }, data: {}, only_if: { kind: "weather", entity_id: "weather.home", test: "is_not", conditions: ["rainy"] } },
+    ],
+  };
+  panel._draft = panel._draftFromRoutine(routine);
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Or also when/);
+  assert.match(html, /data-xi="0" data-xpeople="person.alex" checked/);
+  assert.match(html, /data-xi="1" data-xmode="night" checked/);
+  assert.match(html, /Run another routine/);
+  assert.match(html, /Wait up to \(minutes\)/);
+  assert.match(html, /Only if/);
+  const raw = panel._draftToRaw(panel._draft);
+  assert.deepEqual(raw.actions.slice(0, 3), routine.actions.slice(0, 3));
+  assert.deepEqual(raw.actions[3].only_if, routine.actions[3].only_if);
+  assert.equal(raw.more_triggers.length, 2);
+  assert.deepEqual(raw.more_triggers[1].modes, ["night"]);
+  assert.deepEqual(raw.more_triggers[0].people, ["person.alex"]);
+  assert.match(panel._describeTrigger(routine), /or When everyone leaves/);
+  assert.match(panel._describeTrigger(routine), /House mode changes to Night/);
+});
+
+test("house mode, workday and weather conditions are offered and saved", () => {
+  const panel = makePanel();
+  panel._data.workday_sensors = [{ entity_id: "binary_sensor.workday_sensor", name: "Workday" }];
+  panel._data.weathers = [{ entity_id: "weather.home", name: "Home" }];
+  panel._draft = panel._applyTemplate({ title: "Blank routine", draft: {} }, null);
+  panel._draft.conditions.push({ kind: "mode", modes: ["home"] }, { kind: "workday", entity_id: "binary_sensor.workday_sensor", when: "day_off" }, { kind: "weather", entity_id: "weather.home", test: "above", value: "25" });
+  panel._view = { name: "editor", room: null };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /\+ House mode/);
+  assert.match(html, /On days off/);
+  assert.match(html, /The temperature is above/);
+  panel._draft.name = "x";
+  panel._draft.actions[0].service = "light.turn_off";
+  const raw = panel._draftToRaw(panel._draft);
+  assert.deepEqual(raw.conditions, [
+    { kind: "mode", modes: ["home"] },
+    { kind: "workday", entity_id: "binary_sensor.workday_sensor", when: "day_off" },
+    { kind: "weather", entity_id: "weather.home", test: "above", value: 25 },
+  ]);
+});
+
+test("Today shows what's still to come with Skip and Run now, and what already ran", () => {
+  const panel = makePanel();
+  panel._view = { name: "today" };
+  panel._today = {
+    mode: "home", paused: false,
+    planned: [{ at: "2026-11-14T20:00:00", routine_id: "kitchen_lights", name: "Kitchen lights off", room: "kitchen", skip_next: false, paused_until: null }],
+    done: [{ at: "2026-11-14T07:00:00", routine_id: "kitchen_lights", name: "Kitchen lights off", outcome: "skipped", reason: "cooldown", detail: "" }],
+    watching: [{ routine_id: "kitchen_lights", name: "Kitchen lights off", room: "kitchen" }],
+  };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Still to come/);
+  assert.match(html, /data-act="skip-next" data-id="kitchen_lights" data-skip="1">Skip/);
+  assert.match(html, /Already today/);
+  assert.match(html, /Runs when something happens/);
+  assert.match(html, /role="tab" data-act="tab" data-tab="today"/);
+});
+
+test("Settings has lived-in lights, and the header a house mode picker for admins", () => {
+  const panel = makePanel();
+  panel._hass = { user: { is_admin: true } };
+  panel._data.all_entities = [{ entity_id: "light.porch", name: "Porch light" }, { entity_id: "lock.front", name: "Front door" }];
+  panel._data.settings.lived_in = { enabled: true, lights: ["light.porch"], start: "sunset", end: "23:00", modes: ["away", "vacation"] };
+  panel._data.lived_in = { active: true, on: ["light.porch"] };
+  panel._data.mode = "away";
+  panel._view = { name: "settings" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Lived-in lights/);
+  assert.match(html, /data-lived="light" data-val="light.porch" checked/);
+  assert.doesNotMatch(html, /data-val="lock.front"/);
+  assert.match(html, /On now/);
+  assert.match(html, /data-mode-pick[^>]*>.*value="away" selected/s);
 });

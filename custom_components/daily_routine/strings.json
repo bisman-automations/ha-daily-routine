@@ -103,5 +103,19 @@
         "continue": "Keep going with the other steps"
       }
     }
+  },
+  "entity": {
+    "select": {
+      "house_mode": {
+        "name": "House mode",
+        "state": {
+          "home": "Home",
+          "away": "Away",
+          "night": "Night",
+          "guests": "Guests",
+          "vacation": "Vacation"
+        }
+      }
+    }
   }
 }

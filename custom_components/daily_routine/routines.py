@@ -10,6 +10,7 @@ from .const import (
     MAX_ACTIONS,
     MAX_RANDOM_MINUTES,
     TRIGGER_EVERYONE_LEAVES,
+    TRIGGER_MODE,
     TRIGGER_PERSON_ARRIVES,
     TRIGGER_PERSON_LEAVES,
     TRIGGER_ROOM_CLEAR,
@@ -63,6 +64,7 @@ STATE_TRIGGERS = (TRIGGER_STATE_IS,)
 TODO_DONE_TRIGGERS = (TRIGGER_TODO_DONE,)
 WATCH_TRIGGERS = (*STATE_TRIGGERS, *TODO_DONE_TRIGGERS)
 REPEATING_TRIGGERS = (
+    TRIGGER_MODE,
     *PRESENCE_TRIGGERS,
     TRIGGER_ROOM_CLEAR,
     *VALUE_TRIGGERS,
@@ -73,17 +75,80 @@ REPEATING_TRIGGERS = (
 
 def uses_conditions(routine: dict[str, Any]) -> bool:
     """True when a run can be blocked and has to wait for things to line up."""
-    return bool(routine["conditions"]) or routine["trigger"] in (
-        TRIGGER_EVERYONE_LEAVES,
-        TRIGGER_ROOM_CLEAR,
+    return (
+        bool(routine["conditions"])
+        or routine["trigger"] in (TRIGGER_EVERYONE_LEAVES, TRIGGER_ROOM_CLEAR)
+        or any(
+            t["trigger"] == TRIGGER_EVERYONE_LEAVES
+            for t in routine.get("more_triggers") or []
+        )
     )
+
+
+# "Or also when": more triggers for the same routine. Each keeps its own
+# settings below; the days, hours, conditions and steps are the routine's.
+MAX_MORE_TRIGGERS = 4
+MORE_TRIGGER_KINDS = (
+    TRIGGER_TIME,
+    "sunrise",
+    "sunset",
+    TRIGGER_EVERYONE_LEAVES,
+    TRIGGER_SOMEONE_ARRIVES,
+    TRIGGER_PERSON_LEAVES,
+    TRIGGER_PERSON_ARRIVES,
+    TRIGGER_VALUE_ABOVE,
+    TRIGGER_VALUE_BELOW,
+    TRIGGER_STATE_IS,
+    TRIGGER_MODE,
+)
+TRIGGER_FIELDS = (
+    "trigger",
+    "time",
+    "offset_minutes",
+    "people",
+    "zone",
+    "value_entity",
+    "value_threshold",
+    "watch_entity",
+    "watch_states",
+    "hold_minutes",
+    "modes",
+)
 
 
 # When a scheduled run's conditions aren't met: wait for them until the end of
 # the day, wait until a time, or skip the run.
 WAIT_MODES = ("day", "until", "minutes", "no")
 
-CONDITION_KINDS = ("presence", "sensors", "state", "calendar")
+CONDITION_KINDS = (
+    "presence",
+    "sensors",
+    "state",
+    "calendar",
+    "mode",
+    "workday",
+    "weather",
+)
+WORKDAY_WHEN = ("workday", "day_off")
+# The weather: what it's doing (rainy, sunny...), or the temperature.
+WEATHER_TESTS = ("is", "is_not", "above", "below")
+WEATHER_STATES = (
+    "clear-night",
+    "cloudy",
+    "exceptional",
+    "fog",
+    "hail",
+    "lightning",
+    "lightning-rainy",
+    "partlycloudy",
+    "pouring",
+    "rainy",
+    "snowy",
+    "snowy-rainy",
+    "sunny",
+    "windy",
+    "windy-variant",
+)
 # A calendar condition: run only on days with a matching event, or skip those days.
 CALENDAR_WHEN = ("event", "no_event")
 MAX_CALENDAR_MATCH = 100
@@ -255,13 +320,67 @@ def _state_list(value: Any) -> list[str]:
     return states
 
 
+# Wait until a device shows a state: for up to this many minutes.
+MAX_WAIT_UNTIL_MINUTES = 240
+WAIT_TIMEOUT = ("continue", "stop")
+# House modes a routine can run in, and a step can switch to.
+MODES = ("home", "away", "night", "guests", "vacation")
+
+
 def _normalize_action(raw: Any, index: int) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise vol.Invalid(f"Step {index} must be an object.")
     if "delay" in raw:
         return {"delay": parse_delay(raw["delay"])}
+    action = _normalize_step(raw, index)
+    only_if = raw.get("only_if")
+    if only_if:
+        try:
+            action["only_if"] = _normalize_condition(only_if, index)
+        except vol.Invalid as err:
+            raise vol.Invalid(f"Step {index}, only if: {err}") from err
+    return action
+
+
+def _normalize_step(raw: dict[str, Any], index: int) -> dict[str, Any]:
     if "todo" in raw:
         return {"todo": normalize_todo_step(raw["todo"], index)}
+    if "run_routine" in raw:
+        other = str(raw.get("run_routine") or "").strip()
+        if not ROUTINE_ID_RE.fullmatch(other):
+            raise vol.Invalid(f"Step {index}: pick the routine to run.")
+        return {"run_routine": other}
+    if "set_mode" in raw:
+        mode = str(raw.get("set_mode") or "")
+        if mode not in MODES:
+            raise vol.Invalid(f"Step {index}: pick the house mode.")
+        return {"set_mode": mode}
+    if "wait_until" in raw:
+        wait = raw.get("wait_until")
+        if not isinstance(wait, dict):
+            raise vol.Invalid(f"Step {index}: say what to wait for.")
+        entity_id = str(wait.get("entity_id") or "").strip()
+        if not ENTITY_ID_RE.fullmatch(entity_id):
+            raise vol.Invalid(f"Step {index}: pick the device to wait for.")
+        states = _state_list(wait.get("states", wait.get("state")))
+        if not states:
+            raise vol.Invalid(f"Step {index}: set the state to wait for.")
+        on_timeout = str(wait.get("on_timeout") or "continue")
+        if on_timeout not in WAIT_TIMEOUT:
+            raise vol.Invalid(f"Step {index}: if it doesn't happen, go on or stop.")
+        return {
+            "wait_until": {
+                "entity_id": entity_id,
+                "states": states,
+                "minutes": _int(
+                    wait.get("minutes") or 10,
+                    1,
+                    MAX_WAIT_UNTIL_MINUTES,
+                    f"Step {index}: wait up to",
+                ),
+                "on_timeout": on_timeout,
+            }
+        }
 
     service = str(raw.get("service") or "").strip()
     if not SERVICE_RE.fullmatch(service):
@@ -286,6 +405,10 @@ def _normalize_action(raw: Any, index: int) -> dict[str, Any]:
     if target:
         action["target"] = target
     return action
+
+
+# Steps that change something (waiting alone does nothing).
+DOING_STEPS = {"service", "todo", "run_routine", "set_mode"}
 
 
 def _presence_condition(
@@ -360,7 +483,51 @@ def _normalize_condition(raw: Any, index: int) -> dict[str, Any]:
             "when": when,
             "match": match,
         }
+    if kind == "mode":
+        modes = _modes(raw.get("modes"))
+        if not modes:
+            raise vol.Invalid("Pick the house modes for this condition.")
+        return {"kind": "mode", "modes": modes}
+    if kind == "workday":
+        entity_id = str(raw.get("entity_id") or "").strip()
+        if not ENTITY_ID_RE.fullmatch(entity_id) or not entity_id.startswith(
+            "binary_sensor."
+        ):
+            raise vol.Invalid("Pick the workday sensor for this condition.")
+        when = str(raw.get("when") or "workday")
+        if when not in WORKDAY_WHEN:
+            raise vol.Invalid("A workday condition is on workdays, or days off.")
+        return {"kind": "workday", "entity_id": entity_id, "when": when}
+    if kind == "weather":
+        entity_id = str(raw.get("entity_id") or "").strip()
+        if not ENTITY_ID_RE.fullmatch(entity_id) or not entity_id.startswith(
+            "weather."
+        ):
+            raise vol.Invalid("Pick the weather for this condition.")
+        test = str(raw.get("test") or "is")
+        if test not in WEATHER_TESTS:
+            raise vol.Invalid(
+                "A weather condition checks what it's doing, or the temperature."
+            )
+        cond: dict[str, Any] = {"kind": "weather", "entity_id": entity_id, "test": test}
+        if test in ("is", "is_not"):
+            states = [str(w) for w in _as_list(raw.get("conditions"))]
+            if not states or any(w not in WEATHER_STATES for w in states):
+                raise vol.Invalid("Pick the kinds of weather for this condition.")
+            cond["conditions"] = [w for w in WEATHER_STATES if w in states]
+        else:
+            if raw.get("value") in (None, ""):
+                raise vol.Invalid("Set the temperature for this condition.")
+            cond["value"] = _number(raw.get("value"), "The temperature")
+        return cond
     raise vol.Invalid(f"Condition {index}: pick what to check.")
+
+
+def _modes(value: Any) -> list[str]:
+    picked = [str(m) for m in _as_list(value)]
+    if any(m not in MODES for m in picked):
+        raise vol.Invalid("House modes are home, away, night, guests or vacation.")
+    return [m for m in MODES if m in picked]
 
 
 def calendar_matches(cond: dict[str, Any], summaries: list[str]) -> bool:
@@ -523,6 +690,12 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
             if off_threshold >= value_threshold:
                 raise vol.Invalid("The turn-off level must be below the turn-on level.")
 
+    modes: list[str] = []
+    if trigger == TRIGGER_MODE:
+        modes = _modes(raw.get("modes"))
+        if not modes:
+            raise vol.Invalid("Pick the house modes that start it.")
+
     watch_entity: str | None = None
     watch_states: list[str] = []
     watch_item = ""
@@ -556,12 +729,15 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
     if len(actions_raw) > MAX_ACTIONS:
         raise vol.Invalid(f"A routine can have at most {MAX_ACTIONS} steps.")
     actions = [_normalize_action(item, i + 1) for i, item in enumerate(actions_raw)]
-    if not any("service" in action or "todo" in action for action in actions):
+    if not any(set(action) & DOING_STEPS for action in actions):
         raise vol.Invalid(
-            "Add at least one service or to-do step (delays alone do nothing)."
+            "Add at least one step that does something (waits alone do nothing)."
         )
+    if any(action.get("run_routine") == rid for action in actions):
+        raise vol.Invalid("A routine can't run itself.")
 
     kind = "todo" if raw.get("kind") == "todo" else "routine"
+    more_triggers = _more_triggers(raw, kind, trigger)
     if kind == "todo" and (
         trigger not in STATE_TRIGGERS or len(actions) != 1 or "todo" not in actions[0]
     ):
@@ -581,6 +757,7 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "watch_entity": watch_entity,
         "watch_states": watch_states,
         "hold_minutes": hold_minutes,
+        "modes": modes,
         "watch_item": watch_item,
         "active_from": active_from,
         "active_to": active_to,
@@ -644,5 +821,41 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "notify_on_error": bool(raw.get("notify_on_error", True)),
         "notify_on_health": bool(raw.get("notify_on_health", False)),
         "wait_when_unavailable": bool(raw.get("wait_when_unavailable", False)),
+        "more_triggers": more_triggers,
         "actions": actions,
     }
+
+
+def _more_triggers(
+    raw: dict[str, Any], kind: str, trigger: str
+) -> list[dict[str, Any]]:
+    """The routine's other triggers, each checked like a routine's own trigger."""
+    items = _as_list(raw.get("more_triggers"))
+    if not items:
+        return []
+    if kind == "todo" or trigger == "manual":
+        raise vol.Invalid("Only a routine with a trigger can have more triggers.")
+    if len(items) > MAX_MORE_TRIGGERS:
+        raise vol.Invalid(
+            f"A routine can have at most {MAX_MORE_TRIGGERS} more triggers."
+        )
+    result: list[dict[str, Any]] = []
+    for number, item in enumerate(items, start=2):
+        if not isinstance(item, dict):
+            raise vol.Invalid(f"Trigger {number} must be an object.")
+        if item.get("trigger") not in MORE_TRIGGER_KINDS:
+            raise vol.Invalid(f"Trigger {number}: pick what starts it.")
+        # Checked the same way as a routine's own trigger.
+        probe = {
+            **{k: v for k, v in raw.items() if k not in TRIGGER_FIELDS},
+            **{k: item.get(k) for k in TRIGGER_FIELDS},
+            "more_triggers": [],
+            "off_threshold": None,
+            "kind": "routine",
+        }
+        try:
+            checked = normalize_routine(probe)
+        except vol.Invalid as err:
+            raise vol.Invalid(f"Trigger {number}: {err}") from err
+        result.append({k: checked[k] for k in TRIGGER_FIELDS})
+    return result

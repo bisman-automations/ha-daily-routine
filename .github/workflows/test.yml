@@ -27,5 +27,5 @@ jobs:
   test:
     uses: bisman-automations/.github/.github/workflows/ha-test.yml@main
     with:
-      core-requirements: frontend
+      core-requirements: frontend conversation
       mypy: custom_components/daily_routine

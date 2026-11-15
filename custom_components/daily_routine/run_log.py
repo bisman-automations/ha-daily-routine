@@ -35,6 +35,8 @@ class RunLog:
             hass, RUN_LOG_VERSION, RUN_LOG_KEY
         )
         self._events: deque[dict[str, Any]] = deque(maxlen=MAX_EVENTS)
+        # Goes up with every event, so the Activity tab knows when to read again.
+        self.count = 0
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
@@ -62,6 +64,7 @@ class RunLog:
                 "detail": detail,
             }
         )
+        self.count += 1
         self._prune(now)
         self._store.async_delay_save(self._payload, SAVE_DELAY_SECONDS)
 

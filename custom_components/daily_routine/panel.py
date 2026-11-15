@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from functools import wraps
 import logging
@@ -11,8 +12,12 @@ from typing import Any
 from homeassistant.components import frontend, panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import Unauthorized
-from homeassistant.helpers import area_registry as ar, device_registry as dr
+from homeassistant.exceptions import HomeAssistantError, Unauthorized
+from homeassistant.helpers import (
+    area_registry as ar,
+    device_registry as dr,
+    entity_registry as er,
+)
 from homeassistant.loader import LoaderError, async_get_loaded_integration
 from homeassistant.util import dt as dt_util
 
@@ -25,10 +30,11 @@ from .coordinator import (
     notify_targets,
 )
 from .linked import integration_name, integration_rank, linked_integrations
-from .routines import normalize_routine
+from .routines import MODES, normalize_routine
 from .run_log import WINDOWS, summarize
 from .runtime import get_coordinator
 from .schema import vol
+from .timeline import today
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -191,7 +197,30 @@ def _overview(
         "statuses": statuses,
         "paused": coordinator.paused,
         "revision": coordinator.revision,
+        "mode": coordinator.mode,
+        "workday_sensors": _platform_entities(hass, "binary_sensor", "workday"),
+        "weathers": [e for e in all_entities if e["entity_id"].startswith("weather.")],
+        "lived_in": coordinator.lived_in.status(dt_util.now()),
     }
+
+
+def _platform_entities(
+    hass: HomeAssistant, domain: str, platform: str
+) -> list[dict[str, str]]:
+    """Entities a given integration made, such as Workday's sensors."""
+    registry = er.async_get(hass)
+    found = []
+    for entry in registry.entities.values():
+        if entry.domain != domain or entry.platform != platform or entry.disabled:
+            continue
+        state = hass.states.get(entry.entity_id)
+        found.append(
+            {
+                "entity_id": entry.entity_id,
+                "name": state.name if state else entry.entity_id,
+            }
+        )
+    return sorted(found, key=lambda e: e["name"].lower())
 
 
 def async_setup_panel_api(hass: HomeAssistant) -> None:
@@ -209,6 +238,10 @@ def async_setup_panel_api(hass: HomeAssistant) -> None:
         ws_pause_until,
         ws_save_settings,
         ws_status,
+        ws_subscribe,
+        ws_today,
+        ws_undo,
+        ws_set_mode,
         ws_integrations,
         ws_activity,
         ws_export,
@@ -295,17 +328,63 @@ async def ws_status(
     if coordinator is None:
         connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
         return
-    connection.send_result(
-        msg["id"],
-        {
-            "revision": coordinator.revision,
-            "paused": coordinator.paused,
-            "statuses": {
-                r["id"]: coordinator.get_status(r["id"]) or {}
-                for r in coordinator.routines
-            },
+    connection.send_result(msg["id"], _status(coordinator))
+
+
+def _status(coordinator: HomeRoutinesCoordinator) -> dict[str, Any]:
+    return {
+        "revision": coordinator.revision,
+        "paused": coordinator.paused,
+        "log_count": coordinator.run_log.count,
+        "mode": coordinator.mode,
+        "lived_in": coordinator.lived_in.status(dt_util.now()),
+        "statuses": {
+            r["id"]: coordinator.get_status(r["id"]) or {} for r in coordinator.routines
         },
-    )
+    }
+
+
+# Live updates are sent at most this often while a routine is running.
+PUSH_SECONDS = 0.3
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/subscribe"})
+@require_access
+@callback
+def ws_subscribe(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Run states as they change, so a card shows Running and its progress at once."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    pending: list[asyncio.TimerHandle] = []
+
+    @callback
+    def _send() -> None:
+        pending.clear()
+        if (current := _coordinator(hass)) is not None:
+            connection.send_message(
+                websocket_api.event_message(msg["id"], _status(current))
+            )
+
+    @callback
+    def _changed() -> None:
+        if not pending:
+            pending.append(hass.loop.call_later(PUSH_SECONDS, _send))
+
+    remove = coordinator.async_add_listener(_changed)
+
+    @callback
+    def _unsubscribe() -> None:
+        remove()
+        for handle in pending:
+            handle.cancel()
+
+    connection.subscriptions[msg["id"]] = _unsubscribe
+    connection.send_result(msg["id"])
+    _send()
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/export"})
@@ -420,11 +499,11 @@ async def ws_run_routine(
         connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
         return
     try:
-        ran = await coordinator.async_run(msg["routine_id"])
+        result = await coordinator.async_start_run(msg["routine_id"])
     except vol.Invalid as err:
         connection.send_error(msg["id"], "not_found", str(err))
         return
-    connection.send_result(msg["id"], {"ran": ran})
+    connection.send_result(msg["id"], result)
 
 
 @websocket_api.websocket_command(
@@ -511,6 +590,59 @@ async def ws_pause_until(
         connection.send_error(msg["id"], "invalid_routine", str(err))
         return
     connection.send_result(msg["id"], {"until": msg["until"]})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/today"})
+@require_access
+@callback
+def ws_today(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """What ran today and what's still to come."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    connection.send_result(msg["id"], today(coordinator, dt_util.now()))
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/routine/undo", vol.Required("routine_id"): str}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_undo(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    try:
+        put_back = await coordinator.async_undo(msg["routine_id"])
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "not_found", str(err))
+        return
+    except HomeAssistantError as err:
+        connection.send_error(msg["id"], "undo_failed", str(err))
+        return
+    connection.send_result(msg["id"], {"put_back": put_back})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/mode/set", vol.Required("mode"): vol.In(MODES)}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_set_mode(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    await coordinator.async_set_mode(msg["mode"])
+    connection.send_result(msg["id"], {"mode": coordinator.mode})
 
 
 @websocket_api.websocket_command(

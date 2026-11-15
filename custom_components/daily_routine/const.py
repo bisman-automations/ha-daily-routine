@@ -28,6 +28,7 @@ TRIGGER_VALUE_ABOVE = "value_above"
 TRIGGER_VALUE_BELOW = "value_below"
 TRIGGER_STATE_IS = "state_is"
 TRIGGER_TODO_DONE = "todo_done"
+TRIGGER_MODE = "mode_changes"
 
 TRIGGERS = (
     TRIGGER_TIME,
@@ -43,6 +44,7 @@ TRIGGERS = (
     TRIGGER_VALUE_BELOW,
     TRIGGER_STATE_IS,
     TRIGGER_TODO_DONE,
+    TRIGGER_MODE,
 )
 
 ROUTINE_SUBENTRY = "routine"

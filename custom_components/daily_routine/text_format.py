@@ -68,6 +68,11 @@ def _number_text(seconds: float) -> str:
 def steps_to_text(actions: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for action in actions:
+        if action.get("only_if") or not ({"todo", "delay", "service"} & set(action)):
+            # Newer kinds of step (run a routine, wait until, house mode, a step's
+            # "only if") are written as they're stored, one per line.
+            lines.append(json.dumps(action, separators=(", ", ": ")))
+            continue
         if "todo" in action:
             step = action["todo"]
             line = f"{TODO_WORD} {step['op']} | {step['list']} | {step['item']}"
@@ -109,6 +114,9 @@ def _meaningful_lines(text: str) -> list[tuple[int, str]]:
 def parse_steps_text(text: str) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     for number, line in _meaningful_lines(text):
+        if line.startswith("{"):
+            actions.append(_json_line(line, number))
+            continue
         first, _, rest = line.partition(" ")
         if first.lower() == TODO_WORD and "|" in rest:
             head, _, after = line.partition("|")
@@ -179,9 +187,21 @@ def conditions_to_text(conditions: list[dict[str, Any]]) -> str:
         elif cond["kind"] == "calendar":
             match = f" | {cond['match']}" if cond["match"] else ""
             lines.append(f"calendar {cond['when']} | {cond['entity_id']}{match}")
-        else:
+        elif cond["kind"] == "state":
             lines.append(f"{cond['entity_id']} = {cond['state']}")
+        else:
+            lines.append(json.dumps(cond, separators=(", ", ": ")))
     return "\n".join(lines)
+
+
+def _json_line(line: str, number: int) -> dict[str, Any]:
+    try:
+        value = json.loads(line)
+    except ValueError as err:
+        raise vol.Invalid(f"Line {number}: that line isn't valid.") from err
+    if not isinstance(value, dict):
+        raise vol.Invalid(f"Line {number}: that line isn't valid.")
+    return value
 
 
 def _split_names(text: str) -> list[str]:
@@ -200,6 +220,9 @@ def parse_conditions_text(text: str) -> list[dict[str, Any]]:
     """
     conditions: list[dict[str, Any]] = []
     for number, line in _meaningful_lines(text):
+        if line.startswith("{"):
+            conditions.append(_json_line(line, number))
+            continue
         head, sep, rest = line.partition("|")
         words = head.split()
         if sep and words and words[0] == "presence":

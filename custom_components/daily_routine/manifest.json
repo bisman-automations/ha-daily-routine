@@ -1,6 +1,9 @@
 {
   "domain": "daily_routine",
   "name": "Daily Routine",
+  "after_dependencies": [
+    "conversation"
+  ],
   "codeowners": [
     "@donavanbecker"
   ],
@@ -15,5 +18,5 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/bisman-automations/ha-daily-routine/issues",
   "requirements": [],
-  "version": "1.21.1"
+  "version": "1.22.0"
 }

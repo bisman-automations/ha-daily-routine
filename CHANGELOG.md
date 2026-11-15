@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.22.0] - 2026-11-14
+
+### Added
+
+- **See what's running.** A running routine now shows **Running** and a progress bar on its card, with the step it's on ("Step 2 of 4 · Close Bedroom curtains") and a countdown during a wait. Running routines are also listed at the top of the Rooms page, and a room with one running shows it.
+- **More than one trigger.** Under **Or also when**, a routine can have up to 4 more triggers, such as "at 22:00 or when everyone leaves". They share the routine's days, hours, conditions and steps.
+- **New steps:** **Wait until…** pauses until a device shows a state (a garage door closed, say), then goes on or stops. **Run another routine** runs it and waits for it to finish. **Set the house mode** switches the mode.
+- **Only if, on one step.** Any step can have its own condition: a device's state, the house mode, workday or day off, or the weather. When it doesn't hold, just that step is skipped.
+- **Undo.** For two hours after a routine runs, **Undo** on its card puts the lights, switches, fans, curtains, locks and thermostats it changed back how they were. Also the `daily_routine.undo_routine` action.
+- **House modes.** Home, Away, Night, Guests or Vacation. Pick the mode at the top of the page, with a routine step, with the new **House mode** entity, or with `daily_routine.set_mode`. Routines can run only in some modes (a new **House mode** condition), or start when the mode changes (the new **When the house mode changes** trigger). New templates switch to Away when everyone leaves, back to Home when someone arrives, and to Night at bedtime.
+- **Lived-in lights.** Under **Settings**: while the house is in Away or Vacation mode, the lights you pick turn on and off at random in the evening so the house looks lived in. They're turned off at the end of the evening and when you come home.
+- **Workday and weather conditions.** Run only on workdays or days off (with Home Assistant's Workday integration, which knows public holidays), or only when the weather is, or isn't, rainy, sunny and so on, or above or below a temperature.
+- **Today tab.** Everything still planned today, in time order, with **Run now** and **Skip** on each, the routines that run when something happens, and what already ran.
+- **Assist.** "Run bedtime", "skip the morning curtains", "set the house to night" and "what's the next routine?" work by voice or typing to Assist, for admins and the people allowed to see Daily Routine.
+
+### Changed
+
+- **Run now starts at once.** The page no longer waits for the whole routine to finish before saying anything: the card shows Running straight away, and a routine that can't run says why ("didn't run: the house isn't in the right mode"). Pressing it again while it's running doesn't start a second run.
+- **The page updates live.** Cards, Today and Activity update as routines start and finish, instead of every 15 seconds.
+
 ## [1.21.1] - 2026-11-14
 
 ### Changed
@@ -375,6 +395,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.22.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.21.1...v1.22.0
 [1.21.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.21.0...v1.21.1
 [1.21.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.20.0...v1.21.0
 [1.20.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.19.0...v1.20.0
