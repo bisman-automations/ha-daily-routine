@@ -6,6 +6,7 @@ from datetime import date
 import re
 from typing import Any
 
+from .checklist import CHECKABLE, MAX_CHECKED
 from .const import (
     MAX_ACTIONS,
     MAX_RANDOM_MINUTES,
@@ -457,6 +458,26 @@ def _normalize_step(raw: dict[str, Any], index: int) -> dict[str, Any]:
                 "day_type": bool(brief.get("day_type", True)),
             }
         }
+    if "check_open" in raw:
+        check = raw.get("check_open")
+        if not isinstance(check, dict):
+            raise vol.Invalid(f"Step {index}: pick the doors and windows to check.")
+        entities = _entity_list(check.get("entity_id"), f"Step {index}")
+        if not entities:
+            raise vol.Invalid(f"Step {index}: pick the doors and windows to check.")
+        if len(entities) > MAX_CHECKED:
+            raise vol.Invalid(f"Step {index}: check up to {MAX_CHECKED} devices.")
+        if any(e.split(".", 1)[0] not in CHECKABLE for e in entities):
+            raise vol.Invalid(
+                f"Step {index}: pick doors, windows, locks, covers or switches."
+            )
+        return {
+            "check_open": {
+                "entity_id": entities,
+                # Stop the routine when something is open (default: carry on).
+                "stop": bool(check.get("stop", False)),
+            }
+        }
     if "wait_cheaper" in raw:
         wait = raw.get("wait_cheaper")
         if not isinstance(wait, dict):
@@ -576,6 +597,7 @@ DOING_STEPS = {
     "together",
     "volume_ramp",
     "briefing",
+    "check_open",
 }
 
 
@@ -1019,6 +1041,8 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "room": room,
         # Runs even while a calendar hold (Settings) is on.
         "ignore_holds": bool(raw.get("ignore_holds", False)),
+        # Speaker steps still run during quiet hours (Settings), for alarms.
+        "loud_ok": bool(raw.get("loud_ok", False)),
         # Scheduled runs don't happen while the house is in these modes.
         "skip_modes": _modes(raw.get("skip_modes")),
         # Sunrise and sunset, but not before or after these times ("HH:MM:SS").

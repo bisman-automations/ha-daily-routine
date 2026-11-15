@@ -2144,3 +2144,68 @@ test("reliability, holds and Undo the last hour show", () => {
   assert.match(html, /data-act="undo-recent"/);
   assert.match(html, /Calendar hold: Babysitter/);
 });
+
+test("check doors and windows step round-trips and the library fills the openings", () => {
+  const panel = makePanel();
+  panel._data.binary_sensors = [...(panel._data.binary_sensors || []), { entity_id: "binary_sensor.back_door", name: "Back door", device_class: "door" }];
+  panel._data.all_entities = [...(panel._data.all_entities || []), { entity_id: "lock.front_door", name: "Front door" }];
+  const template = { title: "Did I leave something open?", draft: { trigger: "manual", actions: [{ kind: "check_open", entities: [], useOpenings: true, cStop: false }] } };
+  const draft = panel._applyTemplate(template, null);
+  assert.deepEqual(draft.actions[0].entities, ["binary_sensor.back_door", "lock.front_door"]);
+  assert.equal(draft.actions[0].useOpenings, undefined);
+  draft.name = "Leaving";
+  const payload = panel._draftToRaw(draft);
+  assert.deepEqual(payload.actions[0], { check_open: { entity_id: ["binary_sensor.back_door", "lock.front_door"], stop: false } });
+  const back = panel._draftFromRoutine({ ...panel._data.routines[0], actions: payload.actions });
+  assert.equal(back.actions[0].kind, "check_open");
+  assert.match(panel._stepSummary(back.actions[0]), /Tell me if any of 2 doors and windows is open/);
+  assert.throws(() => panel._draftToRaw({ ...draft, actions: [{ ...draft.actions[0], entities: [] }] }), /doors and windows/);
+});
+
+test("laundry library step watches the trigger's power sensor", () => {
+  const panel = makePanel();
+  const step = panel._libraryStep({ kind: "wait_until", wOnValue: true, wEntity: "" }, { value_entity: "sensor.washer_power" });
+  assert.equal(step.wEntity, "sensor.washer_power");
+  assert.equal(step.wOnValue, undefined);
+});
+
+test("quiet hours, guest Wi-Fi and the loud_ok option", () => {
+  const panel = makePanel();
+  panel._data.settings.quiet_hours = { enabled: true, from: "22:00", until: "07:00" };
+  panel._data.settings.guest_wifi = { ssid: "Visitors", password: "pw" };
+  panel._view = { name: "settings" };
+  panel._render();
+  let html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Quiet hours/);
+  assert.match(html, /data-quiet="from" value="22:00"/);
+  assert.match(html, /data-wifi="ssid" maxlength="32" value="Visitors"/);
+  const draft = panel._draftFromRoutine({ ...panel._data.routines[0], loud_ok: true });
+  assert.equal(draft.loud_ok, true);
+  draft.name = "Alarm";
+  assert.equal(panel._draftToRaw(draft).loud_ok, true);
+  panel._today = { planned: [], done: [], watching: [], mode: "guests", paused: false };
+  panel._data.guest_wifi = { ssid: "Visitors", password: "p<w" };
+  panel._view = { name: "today" };
+  panel._render();
+  html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Guest Wi-Fi/);
+  assert.match(html, /p&lt;w/);
+  assert.match(html, /data-act="tomorrow"/);
+});
+
+test("tomorrow's dry run and a routine's history chart", () => {
+  const panel = makePanel();
+  panel._tomorrow = { date: "2026-11-16", paused: false, watching: [{ routine_id: "x", name: "Porch light" }],
+    runs: [{ at: "2026-11-16T07:00:00-06:00", routine_id: "r", name: "Morning", room: null, steps: ["Turn on the lights", "Wait 1 minute"], paused: true, skip_modes: ["guests"] }] };
+  const html = panel._tomorrowHtml(panel._tomorrow);
+  assert.match(html, /Morning/);
+  assert.match(html, /<li>Turn on the lights<\/li><li>Wait 1 minute<\/li>/);
+  assert.match(html, /Paused/);
+  assert.match(html, /Also when something happens: Porch light/);
+  const routine = panel._data.routines[0];
+  panel._history = { [routine.id]: { days: [{ day: "2026-11-14", ran: 2, skipped: 1, failed: 0 }, { day: "2026-11-15", ran: 0, skipped: 0, failed: 1 }] } };
+  const card = panel._routineCard(routine);
+  assert.match(card, /class="history-chart"/);
+  assert.match(card, /Ran 2 .*Skipped 1 .*Failed 1/);
+  assert.match(card, /data-act="history"/);
+});

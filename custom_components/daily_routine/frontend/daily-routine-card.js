@@ -65,7 +65,7 @@ class DailyRoutineCard extends HTMLElement {
   _subscribe() {
     if (!this._hass?.connection) return;
     this._unsub = this._hass.connection.subscribeMessage((status) => {
-      const changed = status.log_count !== this._logCount || JSON.stringify(status.statuses) !== this._statusJson;
+      const changed = status.log_count !== this._logCount || JSON.stringify(status.statuses) !== this._statusJson || JSON.stringify(status.guest_wifi || null) !== JSON.stringify(this._status?.guest_wifi || null);
       this._status = status;
       this._statusJson = JSON.stringify(status.statuses);
       if (status.log_count !== this._logCount || !this._today) {
@@ -160,6 +160,11 @@ class DailyRoutineCard extends HTMLElement {
           <button class="ghost" data-act="skip" data-id="${esc(p.routine_id)}" data-skip="${p.skip_next ? "" : "1"}">${p.skip_next ? "Don't skip" : "Skip"}</button></div></div></li>`);
       }
       body = rows.length ? `<ul>${rows.join("")}</ul>` : `<p class="muted">Nothing else planned today.</p>`;
+      const wifi = this._status?.guest_wifi;
+      if (wifi) {
+        body = `<div class="wifi"><div class="small">Guest Wi-Fi</div><div><span class="small">Network</span> <strong>${esc(wifi.ssid)}</strong></div>
+          ${wifi.password ? `<div><span class="small">Password</span> <strong class="mono">${esc(wifi.password)}</strong></div>` : ""}</div>${body}`;
+      }
       const group = this._config.group;
       if (group && this._hass?.user?.is_admin) {
         const members = Object.values(statuses).filter((s) => (s.group || "") === group);
@@ -188,6 +193,8 @@ class DailyRoutineCard extends HTMLElement {
       .progress { height: 6px; border-radius: 3px; background: var(--secondary-background-color, #eee); overflow: hidden; margin: 6px 0 2px; }
       .bar { height: 100%; background: var(--primary-color, #03a9f4); transition: width .4s ease; }
       .note { color: var(--error-color); font-size: 13px; }
+      .wifi { padding: 10px 12px; margin-bottom: 10px; border-radius: 12px; background: var(--secondary-background-color, #f3f3f3); font-size: 18px; }
+      .mono { font-family: var(--code-font-family, monospace); }
     </style>
     <ha-card>
       ${this._config.title ? `<h2>${esc(this._config.title)}</h2>` : ""}

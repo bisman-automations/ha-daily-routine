@@ -494,6 +494,13 @@ const LIBRARY = [
     ] },
   },
   {
+    id: "lib_sunrise_alarm", topic: "Mornings", title: "Sunrise alarm light", scope: "room",
+    hint: "Half an hour before your phone's next alarm, the bedroom lights come up slowly like a sunrise, warm at first. Pick the alarm (the Next alarm sensor from the Home Assistant app).",
+    draft: { trigger: "alarm", useAlarm: true, offset_minutes: -30, actions: [
+      { service: "light.turn_on", targetMode: "area", fields: { brightness_pct: 100, color_temp_kelvin: 2700, transition: 30 } },
+    ] },
+  },
+  {
     id: "lib_school_morning", topic: "Mornings", title: "School morning", scope: "house",
     hint: "On weekdays at 7:00 am: open every curtain and say it's time to get ready. Pick the voice and speaker, and add + Kind of day to keep it to school days.",
     draft: { trigger: "time", time: "07:00:00", days: ["mon", "tue", "wed", "thu", "fri"], actions: [
@@ -542,6 +549,13 @@ const LIBRARY = [
     ] },
   },
   {
+    id: "lib_leaving_check", topic: "Leaving and arriving", title: "Did I leave something open?", scope: "house",
+    hint: "Once everyone has left, check the doors, windows, garage and locks, and send one notification naming anything still open or unlocked. Nothing is sent when it's all shut.",
+    draft: { trigger: "everyone_leaves", usePeopleList: true, actions: [
+      { kind: "check_open", entities: [], useOpenings: true, cStop: false },
+    ] },
+  },
+  {
     id: "lib_arriving", topic: "Leaving and arriving", title: "Welcome home", scope: "house",
     hint: "When someone arrives: Home mode, and the lights on if it's after sunset (set the hours under Options).",
     draft: { trigger: "someone_arrives", usePeopleList: true, actions: [
@@ -565,6 +579,14 @@ const LIBRARY = [
     draft: { trigger: "everyone_leaves", usePeopleList: true, days: ["mon", "tue", "wed", "thu", "fri"], actions: [
       { kind: "delay", seconds: 600 },
       { service: "vacuum.start", targetMode: "entities" },
+    ] },
+  },
+  {
+    id: "lib_laundry", topic: "Chores", title: "Laundry finished", scope: "house",
+    hint: "When the washer's power goes over 10 W it has started; once it stays under 5 W for 5 minutes, you get a notification. Pick the washer's power sensor. Turn on Notify me → When it runs to get it on your phone too.",
+    draft: { trigger: "value_above", valueClass: "power", valueThreshold: 10, actions: [
+      { kind: "wait_until", wEntity: "", wOnValue: true, wBy: "level", wBelow: 5, wAbove: "", wStates: "", wFor: 5, wMinutes: 240, wTimeout: "stop" },
+      { service: "notify.persistent_notification", targetMode: "none", fields: { message: "The laundry is done." } },
     ] },
   },
   {
@@ -681,6 +703,43 @@ function filterPicker(el, text) {
 }
 
 // How reliably the routine's devices answered over 30 days.
+// The guest network, while the house is in Guests mode.
+function guestWifiHtml(wifi) {
+  if (!wifi) return "";
+  return `<section class="card guest-wifi"><h3>Guest Wi-Fi</h3>
+    <p class="wifi-line"><span class="muted small">Network</span><strong>${esc(wifi.ssid)}</strong></p>
+    ${wifi.password ? `<p class="wifi-line"><span class="muted small">Password</span><strong class="mono">${esc(wifi.password)}</strong></p>` : `<p class="muted small">No password.</p>`}
+  </section>`;
+}
+
+// Ran, skipped and failed per day as stacked bars (oldest first), with the
+// totals underneath.
+function historyChart(days) {
+  const list = days || [];
+  const max = Math.max(1, ...list.map((d) => d.ran + d.failed + d.skipped));
+  const w = 10;
+  const gap = 3;
+  const h = 80;
+  const width = list.length * (w + gap);
+  const bars = list.map((d, i) => {
+    const x = i * (w + gap);
+    let y = h;
+    const parts = [["ran", "ok"], ["skipped", "skip"], ["failed", "fail"]].map(([key, cls]) => {
+      if (!d[key]) return "";
+      const height = Math.max(2, Math.round((d[key] / max) * h));
+      y -= height;
+      return `<rect class="${cls}" x="${x}" y="${y}" width="${w}" height="${height}" rx="2"><title>${esc(d.day)}: ${d[key]} ${key}</title></rect>`;
+    }).join("");
+    return parts || `<rect class="none" x="${x}" y="${h - 2}" width="${w}" height="2" rx="1"><title>${esc(d.day)}: nothing</title></rect>`;
+  }).join("");
+  const sum = (key) => list.reduce((n, d) => n + d[key], 0);
+  const first = list[0]?.day || "";
+  const last = list[list.length - 1]?.day || "";
+  return `<svg class="history-chart" viewBox="0 0 ${width} ${h + 14}" role="img" aria-label="Runs per day for ${list.length} days">${bars}
+      <text x="0" y="${h + 12}" class="axis">${esc(first.slice(5))}</text><text x="${width}" y="${h + 12}" class="axis" text-anchor="end">${esc(last.slice(5))}</text></svg>
+    <p class="muted small"><span class="key ok"></span> Ran ${sum("ran")} <span class="key skip"></span> Skipped ${sum("skipped")} <span class="key fail"></span> Failed ${sum("failed")} · last ${list.length} days</p>`;
+}
+
 function reliabilityHtml(rel) {
   if (!rel || rel.score == null) return "";
   const worst = (rel.worst || []).map((w) => `${w.name}${w.failed ? ` failed ${w.failed}×` : ` needed a retry ${w.retried}×`}`).join(", ");
@@ -804,14 +863,15 @@ class DailyRoutinePanel extends HTMLElement {
     }
     const logChanged = this._logCount !== undefined && status.log_count !== this._logCount;
     this._logCount = status.log_count;
-    const { revision, paused, statuses, mode, lived_in } = status;
-    const json = JSON.stringify({ revision, paused, statuses, mode, lived_in });
+    const { revision, paused, statuses, mode, lived_in, guest_wifi } = status;
+    const json = JSON.stringify({ revision, paused, statuses, mode, lived_in, guest_wifi });
     if (json !== this._statusJson) {
       this._statusJson = json;
       this._data.statuses = statuses;
       this._data.paused = paused;
       if (mode) this._data.mode = mode;
       if (lived_in) this._data.lived_in = lived_in;
+      this._data.guest_wifi = guest_wifi || null;
       if (LIST_VIEWS.includes(this._view.name) || ["activity", "settings"].includes(this._view.name)) this._render();
       else if (["editor", "todo-editor", "templates"].includes(this._view.name)) {
         const pick = this.shadowRoot?.querySelector("[data-mode-pick]");
@@ -1234,13 +1294,32 @@ class DailyRoutinePanel extends HTMLElement {
       if (spec[key] !== undefined) draft[key] = spec[key];
     }
     if (spec.forecast_kinds) draft.forecast_kinds = [...spec.forecast_kinds];
+    if (spec.useAlarm) draft.watch_entity = this._data.alarm_sensors?.[0]?.entity_id || "";
     if (spec.actions) {
       draft.actions = spec.actions.map((a) => (a.kind
-        ? { service: "", targetMode: "none", area: "", entities: [], data: "", ...a }
+        ? this._libraryStep(a, draft)
         : { kind: "service", service: a.service, targetMode: a.targetMode, area: roomId || "", entities: [...(a.entities || [])], data: "", fields: { ...(a.fields || {}) }, rooms: a.rooms || "" }));
     }
     if (draft.actions.length === 1) draft.actions[0]._open = true;
     return draft;
+  }
+
+  // A library step, filled from this home: the power sensor the trigger
+  // watches, or every door, window, garage and lock.
+  _libraryStep(a, draft) {
+    const step = { service: "", targetMode: "none", area: "", entities: [], data: "", ...a };
+    if (a.wOnValue) step.wEntity = draft.value_entity || "";
+    if (a.useOpenings) step.entities = this._openings().map((e) => e.entity_id);
+    delete step.wOnValue;
+    delete step.useOpenings;
+    return step;
+  }
+
+  // Doors, windows, garage doors and locks: what a leaving-home check looks at.
+  _openings() {
+    const doors = (this._data.binary_sensors || []).filter((s) => ["door", "window", "garage_door", "opening"].includes(s.device_class));
+    const others = (this._data.all_entities || []).filter((e) => ["lock.", "cover."].some((p) => e.entity_id.startsWith(p)) && (e.entity_id.startsWith("lock.") || /garage|door|gate|window/i.test(`${e.entity_id} ${e.name}`)));
+    return [...doors, ...others];
   }
 
   _draftFromRoutine(routine) {
@@ -1250,7 +1329,7 @@ class DailyRoutinePanel extends HTMLElement {
       value_entity: routine.value_entity || "", watch_entity: routine.watch_entity || "", watch_states: (routine.watch_states || []).join(", "), hold_minutes: routine.hold_minutes || 0, watch_item: routine.watch_item || "", value_threshold: routine.value_threshold ?? "", off_threshold: routine.off_threshold ?? "",
       active_from: routine.active_from ? hhmm(routine.active_from) : "", active_to: routine.active_to ? hhmm(routine.active_to) : "",
       trigger: routine.trigger, time: routine.time, offset_minutes: routine.offset_minutes || 0, days: [...routine.days],
-      random_minutes: routine.random_minutes || 0, skip_modes: [...(routine.skip_modes || [])], ignore_holds: Boolean(routine.ignore_holds),
+      random_minutes: routine.random_minutes || 0, skip_modes: [...(routine.skip_modes || [])], ignore_holds: Boolean(routine.ignore_holds), loud_ok: Boolean(routine.loud_ok),
       not_before: routine.not_before ? hhmm(routine.not_before) : "", not_after: routine.not_after ? hhmm(routine.not_after) : "", paused_until: routine.paused_until || "", skip_next: Boolean(routine.skip_next),
       people: [...routine.people], sensors: [...routine.sensors], clear_minutes: routine.clear_minutes,
       conditions: (routine.conditions || []).map((c) => ({ ...c, people: [...(c.people || [])], sensors: [...(c.sensors || [])] })),
@@ -1278,6 +1357,7 @@ class DailyRoutinePanel extends HTMLElement {
         if ("run_routine" in a) return { ...blank, kind: "routine", routine: a.run_routine };
         if ("set_mode" in a) return { ...blank, kind: "mode", mode: a.set_mode };
         if ("briefing" in a) return { ...blank, kind: "briefing", bVoice: a.briefing.voice, bSpeaker: a.briefing.speaker, bWeather: a.briefing.weather || "", entities: [...a.briefing.calendars], bDay: a.briefing.day_type !== false };
+        if ("check_open" in a) return { ...blank, kind: "check_open", entities: [...a.check_open.entity_id], cStop: Boolean(a.check_open.stop) };
         if ("wait_cheaper" in a) return { ...blank, kind: "cheaper", cEntity: a.wait_cheaper.entity_id, cMinutes: a.wait_cheaper.minutes };
         if ("volume_ramp" in a) return {
           ...blank, kind: "ramp", entities: [...a.volume_ramp.entity_id],
@@ -1338,6 +1418,10 @@ class DailyRoutinePanel extends HTMLElement {
         if (!step.bVoice) throw new Error(`Step ${index + 1}: choose the voice.`);
         if (!step.bSpeaker) throw new Error(`Step ${index + 1}: choose the speaker.`);
         return { briefing: { voice: step.bVoice, speaker: step.bSpeaker, weather: step.bWeather || null, calendars: [...(step.entities || [])], day_type: step.bDay !== false } };
+      }
+      if (step.kind === "check_open") {
+        if (!(step.entities || []).length) throw new Error(`Step ${index + 1}: choose the doors and windows to check.`);
+        return { check_open: { entity_id: [...step.entities], stop: Boolean(step.cStop) } };
       }
       if (step.kind === "cheaper") {
         if (!step.cEntity) throw new Error(`Step ${index + 1}: choose the electricity price sensor.`);
@@ -1428,6 +1512,7 @@ class DailyRoutinePanel extends HTMLElement {
       random_minutes: Number(draft.random_minutes) || 0,
       skip_modes: [...(draft.skip_modes || [])],
       ignore_holds: Boolean(draft.ignore_holds),
+      loud_ok: Boolean(draft.loud_ok),
       not_before: ["sunrise", "sunset"].includes(draft.trigger) && draft.not_before ? `${draft.not_before}:00`.slice(0, 8) : null,
       not_after: ["sunrise", "sunset"].includes(draft.trigger) && draft.not_after ? `${draft.not_after}:00`.slice(0, 8) : null,
       paused_until: draft.paused_until || null,
@@ -1696,6 +1781,47 @@ class DailyRoutinePanel extends HTMLElement {
         case "add-delay":
           this._draft.actions.push({ _open: true, kind: "delay", seconds: 5, service: "", targetMode: "none", area: "", entities: [], data: "" });
           break;
+        case "history": {
+          const id = el.dataset.id;
+          this._history = this._history || {};
+          if (this._history[id]) {
+            delete this._history[id];
+            break;
+          }
+          try {
+            this._history[id] = await this._call({ type: `${DOMAIN}/routine/history`, routine_id: id, days: 30 });
+          } catch (err) {
+            this._showNotice(err.message || String(err), true);
+          }
+          break;
+        }
+        case "tomorrow":
+          if (this._tomorrow) {
+            this._tomorrow = null;
+            break;
+          }
+          try {
+            this._tomorrow = await this._call({ type: `${DOMAIN}/plan/tomorrow` });
+          } catch (err) {
+            this._showNotice(err.message || String(err), true);
+          }
+          break;
+        case "quiet-save": {
+          const root = this.shadowRoot;
+          await this._saveSettings({ quiet_hours: {
+            enabled: root.querySelector("[data-quiet=enabled]").checked,
+            from: root.querySelector("[data-quiet=from]").value,
+            until: root.querySelector("[data-quiet=until]").value,
+          } });
+          await this._load(true);
+          return;
+        }
+        case "wifi-save": {
+          const root = this.shadowRoot;
+          await this._saveSettings({ guest_wifi: { ssid: root.querySelector("[data-wifi=ssid]").value, password: root.querySelector("[data-wifi=password]").value } });
+          await this._load(true);
+          return;
+        }
         case "why": {
           const id = el.dataset.id;
           this._why = this._why || {};
@@ -1805,6 +1931,7 @@ class DailyRoutinePanel extends HTMLElement {
           else if (kind === "scene") this._draft.actions.push({ ...blank, kind, entities: [], saved: {}, transition: "" });
           else if (kind === "briefing") this._draft.actions.push({ ...blank, kind, bVoice: (this._data.all_entities || []).find((e) => e.entity_id.startsWith("tts."))?.entity_id || "", bSpeaker: "", bWeather: this._data.weathers?.[0]?.entity_id || "", entities: [], bDay: true });
           else if (kind === "cheaper") this._draft.actions.push({ ...blank, kind, cEntity: "", cMinutes: 180 });
+          else if (kind === "check_open") this._draft.actions.push({ ...blank, kind, entities: this._openings().map((e) => e.entity_id), cStop: false });
           else if (kind === "ramp") this._draft.actions.push({ ...blank, kind, entities: [], rFrom: 5, rTo: 30, rMinutes: 10 });
           else this._draft.actions.push({ ...blank, kind: "mode", mode: "night" });
           break;
@@ -2492,6 +2619,7 @@ class DailyRoutinePanel extends HTMLElement {
         ${status.can_undo ? `<button class="ghost" data-act="undo" data-id="${esc(routine.id)}" title="Put things back the way they were before it last ran">Undo</button>` : ""}
         <button class="ghost" data-act="skip-next" data-id="${esc(routine.id)}" data-skip="${routine.skip_next ? "" : "1"}">${routine.skip_next ? "Don't skip" : "Skip next run"}</button>
         <button class="ghost" data-act="why" data-id="${esc(routine.id)}" title="Why won't it run (or why didn't it)?">Why not?</button>
+        <button class="ghost" data-act="history" data-id="${esc(routine.id)}" title="Ran, skipped and failed, day by day">History</button>
         <button class="ghost" data-act="edit" data-id="${esc(routine.id)}">Edit</button>
         <button class="ghost" data-act="duplicate" data-id="${esc(routine.id)}">Duplicate</button>
         ${routine.room ? `<button class="ghost" data-act="copy-open" data-id="${esc(routine.id)}">Copy to rooms</button>` : ""}
@@ -2500,6 +2628,8 @@ class DailyRoutinePanel extends HTMLElement {
         <button class="ghost danger" data-act="delete" data-id="${esc(routine.id)}">Delete</button>
       </div>
       ${this._why?.[routine.id] ? this._whyHtml(routine, this._why[routine.id]) : ""}
+      ${this._history?.[routine.id] ? `<div class="copy-panel">${historyChart(this._history[routine.id].days)}
+        <div class="row-actions"><button class="ghost" data-act="history" data-id="${esc(routine.id)}">Close</button></div></div>` : ""}
       ${this._copyFor === routine.id ? this._copyPanel(routine) : ""}
       ${this._shareFor === routine.id ? this._sharePanel(routine) : ""}
     </article>`;
@@ -3002,6 +3132,8 @@ class DailyRoutinePanel extends HTMLElement {
       ${this._dayTypesCard()}
       ${this._weeklyCard()}
       ${this._holdsCard()}
+      ${this._quietCard()}
+      ${this._guestWifiCard()}
       ${this._renderAccess()}
       ${this._renderIntegrationOrder()}
       <section class="card">
@@ -3121,6 +3253,28 @@ class DailyRoutinePanel extends HTMLElement {
     return this._dayTypeRows || (this._data.settings?.day_types || []).map((t) => ({ ...t, words: (t.words || []).join(", ") }));
   }
 
+  _quietCard() {
+    const q = this._data.settings?.quiet_hours || { enabled: false, from: "22:00", until: "07:00" };
+    return `<section class="card">
+      <h3>Quiet hours</h3>
+      <p class="muted small">Between these times routines leave the speakers alone: no announcements, no music, no turning the volume up, no saying the day ahead. Turning something down or off still works. A routine can be allowed to use them anyway, for an alarm.</p>
+      <label class="check"><input type="checkbox" data-quiet="enabled" ${q.enabled ? "checked" : ""}> Keep the speakers quiet</label>
+      <div class="inline"><label>From<input type="time" data-quiet="from" value="${esc(q.from)}"></label><label>Until<input type="time" data-quiet="until" value="${esc(q.until)}"></label></div>
+      <div class="row-actions"><button class="primary" data-act="quiet-save">Save</button></div>
+    </section>`;
+  }
+
+  _guestWifiCard() {
+    const w = this._data.settings?.guest_wifi || { ssid: "", password: "" };
+    return `<section class="card">
+      <h3>Guest Wi-Fi</h3>
+      <p class="muted small">While the house is in <strong>Guests</strong> mode, the Today tab and the Daily Routine dashboard card show this network, so visitors can read it off a wall tablet. Leave both empty to show nothing.</p>
+      <div class="inline"><label>Network name<input type="text" data-wifi="ssid" maxlength="32" value="${esc(w.ssid)}"></label>
+      <label>Password<input type="text" data-wifi="password" maxlength="63" value="${esc(w.password)}" autocomplete="off"></label></div>
+      <div class="row-actions"><button class="primary" data-act="wifi-save">Save</button></div>
+    </section>`;
+  }
+
   _holdsCard() {
     const rows = this._holdRows || (this._data.settings?.holds || []).map((h) => ({ calendar: h.calendar, words: (h.words || []).join(", ") }));
     const calendars = this._calendars();
@@ -3237,6 +3391,7 @@ class DailyRoutinePanel extends HTMLElement {
     const habits = this._habitCards();
     return `<p class="muted small">House mode: <strong>${esc(modeName(t.mode))}</strong>${this._data.day_type && (this._data.settings?.day_types || []).length ? ` · ${esc(this._data.day_type)}` : ""}${t.paused ? " · all routines are paused" : ""}</p>
       ${this._data.hold ? `<p class="pill warn">Calendar hold: ${esc(this._data.hold)}. Routines don't run on their own until it's over.</p>` : ""}
+      ${guestWifiHtml(this._data.guest_wifi)}
       ${this._data.can_undo_recent ? `<div class="row-actions"><button class="ghost" data-act="undo-recent" title="Put back what routines changed in the last hour">Undo the last hour</button></div>` : ""}
       ${habits ? `<section class="card"><h3>Ideas from what you do</h3>${habits}</section>` : ""}
       <section class="card"><h3>Still to come</h3>
@@ -3245,7 +3400,22 @@ class DailyRoutinePanel extends HTMLElement {
       ${watching ? `<section class="card"><h3>Runs when something happens</h3><ul class="small">${watching}</ul></section>` : ""}
       <section class="card"><h3>Already today</h3>
         ${done ? `<ul class="timeline">${done}</ul>` : `<p class="muted">Nothing has run yet today.</p>`}
+      </section>
+      <section class="card"><h3>Tomorrow</h3>
+        <p class="muted small">A dry run: what would run tomorrow and when, step by step. Nothing is run. Routines that wait for something to happen aren't on a clock, so they're listed apart.</p>
+        <div class="row-actions"><button class="ghost" data-act="tomorrow">${this._tomorrow ? "Hide tomorrow" : "See tomorrow"}</button></div>
+        ${this._tomorrow ? this._tomorrowHtml(this._tomorrow) : ""}
       </section>`;
+  }
+
+  _tomorrowHtml(plan) {
+    const clock = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const rows = plan.runs.map((r) => `<li class="tl planned"><span class="tl-time">${esc(clock(r.at))}</span>
+      <span class="tl-body"><strong>${esc(r.name)}</strong> <span class="muted small">${esc(this._roomName(r.room))}</span>
+        ${r.paused ? `<span class="pill warn">Paused</span>` : ""}${r.skip_modes.length ? `<span class="muted small"> · not in ${esc(r.skip_modes.map(modeName).join(", "))}</span>` : ""}
+        <ol class="small dry-steps">${r.steps.map((label) => `<li>${esc(label)}</li>`).join("")}</ol></span></li>`).join("");
+    const watching = plan.watching.length ? `<p class="muted small">Also when something happens: ${esc(plan.watching.map((w) => w.name).join(", "))}.</p>` : "";
+    return `${plan.paused ? `<p class="pill warn">All routines are paused.</p>` : ""}${rows ? `<ul class="timeline">${rows}</ul>` : `<p class="muted">Nothing is planned for tomorrow.</p>`}${watching}`;
   }
 
   _renderIntegrationOrder() {
@@ -3724,6 +3894,7 @@ class DailyRoutinePanel extends HTMLElement {
         ${["time", "sunrise", "sunset", "alarm", "calendar_event", "cheapest"].includes(d.trigger) ? `<label>Heads-up before it runs
           <select data-f="heads_up_minutes">${HEADS_UP_CHOICES.map((m) => `<option value="${m}" ${Number(d.heads_up_minutes || 0) === m ? "selected" : ""}>${m ? `${m} minutes before, with a Skip button` : "No"}</option>`).join("")}</select>
         </label>` : ""}
+        ${this._data.settings?.quiet_hours?.enabled ? `<label class="check"><input type="checkbox" data-f="loud_ok" ${d.loud_ok ? "checked" : ""}> Use the speakers during quiet hours too (Settings), for an alarm</label>` : ""}
         ${(this._data.settings?.holds || []).length ? `<label class="check"><input type="checkbox" data-f="ignore_holds" ${d.ignore_holds ? "checked" : ""}> Run even during a calendar hold (Settings)</label>` : ""}
         <h4>Not on its own in these house modes</h4>
         <div class="chips">${MODES.map(([id, label]) => `<label class="chip"><input type="checkbox" data-skipmode="${id}" ${(d.skip_modes || []).includes(id) ? "checked" : ""}> ${esc(label)}</label>`).join("")}</div>
@@ -3774,7 +3945,8 @@ class DailyRoutinePanel extends HTMLElement {
           <button class="ghost" data-act="add-kind" data-kind="mode">+ Set the house mode</button>
           <button class="ghost" data-act="add-kind" data-kind="ramp">+ Turn the volume up slowly</button>
           <button class="ghost" data-act="add-kind" data-kind="cheaper">+ Wait for cheaper electricity</button>
-          <button class="ghost" data-act="add-kind" data-kind="briefing">+ Say the day ahead</button></div>`;
+          <button class="ghost" data-act="add-kind" data-kind="briefing">+ Say the day ahead</button>
+          <button class="ghost" data-act="add-kind" data-kind="check_open">+ Check doors and windows</button></div>`;
   }
 
   _askBody(d) {
@@ -4105,6 +4277,7 @@ class DailyRoutinePanel extends HTMLElement {
     else if (step.kind === "routine") text = `Run ${this._data.routines.find((r) => r.id === step.routine)?.name || "another routine"}`;
     else if (step.kind === "mode") text = `Set the house to ${modeName(step.mode || "home")}`;
     else if (step.kind === "briefing") text = step.bSpeaker ? `Say the day ahead on ${this._nameFor(step.bSpeaker)}` : "Say the day ahead";
+    else if (step.kind === "check_open") text = step.entities?.length ? `Tell me if any of ${step.entities.length} doors and windows is open` : "Check doors and windows";
     else if (step.kind === "cheaper") text = step.cEntity ? `Wait for the cheapest electricity in the next ${Math.round((Number(step.cMinutes) || 180) / 60 * 10) / 10} hours` : "Wait for cheaper electricity";
     else if (step.kind === "ramp") text = step.entities?.length
       ? `Volume of ${names(step.entities)} from ${step.rFrom ?? 5}% to ${step.rTo ?? 30}% over ${step.rMinutes || 10} min`
@@ -4151,7 +4324,8 @@ class DailyRoutinePanel extends HTMLElement {
       <option value="scene" ${step.kind === "scene" ? "selected" : ""}>Make it look like this</option>
       <option value="ramp" ${step.kind === "ramp" ? "selected" : ""}>Turn the volume up slowly</option>
       <option value="cheaper" ${step.kind === "cheaper" ? "selected" : ""}>Wait for cheaper electricity</option>
-      <option value="briefing" ${step.kind === "briefing" ? "selected" : ""}>Say the day ahead</option></select></label>`;
+      <option value="briefing" ${step.kind === "briefing" ? "selected" : ""}>Say the day ahead</option>
+      <option value="check_open" ${step.kind === "check_open" ? "selected" : ""}>Check doors and windows</option></select></label>`;
     const onlyIf = this._onlyIf(step, i);
     if (step.kind === "scene") {
       step.saved ||= {};
@@ -4180,6 +4354,17 @@ class DailyRoutinePanel extends HTMLElement {
         <h4>Today's events from</h4>
         <div class="checks">${this._calendars().map((e) => checkbox("sentity", e.entity_id, e.name, step.entities.includes(e.entity_id), i)).join("") || `<p class="muted small">No calendars found.</p>`}</div>
         <label class="check"><input type="checkbox" data-si="${i}" data-sf="bDay" ${step.bDay !== false ? "checked" : ""}> Say the kind of day (from Settings → Kinds of day)</label>
+        ${onlyIf}</div>`;
+    }
+    if (step.kind === "check_open") {
+      step.entities ||= [];
+      const openings = this._openings();
+      const known = new Set(openings.map((e) => e.entity_id));
+      const extra = step.entities.filter((id) => !known.has(id)).map((id) => ({ entity_id: id, name: this._nameFor(id) }));
+      return `<div class="step">${head}${kind}
+        <p class="muted small">Looks at these and sends one notification naming anything still open, unlocked or on (“Still open: Back door, Front door (unlocked)”). A sensor that isn't reporting is named too. Nothing is sent when it's all shut.</p>
+        <div class="checks">${[...openings, ...extra].map((e) => checkbox("sentity", e.entity_id, e.name, step.entities.includes(e.entity_id), i)).join("") || `<p class="muted small">No doors, windows or locks found.</p>`}</div>
+        <label class="check"><input type="checkbox" data-si="${i}" data-sf="cStop" ${step.cStop ? "checked" : ""}> Stop the routine when something is open</label>
         ${onlyIf}</div>`;
     }
     if (step.kind === "cheaper") {
@@ -4529,6 +4714,15 @@ const STYLES = `<style>
   .seg.skip { background: var(--warning-color, #ffa600); }
   .key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 8px; }
   .key.ok { background: var(--success-color, #43a047); }
+  .history-chart { width: 100%; max-width: 420px; height: auto; display: block; margin: 4px 0; }
+  .history-chart .ok { fill: var(--success-color, #43a047); }
+  .history-chart .skip { fill: var(--warning-color, #ffa600); }
+  .history-chart .fail { fill: var(--error-color, #db4437); }
+  .history-chart .none { fill: var(--divider-color, #ccc); }
+  .history-chart .axis { font-size: 9px; fill: var(--secondary-text-color); }
+  .guest-wifi .wifi-line { display: flex; flex-direction: column; margin: 6px 0; font-size: 20px; }
+  .mono { font-family: var(--code-font-family, monospace); letter-spacing: .03em; }
+  .dry-steps { margin: 4px 0 0; padding-left: 18px; color: var(--secondary-text-color); }
   .key.fail { background: var(--error-color, #db4437); }
   .key.skip { background: var(--warning-color, #ffa600); }
   ul.plain { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 8px; }

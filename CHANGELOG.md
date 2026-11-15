@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.29.0] - 2026-11-15
+
+### Added
+
+- **Sunrise alarm light.** A new library routine: half an hour before your phone's next alarm, the bedroom lights come up slowly and warm, like a sunrise.
+- **Did I leave something open?** A new step, **Check doors and windows**, looks at the doors, windows, garage doors and locks you pick and sends one notification naming anything still open or unlocked (or not reporting). Nothing is sent when it's all shut, and it can stop the routine instead. The library has it ready as a routine for when everyone leaves.
+- **Guest Wi-Fi.** Under **Settings**, the guest network's name and password. While the house is in Guests mode, the Today tab and the dashboard card show them, big enough to read off a wall tablet.
+- **Laundry finished.** A new library routine: when the washer's power goes up it has started, and once it stays low for 5 minutes you get a notification.
+- **Quiet hours.** Under **Settings**, times when routines leave the speakers alone: no announcements, music, turning the volume up or saying the day ahead. Turning something down or off still works, and a routine (an alarm) can be allowed to use the speakers anyway.
+- **A routine's history.** **History** on a routine's card shows the last 30 days as bars: how many times it ran, was skipped or failed each day.
+- **See tomorrow.** On the Today tab, a dry run of tomorrow: what would run and when, with each routine's steps, paused ones marked. Nothing is run.
+
 ## [1.28.0] - 2026-11-15
 
 ### Added
@@ -477,6 +489,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.29.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.28.0...v1.29.0
 [1.28.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.27.0...v1.28.0
 [1.27.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.26.0...v1.27.0
 [1.26.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.25.0...v1.26.0

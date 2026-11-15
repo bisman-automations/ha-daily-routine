@@ -47,6 +47,7 @@ from homeassistant.util import dt as dt_util, slugify
 from .access import async_get_access
 from .away import AwayHelper, clean_summary, summary_or_default, vacation_or_none
 from .briefing import briefing_text, events_text, weather_text
+from .checklist import checklist_text, left_open
 from .const import (
     DOMAIN,
     EVENT_ROUTINE_FINISHED,
@@ -88,6 +89,7 @@ from .energy import (
     read_watts,
     summary as power_summary,
 )
+from .guests import clean_guest_wifi, guest_wifi_or_none
 from .habits import Habits
 from .holds import active_hold, clean_holds
 from .linked import linked_groups
@@ -100,6 +102,7 @@ from .planned import (
     price_slots,
 )
 from .progress import step_label
+from .quiet_hours import clean_quiet, in_quiet, is_loud, quiet_or_default
 from .reliability import DeviceStats
 from .routines import (
     DESIRED_STATE,
@@ -565,6 +568,8 @@ class HomeRoutinesCoordinator:
             "day_types": [],
             "weekly_report": weekly_or_default(None),
             "holds": [],
+            "quiet_hours": quiet_or_default(None),
+            "guest_wifi": None,
             **{key: default for key, (default, *_rest) in TIMING_SETTINGS.items()},
         }
         self.lived_in = LivedIn(self)
@@ -893,6 +898,8 @@ class HomeRoutinesCoordinator:
             "day_types": _day_types_or_none(saved.get("day_types")),
             "weekly_report": weekly_or_default(saved.get("weekly_report")),
             "holds": _holds_or_none(saved.get("holds")),
+            "quiet_hours": quiet_or_default(saved.get("quiet_hours")),
+            "guest_wifi": guest_wifi_or_none(saved.get("guest_wifi")),
             **{key: _timing_value(saved.get(key), key) for key in TIMING_SETTINGS},
         }
         for raw in data.get("routines", []):
@@ -1314,6 +1321,10 @@ class HomeRoutinesCoordinator:
         day_types = clean_day_types(raw.get("day_types", self.settings["day_types"]))
         weekly = clean_weekly(raw.get("weekly_report", self.settings["weekly_report"]))
         holds = clean_holds(raw.get("holds", self.settings.get("holds")))
+        quiet = clean_quiet(raw.get("quiet_hours", self.settings.get("quiet_hours")))
+        guest_wifi = clean_guest_wifi(
+            raw.get("guest_wifi", self.settings.get("guest_wifi"))
+        )
         self.settings = {
             "hidden_people": sorted(set(hidden)),
             "notify_services": sorted(set(services)),
@@ -1324,6 +1335,8 @@ class HomeRoutinesCoordinator:
             "day_types": day_types,
             "weekly_report": weekly,
             "holds": holds,
+            "quiet_hours": quiet,
+            "guest_wifi": guest_wifi,
             # Set by going on vacation, not by the Settings tab.
             "vacation": self.settings.get("vacation"),
             **timing,
@@ -2623,6 +2636,13 @@ class HomeRoutinesCoordinator:
         """A routine's other triggers, each as a routine of its own."""
         return self._aliases_of(routine_id)
 
+    def next_run_after(
+        self, routine: dict[str, Any], after: datetime
+    ) -> datetime | None:
+        """When a routine (or one of its triggers) would run after a time, from
+        its schedule alone (the dry run of tomorrow)."""
+        return self._next_run_datetime(routine, after)
+
     def planned_run(self, trigger_id: str) -> datetime | None:
         """When a routine (or one of its other triggers) is next planned to run."""
         return dt_util.parse_datetime(self._rt(trigger_id)["next_run"] or "")
@@ -3071,6 +3091,32 @@ class HomeRoutinesCoordinator:
 
             if "delay" in action:
                 await asyncio.sleep(action["delay"])
+                continue
+
+            if (
+                not routine.get("loud_ok")
+                and is_loud(action)
+                and in_quiet(self.settings.get("quiet_hours"), dt_util.now())
+            ):
+                run.details.append(f"Step {index + 1} skipped: quiet hours")
+                if track:
+                    _trace_mark(rt, "skipped", "Quiet hours")
+                continue
+
+            if "check_open" in action:
+                acted = True
+                found = self._left_open(action["check_open"]["entity_id"])
+                if not found:
+                    run.details.append("Everything was shut")
+                    continue
+                text = checklist_text(found)
+                run.details.append(text)
+                await self._notify(text, f"{DOMAIN}_checklist_{routine['id']}")
+                if action["check_open"]["stop"]:
+                    run.failures.append(_Failure(index, "check_open", None, text))
+                    run.result = "error:check_open"
+                    run.stopped_at = index
+                    break
                 continue
 
             if "together" in action:
@@ -3834,6 +3880,14 @@ class HomeRoutinesCoordinator:
             {"entity_id": [brief["voice"]]},
         )
         return None if error is None else f"Couldn't say the briefing: {error}"
+
+    def _left_open(self, entity_ids: list[str]) -> list[tuple[str, str]]:
+        """Which of these devices are open, unlocked or on (checklist.py)."""
+        states: dict[str, tuple[str, str] | None] = {}
+        for entity_id in entity_ids:
+            state = self.hass.states.get(entity_id)
+            states[entity_id] = (state.name, state.state) if state else None
+        return left_open(states)
 
     def explain(self, routine_id: str) -> dict[str, Any]:
         """Why a routine won't run (or didn't), in reason codes for the panel."""

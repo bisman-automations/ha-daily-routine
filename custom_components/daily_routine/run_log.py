@@ -207,3 +207,26 @@ def _ranked(counter: Counter[str]) -> list[dict[str, Any]]:
     return [
         {"reason": reason, "count": count} for reason, count in counter.most_common()
     ]
+
+
+def daily_counts(
+    events: list[dict[str, Any]],
+    now: datetime,
+    days: int = 30,
+    routine_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Ran, skipped and failed per day for the last ``days`` days, oldest
+    first, with a row for every day (quiet days are zero). Pure."""
+    today = dt_util.as_local(now).date()
+    first = today - timedelta(days=days - 1)
+    counts = {
+        (first + timedelta(days=i)).isoformat(): {"ran": 0, "failed": 0, "skipped": 0}
+        for i in range(days)
+    }
+    for event in events:
+        if routine_id is not None and event.get("routine_id") != routine_id:
+            continue
+        key = dt_util.as_local(_when(event)).date().isoformat()
+        if key in counts:
+            counts[key][event["outcome"]] += 1
+    return [{"day": day, **row} for day, row in counts.items()]

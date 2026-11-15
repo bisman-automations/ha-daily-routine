@@ -97,6 +97,11 @@ def step_label(
     if "wait_cheaper" in action:
         hours = action["wait_cheaper"]["minutes"] / 60
         return f"Wait for the cheapest electricity in the next {hours:g} hours"
+    if "check_open" in action:
+        count = len(action["check_open"]["entity_id"])
+        return (
+            f"Check {count} {'door or window' if count == 1 else 'doors and windows'}"
+        )
     if "volume_ramp" in action:
         ramp = action["volume_ramp"]
         names = _names(hass, {"entity_id": ramp["entity_id"]})

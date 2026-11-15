@@ -29,12 +29,13 @@ from .coordinator import (
     list_people,
     notify_targets,
 )
+from .guests import guest_card
 from .linked import integration_name, integration_rank, linked_integrations
 from .routines import MODES, normalize_routine
-from .run_log import WINDOWS, summarize
+from .run_log import WINDOWS, daily_counts, summarize
 from .runtime import get_coordinator
 from .schema import vol
-from .timeline import today
+from .timeline import today, tomorrow
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -209,6 +210,7 @@ def _overview(
         "habits": coordinator.habits.ideas(dt_util.now()),
         "day_type": coordinator.day_type(dt_util.now()),
         "hold": coordinator.hold(dt_util.now()),
+        "guest_wifi": guest_card(coordinator.settings, coordinator.mode),
         "can_undo_recent": any(
             coordinator.can_undo(r["id"]) for r in coordinator.routines
         ),
@@ -307,6 +309,8 @@ def async_setup_panel_api(hass: HomeAssistant) -> None:
         ws_pause_group,
         ws_weekly_send,
         ws_why,
+        ws_history,
+        ws_tomorrow,
     ):
         websocket_api.async_register_command(hass, command)
     hass.data[_API_REGISTERED] = True
@@ -444,6 +448,7 @@ def _status(coordinator: HomeRoutinesCoordinator) -> dict[str, Any]:
         "paused": coordinator.paused,
         "log_count": coordinator.run_log.count,
         "mode": coordinator.mode,
+        "guest_wifi": guest_card(coordinator.settings, coordinator.mode),
         "lived_in": coordinator.lived_in.status(dt_util.now()),
         "statuses": {
             r["id"]: coordinator.get_status(r["id"]) or {} for r in coordinator.routines
@@ -837,6 +842,50 @@ def ws_why(
         connection.send_result(msg["id"], coordinator.explain(msg["routine_id"]))
     except vol.Invalid as err:
         connection.send_error(msg["id"], "invalid_routine", str(err))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/routine/history",
+        vol.Optional("routine_id"): str,
+        vol.Optional("days", default=30): vol.All(int, vol.Range(min=7, max=30)),
+    }
+)
+@require_access
+@callback
+def ws_history(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Ran, skipped and failed per day, for one routine or all of them."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    connection.send_result(
+        msg["id"],
+        {
+            "days": daily_counts(
+                coordinator.run_log.events(),
+                dt_util.now(),
+                msg["days"],
+                msg.get("routine_id"),
+            )
+        },
+    )
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/plan/tomorrow"})
+@require_access
+@callback
+def ws_tomorrow(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """A dry run of tomorrow: what would run when, and its steps."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    connection.send_result(msg["id"], tomorrow(coordinator, dt_util.now()))
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/today"})
