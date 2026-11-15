@@ -103,3 +103,40 @@ class DeviceStats:
                 }
             )
         return sorted(rows, key=lambda r: (-r["failed"], -r["retried"], r["name"]))
+
+    def score(
+        self, entity_ids: list[str], days: int = 30, now: datetime | None = None
+    ) -> dict[str, Any] | None:
+        """How reliably these devices answered lately: a percent (ok first
+        time, retries count half) and the ones with the most trouble."""
+        now = now or dt_util.now()
+        oldest = (dt_util.as_local(now) - timedelta(days=days)).date().isoformat()
+        good = 0.0
+        reached = 0
+        trouble: list[dict[str, Any]] = []
+        for entity_id in dict.fromkeys(entity_ids):
+            total = dict.fromkeys(OUTCOMES, 0)
+            for day, counts in self.days.get(entity_id, {}).items():
+                if day >= oldest:
+                    for key in OUTCOMES:
+                        total[key] += counts.get(key, 0)
+            count = sum(total.values())
+            if not count:
+                continue
+            reached += count
+            good += total.get("ok", 0) + total["retried"] / 2
+            if total["failed"] or total["retried"]:
+                state = self.hass.states.get(entity_id)
+                trouble.append(
+                    {
+                        "name": state.name if state else entity_id,
+                        "failed": total["failed"],
+                        "retried": total["retried"],
+                    }
+                )
+        if not reached:
+            return None
+        trouble.sort(
+            key=lambda t: (-int(t["failed"]), -int(t["retried"]), str(t["name"]))
+        )
+        return {"score": round(100 * good / reached), "worst": trouble[:3]}

@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.28.0] - 2026-11-15
+
+### Added
+
+- **Say the day ahead.** A step that says good morning, the kind of day, the weather (now and today's high) and today's events on a speaker.
+- **The forecast as a condition.** Run only when rain (or snow, or a cold spell…) is coming in the next hours, or only when it isn't, such as no watering before rain. It also works as a step's **Only if**.
+- **Kinds of day for one person.** A kind of day can be someone's own, from their own calendar (a child's school calendar), and a **Kind of day** condition can follow that person's.
+- **Undo the last hour.** One button on the Today tab puts back what every routine changed in the last hour.
+- **Calendar holds.** Under **Settings**, while an event like "Babysitter" or "Vacation" is on in a calendar you pick, routines don't run on their own. A routine can be set to run anyway, and **Why not?** says when a hold is stopping it.
+- **How reliable its devices are.** A routine's card shows how often its devices answered over the last 30 days, and which ones had the most trouble.
+- **Share a whole group.** **Share all** on a group gives one code for every routine in it; **Import a routine** brings them all in at once, with rooms matched by name.
+
 ## [1.27.0] - 2026-11-15
 
 ### Added
@@ -465,6 +477,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.28.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.27.0...v1.28.0
 [1.27.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.26.0...v1.27.0
 [1.26.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.25.0...v1.26.0
 [1.25.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.24.0...v1.25.0

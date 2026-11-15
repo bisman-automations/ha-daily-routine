@@ -155,7 +155,9 @@ CONDITION_KINDS = (
     "workday",
     "weather",
     "day_type",
+    "forecast",
 )
+FORECAST_WHEN = ("coming", "not_coming")
 WORKDAY_WHEN = ("workday", "day_off")
 # The weather: what it's doing (rainy, sunny...), or the temperature.
 WEATHER_TESTS = ("is", "is_not", "above", "below")
@@ -385,7 +387,14 @@ def _normalize_action(raw: Any, index: int) -> dict[str, Any]:
 
 # Steps run at the same time: up to this many in one "together" step.
 MAX_TOGETHER = 10
-TOGETHER_KINDS = {"service", "todo", "run_routine", "set_mode", "volume_ramp"}
+TOGETHER_KINDS = {
+    "service",
+    "todo",
+    "run_routine",
+    "set_mode",
+    "volume_ramp",
+    "briefing",
+}
 # A step on rooms can be limited to the rooms someone is in, or the empty ones.
 ROOM_FILTERS = ("occupied", "empty")
 MAX_RAMP_MINUTES = 60
@@ -421,6 +430,33 @@ def _normalize_step(raw: dict[str, Any], index: int) -> dict[str, Any]:
         if mode not in MODES:
             raise vol.Invalid(f"Step {index}: pick the house mode.")
         return {"set_mode": mode}
+    if "briefing" in raw:
+        brief = raw.get("briefing")
+        if not isinstance(brief, dict):
+            raise vol.Invalid(f"Step {index}: pick the voice and the speaker.")
+        voice = str(brief.get("voice") or "").strip()
+        speaker = str(brief.get("speaker") or "").strip()
+        if not voice.startswith("tts.") or not ENTITY_ID_RE.fullmatch(voice):
+            raise vol.Invalid(f"Step {index}: pick the voice.")
+        if not speaker.startswith("media_player.") or not ENTITY_ID_RE.fullmatch(
+            speaker
+        ):
+            raise vol.Invalid(f"Step {index}: pick the speaker.")
+        weather = str(brief.get("weather") or "").strip() or None
+        if weather and not weather.startswith("weather."):
+            raise vol.Invalid(f"Step {index}: pick the weather.")
+        calendars = _entity_list(brief.get("calendars"), f"Step {index}")
+        if any(not c.startswith("calendar.") for c in calendars):
+            raise vol.Invalid(f"Step {index}: pick calendars.")
+        return {
+            "briefing": {
+                "voice": voice,
+                "speaker": speaker,
+                "weather": weather,
+                "calendars": calendars,
+                "day_type": bool(brief.get("day_type", True)),
+            }
+        }
     if "wait_cheaper" in raw:
         wait = raw.get("wait_cheaper")
         if not isinstance(wait, dict):
@@ -539,6 +575,7 @@ DOING_STEPS = {
     "set_mode",
     "together",
     "volume_ramp",
+    "briefing",
 }
 
 
@@ -659,7 +696,37 @@ def _normalize_condition(raw: Any, index: int) -> dict[str, Any]:
         types = list(dict.fromkeys(t for t in types if t))
         if not types:
             raise vol.Invalid("Pick the kinds of day for this condition.")
-        return {"kind": "day_type", "types": types}
+        cond_day: dict[str, Any] = {"kind": "day_type", "types": types}
+        person = str(raw.get("person") or "").strip()
+        if person:
+            if not person.startswith("person."):
+                raise vol.Invalid("Pick whose kind of day it is.")
+            cond_day["person"] = person
+        return cond_day
+    if kind == "forecast":
+        entity_id = str(raw.get("entity_id") or "").strip()
+        if not ENTITY_ID_RE.fullmatch(entity_id) or not entity_id.startswith(
+            "weather."
+        ):
+            raise vol.Invalid("Pick the weather for this condition.")
+        kinds = [str(w) for w in _as_list(raw.get("conditions"))]
+        if any(w not in WEATHER_STATES for w in kinds):
+            raise vol.Invalid("Pick the kinds of weather to look for.")
+        below = raw.get("below")
+        below = None if below in (None, "") else _number(below, "The temperature")
+        if not kinds and below is None:
+            raise vol.Invalid("Pick the kinds of weather, or a temperature.")
+        when = str(raw.get("when") or "not_coming")
+        if when not in FORECAST_WHEN:
+            raise vol.Invalid("A forecast condition is when it's coming, or not.")
+        return {
+            "kind": "forecast",
+            "entity_id": entity_id,
+            "conditions": [w for w in WEATHER_STATES if w in kinds],
+            "below": below,
+            "hours": _int(raw.get("hours") or 6, 1, 48, "Hours ahead"),
+            "when": when,
+        }
     raise vol.Invalid(f"Condition {index}: pick what to check.")
 
 
@@ -950,6 +1017,8 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "name": name,
         "enabled": bool(raw.get("enabled", True)),
         "room": room,
+        # Runs even while a calendar hold (Settings) is on.
+        "ignore_holds": bool(raw.get("ignore_holds", False)),
         # Scheduled runs don't happen while the house is in these modes.
         "skip_modes": _modes(raw.get("skip_modes")),
         # Sunrise and sunset, but not before or after these times ("HH:MM:SS").

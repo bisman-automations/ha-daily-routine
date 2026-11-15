@@ -2077,3 +2077,70 @@ test("habit ideas carry their conditions, and the weekly report has a card", () 
   assert.match(html, /<option value="0" selected>Monday<\/option>/);
   assert.match(html, /data-act="weekly-send"/);
 });
+
+// ----- 1.28.0 -----
+
+test("briefing step and forecast condition round-trip", () => {
+  const panel = makePanel();
+  panel._data.weathers = [{ entity_id: "weather.home", name: "Home" }];
+  const routine = {
+    ...panel._data.routines[0],
+    conditions: [{ kind: "forecast", entity_id: "weather.home", conditions: ["rainy"], below: null, hours: 4, when: "not_coming" }],
+    actions: [{ briefing: { voice: "tts.piper", speaker: "media_player.kitchen", weather: "weather.home", calendars: ["calendar.family"], day_type: true } }],
+  };
+  panel._draft = panel._draftFromRoutine(routine);
+  assert.equal(panel._draft.actions[0].kind, "briefing");
+  const raw = panel._draftToRaw(panel._draft);
+  assert.deepEqual(raw.actions[0], routine.actions[0]);
+  assert.deepEqual(raw.conditions[0], routine.conditions[0]);
+  panel._view = { name: "editor", room: "kitchen" };
+  openSteps(panel);
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Say the day ahead/);
+  assert.match(html, /Only when none of this is coming/);
+  panel._draft.actions[0].bSpeaker = "";
+  assert.throws(() => panel._draftToRaw(panel._draft), /choose the speaker/);
+});
+
+test("a group shares as one code and imports as new routines", () => {
+  const panel = makePanel();
+  panel._hass = { user: { is_admin: true } };
+  const base = panel._data.routines[0];
+  panel._data.routines = [{ ...base, id: "a", name: "Lights off", group: "Bedtime" }, { ...base, id: "b", name: "Lock up", group: "Bedtime" }];
+  panel._data.statuses = { a: { state: "idle" }, b: { state: "idle" } };
+  panel._groupShare = "Bedtime";
+  const html = panel._allResults();
+  const code = html.match(/data-share-code readonly rows="4">([^<]+)</)[1];
+  assert.ok(code.startsWith("DR2:"));
+  const { routines, missing } = panel._importGroup(code);
+  assert.match(routines[0].id, /^lights_off/);
+  assert.match(routines[1].id, /^lock_up/);
+  assert.equal(routines[0].group, "Bedtime");
+  assert.equal(routines[0].room, "kitchen");
+  assert.deepEqual(missing, []);
+  assert.throws(() => panel._importGroup("DR2:nope"), /isn't a Daily Routine code/);
+});
+
+test("reliability, holds and Undo the last hour show", () => {
+  const panel = makePanel();
+  const routine = panel._data.routines[0];
+  panel._data.statuses[routine.id] = { state: "idle", reliability: { score: 82, worst: [{ name: "Hall lamp", failed: 2, retried: 1 }] } };
+  assert.match(panel._routineCard(routine), /answered 82% of the time · Hall lamp failed 2×/);
+  panel._data.settings.holds = [{ calendar: "calendar.family", words: ["babysitter"] }];
+  panel._data.all_entities = [{ entity_id: "calendar.family", name: "Family" }];
+  panel._data.hold = "Babysitter";
+  panel._view = { name: "settings" };
+  panel._render();
+  let html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Calendar holds/);
+  assert.match(html, /On now: Babysitter/);
+  assert.match(html, /value="babysitter"/);
+  panel._today = { planned: [], done: [], watching: [], mode: "home", paused: false };
+  panel._data.can_undo_recent = true;
+  panel._view = { name: "today" };
+  panel._render();
+  html = panel.shadowRoot.innerHTML;
+  assert.match(html, /data-act="undo-recent"/);
+  assert.match(html, /Calendar hold: Babysitter/);
+});

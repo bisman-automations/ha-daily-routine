@@ -208,6 +208,10 @@ def _overview(
         "integrations": entity_integrations(hass),
         "habits": coordinator.habits.ideas(dt_util.now()),
         "day_type": coordinator.day_type(dt_util.now()),
+        "hold": coordinator.hold(dt_util.now()),
+        "can_undo_recent": any(
+            coordinator.can_undo(r["id"]) for r in coordinator.routines
+        ),
         "calendars": [
             e for e in all_entities if e["entity_id"].startswith("calendar.")
         ],
@@ -290,6 +294,7 @@ def async_setup_panel_api(hass: HomeAssistant) -> None:
         ws_copy,
         ws_today,
         ws_undo,
+        ws_undo_recent,
         ws_set_mode,
         ws_integrations,
         ws_activity,
@@ -869,6 +874,26 @@ async def ws_undo(
         connection.send_error(msg["id"], "undo_failed", str(err))
         return
     connection.send_result(msg["id"], {"put_back": put_back})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/undo/recent",
+        vol.Optional("minutes", default=60): vol.All(int, vol.Range(min=5, max=120)),
+    }
+)
+@require_access
+@websocket_api.async_response
+async def ws_undo_recent(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Put back what every routine changed in the last hour."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    names = await coordinator.async_undo_recent(msg["minutes"])
+    connection.send_result(msg["id"], {"undone": names})
 
 
 @websocket_api.websocket_command(

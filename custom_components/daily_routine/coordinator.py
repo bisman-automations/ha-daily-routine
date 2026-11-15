@@ -46,6 +46,7 @@ from homeassistant.util import dt as dt_util, slugify
 
 from .access import async_get_access
 from .away import AwayHelper, clean_summary, summary_or_default, vacation_or_none
+from .briefing import briefing_text, events_text, weather_text
 from .const import (
     DOMAIN,
     EVENT_ROUTINE_FINISHED,
@@ -79,6 +80,7 @@ from .day_types import (
     calendars as day_type_calendars,
     clean_day_types,
     day_type as pick_day_type,
+    for_person,
 )
 from .energy import (
     KEEP_RUNS as POWER_RUNS,
@@ -87,6 +89,7 @@ from .energy import (
     summary as power_summary,
 )
 from .habits import Habits
+from .holds import active_hold, clean_holds
 from .linked import linked_groups
 from .lived_in import LivedIn, clean_settings as clean_lived_in
 from .planned import (
@@ -220,6 +223,7 @@ _CONDITION_REASON = {
     "workday": "workday_not_met",
     "weather": "weather_not_met",
     "day_type": "day_type_not_met",
+    "forecast": "forecast_not_met",
 }
 # Power is read again this long after a run (energy.SETTLE_SECONDS; tests shorten it).
 POWER_SETTLE_SECONDS = 60
@@ -305,6 +309,13 @@ def _clamp(when: datetime, routine: dict[str, Any]) -> datetime:
     return when
 
 
+def _holds_or_none(raw: Any) -> list[dict[str, Any]]:
+    try:
+        return clean_holds(raw)
+    except vol.Invalid:
+        return []
+
+
 def _day_types_or_none(raw: Any) -> list[dict[str, Any]]:
     try:
         return clean_day_types(raw)
@@ -334,6 +345,7 @@ REASON_WORDS = {
     "paused_until": "paused",
     "cooldown": "it ran a moment ago",
     "skip_mode": "the house was in a mode it doesn't run in",
+    "calendar_hold": "a calendar hold was on",
     "skipped_once": "skipped once",
     "trigger_ended": "what started it was over",
     "asked_skip": "you said not to",
@@ -552,11 +564,15 @@ class HomeRoutinesCoordinator:
             "editor": "simple",
             "day_types": [],
             "weekly_report": weekly_or_default(None),
+            "holds": [],
             **{key: default for key, (default, *_rest) in TIMING_SETTINGS.items()},
         }
         self.lived_in = LivedIn(self)
         self.away = AwayHelper(self)
         self.habits = Habits(self)
+        # The forecast of each weather a forecast condition uses (read with
+        # the forecast triggers, every FORECAST_EVERY).
+        self._forecast_cache: dict[str, list[dict[str, Any]]] = {}
         # Power before and after each run, per routine (energy.py).
         self.power: dict[str, list[dict[str, Any]]] = {}
         self.voice = Voice(self)
@@ -837,6 +853,8 @@ class HomeRoutinesCoordinator:
             "time": routine["time"],
             "repeat": routine["repeat"],
             "power": self.power_of(routine_id),
+            "reliability": self.reliability(routine),
+            "hold": None if routine.get("ignore_holds") else self.hold(dt_util.now()),
             "group": routine.get("group", ""),
             "paused_until": self.paused_until(routine),
         }
@@ -874,6 +892,7 @@ class HomeRoutinesCoordinator:
             "vacation": vacation_or_none(saved.get("vacation")),
             "day_types": _day_types_or_none(saved.get("day_types")),
             "weekly_report": weekly_or_default(saved.get("weekly_report")),
+            "holds": _holds_or_none(saved.get("holds")),
             **{key: _timing_value(saved.get(key), key) for key in TIMING_SETTINGS},
         }
         for raw in data.get("routines", []):
@@ -1294,6 +1313,7 @@ class HomeRoutinesCoordinator:
         )
         day_types = clean_day_types(raw.get("day_types", self.settings["day_types"]))
         weekly = clean_weekly(raw.get("weekly_report", self.settings["weekly_report"]))
+        holds = clean_holds(raw.get("holds", self.settings.get("holds")))
         self.settings = {
             "hidden_people": sorted(set(hidden)),
             "notify_services": sorted(set(services)),
@@ -1303,6 +1323,7 @@ class HomeRoutinesCoordinator:
             "daily_summary": summary,
             "day_types": day_types,
             "weekly_report": weekly,
+            "holds": holds,
             # Set by going on vacation, not by the Settings tab.
             "vacation": self.settings.get("vacation"),
             **timing,
@@ -1313,6 +1334,8 @@ class HomeRoutinesCoordinator:
         await self._async_save()
         self._notify_listeners()
         self._spawn(self._refresh_calendars())
+        self._spawn(self._refresh_upcoming())
+        self._spawn(self._check_forecasts())
         return self.settings
 
     async def async_settings_changed(self) -> None:
@@ -1424,8 +1447,16 @@ class HomeRoutinesCoordinator:
         if cond["kind"] == "weather":
             return _weather_ok(self.hass.states.get(cond["entity_id"]), cond)
         if cond["kind"] == "day_type":
-            today = self.day_type(now)
+            today = self.day_type(now, cond.get("person"))
             return today is not None and today in cond["types"]
+        if cond["kind"] == "forecast":
+            forecast = self._forecast_cache.get(cond["entity_id"])
+            if forecast is None:
+                return False  # not read yet: fail closed
+            coming = forecast_matches(
+                forecast, now, cond["hours"], cond["conditions"], cond["below"]
+            )
+            return coming == (cond["when"] == "coming")
         return self._state_is(cond["entity_id"], cond["state"])
 
     def _calendar_ok(self, cond: dict[str, Any], now: datetime) -> bool:
@@ -1442,9 +1473,10 @@ class HomeRoutinesCoordinator:
             return False
         return calendar_matches(cond, day[1])
 
-    def day_type(self, now: datetime) -> str | None:
-        """Today's kind of day (School day, Normal day…). None: not read yet."""
-        kinds = self.settings.get("day_types") or []
+    def day_type(self, now: datetime, person: str | None = None) -> str | None:
+        """Today's kind of day (School day, Normal day…), for everyone or one
+        person (their own kinds first). None: not read yet."""
+        kinds = for_person(self.settings.get("day_types") or [], person)
         today = now.date().isoformat()
         titles: dict[str, list[str] | None] = {}
         for entity_id in day_type_calendars(kinds):
@@ -1983,6 +2015,7 @@ class HomeRoutinesCoordinator:
                 for r in [*self.routines, *self._aliases.values()]
                 if r["trigger"] == TRIGGER_CALENDAR_EVENT
             }
+            | {h["calendar"] for h in self.settings.get("holds") or []}
         )
         now = dt_util.now()
         for entity_id in wanted:
@@ -2038,6 +2071,12 @@ class HomeRoutinesCoordinator:
         ]
         forecasts: dict[str, list[dict[str, Any]] | None] = {}
         now = dt_util.now()
+        for entity in self._forecast_entities():
+            forecasts[entity] = await self._read_forecast(entity)
+            if forecasts[entity] is not None:
+                self._forecast_cache[entity] = forecasts[entity] or []
+        for gone in set(self._forecast_cache) - set(self._forecast_entities()):
+            del self._forecast_cache[gone]
         for routine in routines:
             entity = routine["watch_entity"]
             if entity not in forecasts:
@@ -2057,6 +2096,18 @@ class HomeRoutinesCoordinator:
             rt["forecast_hit"] = hit
             if hit and was is False and self._allowed_day(routine, now):
                 self._spawn(self._execute_routine(routine, now, scheduled=True))
+
+    def _forecast_entities(self) -> set[str]:
+        """Weathers a forecast condition (or a step's only if) looks at."""
+        found = set()
+        for routine in self.routines:
+            for cond in [
+                *routine["conditions"],
+                *(a["only_if"] for a in routine["actions"] if a.get("only_if")),
+            ]:
+                if cond["kind"] == "forecast":
+                    found.add(cond["entity_id"])
+        return found
 
     async def _read_forecast(self, entity_id: str) -> list[dict[str, Any]] | None:
         if self.hass.states.get(
@@ -2739,6 +2790,12 @@ class HomeRoutinesCoordinator:
             self._record(rid, "skipped", "paused_until")
             self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "paused_until")
             return False
+        if scheduled and not routine.get("ignore_holds") and (hold := self.hold(now)):
+            # A calendar hold is on (Babysitter, Vacation…).
+            self._record(rid, "skipped", f"calendar_hold:{hold}")
+            self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "calendar_hold")
+            self._notify_listeners()
+            return False
         if scheduled and self.mode in routine.get("skip_modes", []):
             # Not in this house mode (a bedtime lockup while there are guests).
             self._record(rid, "skipped", "skip_mode")
@@ -3087,6 +3144,18 @@ class HomeRoutinesCoordinator:
                 acted = True
                 await self.async_set_mode(action["set_mode"])
                 continue
+
+            if "briefing" in action:
+                acted = True
+                error = await self._speak_briefing(action["briefing"])
+                if error is None:
+                    continue
+                run.failures.append(_Failure(index, "briefing", None, error))
+                if routine["on_step_error"] == "continue":
+                    continue
+                run.result = "error:briefing"
+                run.stopped_at = index
+                break
 
             if "wait_cheaper" in action:
                 wait = action["wait_cheaper"]
@@ -3688,6 +3757,84 @@ class HomeRoutinesCoordinator:
             f"Waited for the cheapest price, from {dt_util.as_local(start):%H:%M}"
         )
 
+    def hold(self, now: datetime) -> str | None:
+        """The calendar event holding routines back now, if any."""
+        holds = self.settings.get("holds") or []
+        return active_hold(holds, self._upcoming, now) if holds else None
+
+    async def async_undo_recent(self, minutes: int = 60) -> list[str]:
+        """Undo every routine that ran in the last minutes, newest first.
+        Returns the names of the routines put back."""
+        now = dt_util.now()
+        recent = []
+        for rid, kept in self._undo.items():
+            at = dt_util.parse_datetime(kept["at"])
+            if at and now - at <= timedelta(minutes=minutes) and self.can_undo(rid):
+                recent.append((at, rid))
+        done = []
+        for _at, rid in sorted(recent, reverse=True):
+            routine = self._find(rid)
+            try:
+                await self.async_undo(rid)
+            except (HomeAssistantError, vol.Invalid) as err:
+                _LOGGER.warning("Couldn't undo %s: %s", rid, err)
+                continue
+            if routine:
+                done.append(routine["name"])
+        return done
+
+    def reliability(self, routine: dict[str, Any]) -> dict[str, Any] | None:
+        """How reliably the routine's devices answered over 30 days."""
+        entities: list[str] = []
+        for action in routine["actions"]:
+            for step in action.get("together", [action]):
+                if "service" in step:
+                    domain = step["service"].split(".", 1)[0]
+                    entities.extend(self._resolve_targets(step.get("target"), domain))
+        return self.device_stats.score(entities)
+
+    async def _speak_briefing(self, brief: dict[str, Any]) -> str | None:
+        """Say the day ahead. Returns what went wrong, or None."""
+        now = dt_util.now()
+        weather = ""
+        if brief["weather"]:
+            forecast = self._forecast_cache.get(brief["weather"])
+            if forecast is None:
+                forecast = await self._read_forecast(brief["weather"]) or []
+            highs = [
+                float(f["temperature"])
+                for f in forecast
+                if isinstance(f.get("temperature"), (int, float))
+                and (when := dt_util.parse_datetime(str(f.get("datetime") or "")))
+                and dt_util.as_local(when).date() == now.date()
+            ]
+            weather = weather_text(
+                self.hass.states.get(brief["weather"]), max(highs) if highs else None
+            )
+        events = None
+        if brief["calendars"]:
+            found: list[dict[str, Any]] = []
+            start = dt_util.start_of_local_day(now)
+            for calendar in brief["calendars"]:
+                found.extend(
+                    await self._read_events(calendar, start, start + timedelta(days=1))
+                    or []
+                )
+            events = events_text(found, now)
+        day = (
+            self.day_type(now)
+            if brief["day_type"] and self.settings.get("day_types")
+            else None
+        )
+        message = briefing_text(now, day_type=day, weather=weather, events=events)
+        error = await self._call_service(
+            "tts",
+            "speak",
+            {"media_player_entity_id": brief["speaker"], "message": message},
+            {"entity_id": [brief["voice"]]},
+        )
+        return None if error is None else f"Couldn't say the briefing: {error}"
+
     def explain(self, routine_id: str) -> dict[str, Any]:
         """Why a routine won't run (or didn't), in reason codes for the panel."""
         routine = self._find(routine_id)
@@ -3704,6 +3851,8 @@ class HomeRoutinesCoordinator:
             reasons.append("paused_until")
         if routine.get("skip_next"):
             reasons.append("skip_next")
+        if not routine.get("ignore_holds") and self.hold(now):
+            reasons.append("calendar_hold")
         if self.mode in routine.get("skip_modes", []):
             reasons.append("skip_mode")
         if not self._allowed_day(routine, now):

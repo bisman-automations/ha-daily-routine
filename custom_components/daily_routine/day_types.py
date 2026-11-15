@@ -35,7 +35,13 @@ def clean_day_types(raw: Any) -> list[dict[str, Any]]:
             raise vol.Invalid("Give each kind of day a name.")
         if name.casefold() == NORMAL_DAY.casefold():
             raise vol.Invalid(f"“{NORMAL_DAY}” is any day that's none of the others.")
-        if any(d["name"].casefold() == name.casefold() for d in cleaned):
+        person = str(item.get("person") or "").strip() or None
+        if person and not person.startswith("person."):
+            raise vol.Invalid(f"Pick whose kind of day {name} is.")
+        if any(
+            d["name"].casefold() == name.casefold() and d.get("person") == person
+            for d in cleaned
+        ):
             raise vol.Invalid(f"There are two kinds of day called {name}.")
         if not ENTITY_ID_RE.fullmatch(calendar) or not calendar.startswith("calendar."):
             raise vol.Invalid(f"Pick the calendar for {name}.")
@@ -44,12 +50,25 @@ def clean_day_types(raw: Any) -> list[dict[str, Any]]:
             raw_words = raw_words.split(",")
         words = [" ".join(str(w).split())[:MAX_WORD] for w in raw_words]
         words = list(dict.fromkeys(w for w in words if w))[:MAX_WORDS]
-        cleaned.append({"name": name, "calendar": calendar, "words": words})
+        entry: dict[str, Any] = {"name": name, "calendar": calendar, "words": words}
+        if person:
+            # Only this person's (a child's own school calendar); the rest
+            # are everyone's.
+            entry["person"] = person
+        cleaned.append(entry)
     return cleaned
 
 
 def calendars(day_types: list[dict[str, Any]]) -> list[str]:
     return list(dict.fromkeys(d["calendar"] for d in day_types))
+
+
+def for_person(
+    day_types: list[dict[str, Any]], person: str | None
+) -> list[dict[str, Any]]:
+    """The kinds that apply to someone: theirs first, then everyone's."""
+    own = [d for d in day_types if person and d.get("person") == person]
+    return own + [d for d in day_types if not d.get("person")]
 
 
 def day_type(
