@@ -21,6 +21,8 @@ from .const import (
     TRIGGER_ROOM_CLEAR,
     TRIGGER_SOMEONE_ARRIVES,
     TRIGGER_STATE_IS,
+    TRIGGER_SUNRISE,
+    TRIGGER_SUNSET,
     TRIGGER_TAG,
     TRIGGER_TIME,
     TRIGGER_TODO_DONE,
@@ -113,6 +115,8 @@ MORE_TRIGGER_KINDS = (
     TRIGGER_VALUE_ABOVE,
     TRIGGER_VALUE_BELOW,
     TRIGGER_STATE_IS,
+    TRIGGER_SUNRISE,
+    TRIGGER_SUNSET,
     TRIGGER_MODE,
     TRIGGER_ALARM,
     TRIGGER_CALENDAR_EVENT,
@@ -183,6 +187,15 @@ MAX_CALENDAR_MATCH = 100
 PRESENCE_WHO = ("everyone", "anyone")
 PRESENCE_WHERE = ("in", "away")
 SENSOR_MODES = ("quiet", "active")
+
+
+def _clock(value: Any, label: str) -> str | None:
+    if value in (None, ""):
+        return None
+    try:
+        return normalize_time(value)
+    except vol.Invalid as err:
+        raise vol.Invalid(f"{label}: {err}") from err
 
 
 def normalize_time(value: Any) -> str:
@@ -376,6 +389,8 @@ TOGETHER_KINDS = {"service", "todo", "run_routine", "set_mode", "volume_ramp"}
 # A step on rooms can be limited to the rooms someone is in, or the empty ones.
 ROOM_FILTERS = ("occupied", "empty")
 MAX_RAMP_MINUTES = 60
+# A step can wait for the cheapest electricity, up to 12 hours.
+MAX_CHEAPER_MINUTES = 720
 
 
 def _normalize_step(raw: dict[str, Any], index: int) -> dict[str, Any]:
@@ -406,6 +421,24 @@ def _normalize_step(raw: dict[str, Any], index: int) -> dict[str, Any]:
         if mode not in MODES:
             raise vol.Invalid(f"Step {index}: pick the house mode.")
         return {"set_mode": mode}
+    if "wait_cheaper" in raw:
+        wait = raw.get("wait_cheaper")
+        if not isinstance(wait, dict):
+            raise vol.Invalid(f"Step {index}: pick the price sensor.")
+        entity_id = str(wait.get("entity_id") or "").strip()
+        if not ENTITY_ID_RE.fullmatch(entity_id):
+            raise vol.Invalid(f"Step {index}: pick the price sensor.")
+        return {
+            "wait_cheaper": {
+                "entity_id": entity_id,
+                "minutes": _int(
+                    wait.get("minutes") or 180,
+                    15,
+                    MAX_CHEAPER_MINUTES,
+                    f"Step {index}: wait up to",
+                ),
+            }
+        }
     if "volume_ramp" in raw:
         ramp = raw.get("volume_ramp")
         if not isinstance(ramp, dict):
@@ -499,7 +532,14 @@ def _normalize_step(raw: dict[str, Any], index: int) -> dict[str, Any]:
 
 
 # Steps that change something (waiting alone does nothing).
-DOING_STEPS = {"service", "todo", "run_routine", "set_mode", "together", "volume_ramp"}
+DOING_STEPS = {
+    "service",
+    "todo",
+    "run_routine",
+    "set_mode",
+    "together",
+    "volume_ramp",
+}
 
 
 def _presence_condition(
@@ -910,6 +950,15 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "name": name,
         "enabled": bool(raw.get("enabled", True)),
         "room": room,
+        # Scheduled runs don't happen while the house is in these modes.
+        "skip_modes": _modes(raw.get("skip_modes")),
+        # Sunrise and sunset, but not before or after these times ("HH:MM:SS").
+        "not_before": _clock(raw.get("not_before"), "Not before")
+        if trigger in (TRIGGER_SUNRISE, TRIGGER_SUNSET)
+        else None,
+        "not_after": _clock(raw.get("not_after"), "Not after")
+        if trigger in (TRIGGER_SUNRISE, TRIGGER_SUNSET)
+        else None,
         # Routines with the same group show together and pause together.
         "group": " ".join(str(raw.get("group") or "").split())[:MAX_GROUP_NAME],
         "device_id": device_id,

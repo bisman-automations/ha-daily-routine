@@ -126,6 +126,7 @@ from .todo import (
 )
 from .undo import UNDO_FOR, restore, snapshot
 from .voice import Voice
+from .weekly import clean_weekly, weekly_or_default
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -291,6 +292,19 @@ def _uses_day_type(routine: dict[str, Any]) -> bool:
     )
 
 
+def _clamp(when: datetime, routine: dict[str, Any]) -> datetime:
+    """A sun time kept between the routine's not before and not after."""
+    for key, later in (("not_before", True), ("not_after", False)):
+        if not routine.get(key):
+            continue
+        limit = datetime.combine(
+            when.date(), _parse_time(routine[key]), tzinfo=when.tzinfo
+        )
+        if (later and when < limit) or (not later and when > limit):
+            when = limit
+    return when
+
+
 def _day_types_or_none(raw: Any) -> list[dict[str, Any]]:
     try:
         return clean_day_types(raw)
@@ -319,6 +333,7 @@ REASON_WORDS = {
     "paused": "routines are paused",
     "paused_until": "paused",
     "cooldown": "it ran a moment ago",
+    "skip_mode": "the house was in a mode it doesn't run in",
     "skipped_once": "skipped once",
     "trigger_ended": "what started it was over",
     "asked_skip": "you said not to",
@@ -536,6 +551,7 @@ class HomeRoutinesCoordinator:
             # Which routine editor opens: simple (a sentence) or full.
             "editor": "simple",
             "day_types": [],
+            "weekly_report": weekly_or_default(None),
             **{key: default for key, (default, *_rest) in TIMING_SETTINGS.items()},
         }
         self.lived_in = LivedIn(self)
@@ -821,6 +837,8 @@ class HomeRoutinesCoordinator:
             "time": routine["time"],
             "repeat": routine["repeat"],
             "power": self.power_of(routine_id),
+            "group": routine.get("group", ""),
+            "paused_until": self.paused_until(routine),
         }
 
     # ----- lifecycle -----
@@ -855,6 +873,7 @@ class HomeRoutinesCoordinator:
             "daily_summary": summary_or_default(saved.get("daily_summary")),
             "vacation": vacation_or_none(saved.get("vacation")),
             "day_types": _day_types_or_none(saved.get("day_types")),
+            "weekly_report": weekly_or_default(saved.get("weekly_report")),
             **{key: _timing_value(saved.get(key), key) for key in TIMING_SETTINGS},
         }
         for raw in data.get("routines", []):
@@ -1274,6 +1293,7 @@ class HomeRoutinesCoordinator:
             raw.get("daily_summary", self.settings.get("daily_summary"))
         )
         day_types = clean_day_types(raw.get("day_types", self.settings["day_types"]))
+        weekly = clean_weekly(raw.get("weekly_report", self.settings["weekly_report"]))
         self.settings = {
             "hidden_people": sorted(set(hidden)),
             "notify_services": sorted(set(services)),
@@ -1282,6 +1302,7 @@ class HomeRoutinesCoordinator:
             "editor": editor,
             "daily_summary": summary,
             "day_types": day_types,
+            "weekly_report": weekly,
             # Set by going on vacation, not by the Settings tab.
             "vacation": self.settings.get("vacation"),
             **timing,
@@ -1303,6 +1324,10 @@ class HomeRoutinesCoordinator:
     def send_summary(self, now: datetime) -> None:
         """Send the daily summary now."""
         self._send_notification(self.away.summary(now), f"{DOMAIN}_daily_summary")
+
+    def send_weekly(self, now: datetime) -> None:
+        """Send the weekly report now."""
+        self._send_notification(self.away.weekly(now), f"{DOMAIN}_weekly_report")
 
     def reason_text(self, reason: str) -> str:
         """A run's reason in plain words, for the daily summary."""
@@ -1869,7 +1894,7 @@ class HomeRoutinesCoordinator:
             if event_dt is None:
                 return None
             base = dt_util.as_local(event_dt) + offset
-            candidate = base + shift(base)
+            candidate = _clamp(base + shift(base), routine)
             if candidate > after and self._allowed_day(routine, base):
                 return candidate
             cursor = event_dt + timedelta(minutes=1)
@@ -2714,6 +2739,12 @@ class HomeRoutinesCoordinator:
             self._record(rid, "skipped", "paused_until")
             self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "paused_until")
             return False
+        if scheduled and self.mode in routine.get("skip_modes", []):
+            # Not in this house mode (a bedtime lockup while there are guests).
+            self._record(rid, "skipped", "skip_mode")
+            self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "skip_mode")
+            self._notify_listeners()
+            return False
         if scheduled and self._cooling_down(routine, now):
             # Ran a moment ago (a door opened twice, a sensor around its level).
             self._record(rid, "skipped", "cooldown")
@@ -3055,6 +3086,20 @@ class HomeRoutinesCoordinator:
             if "set_mode" in action:
                 acted = True
                 await self.async_set_mode(action["set_mode"])
+                continue
+
+            if "wait_cheaper" in action:
+                wait = action["wait_cheaper"]
+                seconds, note = self._until_cheapest(wait)
+                if note:
+                    run.details.append(note)
+                if seconds > 0:
+                    if track and rt.get("progress"):
+                        rt["progress"]["until"] = (
+                            dt_util.now() + timedelta(seconds=seconds)
+                        ).isoformat()
+                        self._notify_listeners()
+                    await asyncio.sleep(seconds * SECONDS_PER_MINUTE / 60)
                 continue
 
             if "volume_ramp" in action:
@@ -3626,6 +3671,64 @@ class HomeRoutinesCoordinator:
         if target:
             result["target"] = target
         return result
+
+    def _until_cheapest(self, wait: dict[str, Any]) -> tuple[float, str]:
+        """Seconds until the cheapest price slot in the next minutes, and a note."""
+        state = self.hass.states.get(wait["entity_id"])
+        now = dt_util.now()
+        slots = price_slots(dict(state.attributes), now) if state else []
+        current = [s for s in slots if s[0] <= now]
+        begin = current[-1][0] if current else now
+        start = cheapest_start(slots, begin, now + timedelta(minutes=wait["minutes"]))
+        if start is None:
+            return 0, "No prices to wait for: went on straight away"
+        if start <= now:
+            return 0, ""
+        return (start - now).total_seconds(), (
+            f"Waited for the cheapest price, from {dt_util.as_local(start):%H:%M}"
+        )
+
+    def explain(self, routine_id: str) -> dict[str, Any]:
+        """Why a routine won't run (or didn't), in reason codes for the panel."""
+        routine = self._find(routine_id)
+        if routine is None:
+            raise vol.Invalid(f"No routine with id '{routine_id}'.")
+        now = dt_util.now()
+        rt = self._rt(routine_id)
+        reasons: list[str] = []
+        if not routine["enabled"]:
+            reasons.append("disabled")
+        if self.paused:
+            reasons.append("paused")
+        if (until := self.paused_until(routine)) and now.date().isoformat() <= until:
+            reasons.append("paused_until")
+        if routine.get("skip_next"):
+            reasons.append("skip_next")
+        if self.mode in routine.get("skip_modes", []):
+            reasons.append("skip_mode")
+        if not self._allowed_day(routine, now):
+            reasons.append("not_today")
+        if self._cooling_down(routine, now):
+            reasons.append("cooldown")
+        if not routine["repeat"] and rt["last_run_date"] == now.date().isoformat():
+            reasons.append("already_ran_today")
+        ok, reason = self._check(self._source(routine), now)
+        if not ok and reason:
+            reasons.append(reason)
+        last_skip = next(
+            (
+                e
+                for e in reversed(self.run_log.events())
+                if e.get("routine_id") == routine_id and e["outcome"] == "skipped"
+            ),
+            None,
+        )
+        return {
+            "reasons": list(dict.fromkeys(reasons)),
+            "next_run": self._next_run_of(routine_id),
+            "last_skip": last_skip,
+            "unavailable": self._unavailable_names(routine),
+        }
 
     async def _ramp_volume(self, ramp: dict[str, Any], seconds: float) -> str | None:
         """Turn speakers up (or down) bit by bit. Returns what went wrong, or None."""

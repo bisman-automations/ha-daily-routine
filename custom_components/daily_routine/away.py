@@ -24,6 +24,7 @@ from homeassistant.helpers.event import async_track_time_change
 from homeassistant.util import dt as dt_util
 
 from .schema import vol
+from .weekly import weekly_or_default, weekly_text
 
 if TYPE_CHECKING:
     from .coordinator import HomeRoutinesCoordinator
@@ -107,6 +108,7 @@ class AwayHelper:
         self.coord = coordinator
         self._summary_unsub: Callable[[], None] | None = None
         self._check_unsub: Callable[[], None] | None = None
+        self._weekly_unsub: Callable[[], None] | None = None
 
     # ----- the daily summary -----
 
@@ -119,6 +121,12 @@ class AwayHelper:
             self._summary_unsub = async_track_time_change(
                 self.coord.hass, self._send_summary, hour=hour, minute=minute, second=0
             )
+        weekly = weekly_or_default(self.coord.settings.get("weekly_report"))
+        if weekly["enabled"]:
+            hour, minute = (int(x) for x in weekly["time"].split(":"))
+            self._weekly_unsub = async_track_time_change(
+                self.coord.hass, self._send_weekly, hour=hour, minute=minute, second=0
+            )
         # Once a day, just after midnight: has the vacation ended?
         self._check_unsub = async_track_time_change(
             self.coord.hass, self._check_vacation, hour=0, minute=0, second=30
@@ -126,10 +134,19 @@ class AwayHelper:
 
     @callback
     def stop(self) -> None:
-        for unsub in (self._summary_unsub, self._check_unsub):
+        for unsub in (self._summary_unsub, self._check_unsub, self._weekly_unsub):
             if unsub is not None:
                 unsub()
-        self._summary_unsub = self._check_unsub = None
+        self._summary_unsub = self._check_unsub = self._weekly_unsub = None
+
+    @callback
+    def _send_weekly(self, now: datetime) -> None:
+        weekly = weekly_or_default(self.coord.settings.get("weekly_report"))
+        if dt_util.as_local(now).weekday() == weekly["weekday"]:
+            self.coord.send_weekly(now)
+
+    def weekly(self, now: datetime) -> str:
+        return weekly_text(self.coord.run_log.events(), self.coord.routines, now)
 
     @callback
     def _send_summary(self, now: datetime) -> None:

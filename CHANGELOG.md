@@ -5,6 +5,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.27.0] - 2026-11-15
+
+### Added
+
+- **Why not?** A button on every routine's card says, in plain words, what would stop it running on its own right now (paused, the wrong house mode, a condition, not one of its days…), what it's waiting for, and why it was last skipped.
+- **Sunset, but not too early or too late.** Sunrise and sunset routines can have **But not before** and **And not after** times, such as sunset but not before 18:00 in winter and not after 20:00 in summer.
+- **Not in some house modes.** **Not on its own in these house modes** skips a routine's own runs while the house is, say, in Guests mode (no bedtime lock-up while friends stay over). **Run now** still works.
+- **A weekly report.** Under **Settings**, a notification once a week on the day and time you pick: how many runs worked, failed or were skipped, which routines failed most, and which didn't run at all. **Send it now** shows it straight away.
+- **Smarter ideas from what you do.** An idea from something done by hand now notices when it was always done after dark, or with someone home, and the routine it makes checks for that too.
+- **Wait for cheaper electricity.** A new step waits for the cheapest hour (or quarter hour) of the next few hours, using a price sensor, before going on, so one step of a routine can start the dishwasher when power is cheap.
+- **A Kind of day sensor.** Today's kind of day (from **Settings → Kinds of day**) is a sensor, for automations and other integrations.
+- **A card for one group.** The Daily Routine dashboard card takes `group: Bedtime` to show only that group's routines, with a button for administrators to pause the group for today or resume it.
+
 ## [1.26.0] - 2026-11-15
 
 ### Added
@@ -452,6 +465,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.27.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.26.0...v1.27.0
 [1.26.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.25.0...v1.26.0
 [1.25.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.24.0...v1.25.0
 [1.24.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.23.0...v1.24.0

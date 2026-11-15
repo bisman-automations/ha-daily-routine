@@ -300,6 +300,8 @@ def async_setup_panel_api(hass: HomeAssistant) -> None:
         ws_access_set,
         ws_dismiss_idea,
         ws_pause_group,
+        ws_weekly_send,
+        ws_why,
     ):
         websocket_api.async_register_command(hass, command)
     hass.data[_API_REGISTERED] = True
@@ -795,6 +797,41 @@ def ws_summary_send(
     now = dt_util.now()
     coordinator.send_summary(now)
     connection.send_result(msg["id"], {"text": coordinator.away.summary(now)})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/weekly/send"})
+@websocket_api.require_admin
+@callback
+def ws_weekly_send(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Send the weekly report now, and return its text."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    now = dt_util.now()
+    coordinator.send_weekly(now)
+    connection.send_result(msg["id"], {"text": coordinator.away.weekly(now)})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/routine/why", vol.Required("routine_id"): str}
+)
+@require_access
+@callback
+def ws_why(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Why a routine won't run on its own right now (or didn't last time)."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    try:
+        connection.send_result(msg["id"], coordinator.explain(msg["routine_id"]))
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "invalid_routine", str(err))
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/today"})

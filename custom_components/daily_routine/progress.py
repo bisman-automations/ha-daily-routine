@@ -94,6 +94,9 @@ def step_label(
             )
             return f"Wait for {name} to be {level}"
         return f"Wait for {name} to be {' or '.join(wait['states'])}"
+    if "wait_cheaper" in action:
+        hours = action["wait_cheaper"]["minutes"] / 60
+        return f"Wait for the cheapest electricity in the next {hours:g} hours"
     if "volume_ramp" in action:
         ramp = action["volume_ramp"]
         names = _names(hass, {"entity_id": ramp["entity_id"]})

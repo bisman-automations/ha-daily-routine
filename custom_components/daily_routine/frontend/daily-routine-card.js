@@ -97,6 +97,12 @@ class DailyRoutineCard extends HTMLElement {
     }
   }
 
+  // A card for one group (group: Bedtime) shows only that group's routines.
+  _inGroup(group) {
+    const wanted = this._config?.group;
+    return !wanted || (group || "") === wanted;
+  }
+
   _inRoom(routineRoom) {
     const room = this._config?.room;
     if (!room) return true;
@@ -112,6 +118,11 @@ class DailyRoutineCard extends HTMLElement {
     try {
       if (el.dataset.act === "run") await this._hass.callWS({ type: `${DOMAIN}/routine/run`, routine_id: id });
       else if (el.dataset.act === "skip") await this._hass.callWS({ type: `${DOMAIN}/routine/skip_next`, routine_id: id, skip: el.dataset.skip === "1" });
+      else if (el.dataset.act === "group") {
+        const day = new Date();
+        const until = el.dataset.pause === "1" ? `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}` : null;
+        await this._hass.callWS({ type: `${DOMAIN}/group/pause`, group: this._config.group, until });
+      }
       else if (el.dataset.act === "answer") await this._hass.callWS({ type: `${DOMAIN}/routine/answer`, routine_id: id, run: el.dataset.run === "1" });
       this._note = null;
     } catch (err) {
@@ -130,7 +141,7 @@ class DailyRoutineCard extends HTMLElement {
     else {
       const rows = [];
       for (const [id, s] of Object.entries(statuses)) {
-        if (!this._inRoom(s.room)) continue;
+        if (!this._inRoom(s.room) || !this._inGroup(s.group)) continue;
         if (s.state === "running") {
           rows.push(`<li class="row running"><div class="when">Now</div><div class="what"><strong>${esc(s.name)}</strong>
             <div class="progress"><div class="bar" data-p='${esc(JSON.stringify(s.progress || null))}' style="width:${percent(s.progress)}%"></div></div>
@@ -141,7 +152,7 @@ class DailyRoutineCard extends HTMLElement {
             <div class="buttons"><button data-act="answer" data-id="${esc(id)}" data-run="1">Run</button><button class="ghost" data-act="answer" data-id="${esc(id)}" data-run="0">Skip</button></div></div></li>`);
         }
       }
-      const planned = today.planned.filter((p) => this._inRoom(p.room)).slice(0, Number(this._config.limit) || 5);
+      const planned = today.planned.filter((p) => this._inRoom(p.room) && this._inGroup(p.group)).slice(0, Number(this._config.limit) || 5);
       for (const p of planned) {
         rows.push(`<li class="row"><div class="when">${esc(clock(p.at))}</div><div class="what"><strong>${esc(p.name)}</strong>
           ${p.skip_next ? `<span class="pill">Will be skipped</span>` : ""}
@@ -149,6 +160,14 @@ class DailyRoutineCard extends HTMLElement {
           <button class="ghost" data-act="skip" data-id="${esc(p.routine_id)}" data-skip="${p.skip_next ? "" : "1"}">${p.skip_next ? "Don't skip" : "Skip"}</button></div></div></li>`);
       }
       body = rows.length ? `<ul>${rows.join("")}</ul>` : `<p class="muted">Nothing else planned today.</p>`;
+      const group = this._config.group;
+      if (group && this._hass?.user?.is_admin) {
+        const members = Object.values(statuses).filter((s) => (s.group || "") === group);
+        const paused = members.length && members.every((s) => s.paused_until && s.paused_until >= new Date().toISOString().slice(0, 10));
+        body += `<div class="buttons group">${paused
+          ? `<span class="small">Paused.</span><button class="ghost" data-act="group" data-pause="0">Resume ${esc(group)}</button>`
+          : `<button class="ghost" data-act="group" data-pause="1">Pause ${esc(group)} for today</button>`}</div>`;
+      }
     }
     this.shadowRoot.innerHTML = `<style>
       :host { display: block; }
@@ -184,6 +203,6 @@ if (!customElements.get("daily-routine-card")) {
   window.customCards.push({
     type: "daily-routine-card",
     name: "Daily Routine",
-    description: "Today's routines: what's running, what's next, with Run now and Skip.",
+    description: "Today's routines: what's running, what's next, with Run now and Skip. Set group to show one group.",
   });
 }

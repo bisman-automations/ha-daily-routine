@@ -33,6 +33,9 @@ MAX_EVENTS = 5000
 MIN_DAYS = 5
 WINDOW_MINUTES = 40
 MAX_IDEAS = 5
+# A habit "only when it's dark" or "only when someone's home" when that held
+# for this share of the days in it.
+CONDITION_SHARE = 0.8
 STORAGE_VERSION = 1
 
 
@@ -57,8 +60,10 @@ def suggest(
     covered = covered or set()
     dismissed = dismissed or set()
     since = now - timedelta(days=LOOK_BACK_DAYS)
-    # (entity, on) -> {date: first minute that day}
-    seen: dict[tuple[str, bool], dict[str, tuple[int, int]]] = defaultdict(dict)
+    # (entity, on) -> {date: (first minute that day, weekday, dark, someone home)}
+    seen: dict[
+        tuple[str, bool], dict[str, tuple[int, int, bool | None, bool | None]]
+    ] = defaultdict(dict)
     for event in events:
         at = dt_util.parse_datetime(str(event.get("at") or ""))
         if at is None or at < since or at > now:
@@ -68,14 +73,14 @@ def suggest(
         day = at.date().isoformat()
         minute = _minute(at)
         if day not in seen[key] or minute < seen[key][day][0]:
-            seen[key][day] = (minute, at.weekday())
+            seen[key][day] = (minute, at.weekday(), event.get("d"), event.get("h"))
     ideas: list[dict[str, Any]] = []
     for (entity_id, on), days in seen.items():
         if (entity_id, on) in covered or len(days) < MIN_DAYS:
             continue
         points = sorted(days.values())
-        best: list[tuple[int, int]] = []
-        for i, (start, _wd) in enumerate(points):
+        best: list[tuple[int, int, bool | None, bool | None]] = []
+        for i, (start, *_rest) in enumerate(points):
             window = [p for p in points[i:] if p[0] - start <= WINDOW_MINUTES]
             if len(window) > len(best):
                 best = window
@@ -94,9 +99,17 @@ def suggest(
         idea_id = f"{entity_id}:{'on' if on else 'off'}:{time[:5]}"
         if idea_id in dismissed:
             continue
+        dark = [p[2] for p in best if p[2] is not None]
+        home = [p[3] for p in best if p[3] is not None]
         ideas.append(
             {
                 "id": idea_id,
+                # Seen almost always when it was dark, or someone was home:
+                # the routine could check for that too.
+                "when_dark": len(dark) == len(best)
+                and sum(dark) >= CONDITION_SHARE * len(best),
+                "someone_home": len(home) == len(best)
+                and sum(home) >= CONDITION_SHARE * len(best),
                 "entity_id": entity_id,
                 "on": on,
                 "time": time,
@@ -179,7 +192,14 @@ class Habits:
         if not self._by_hand(event):
             return
         now = dt_util.now()
-        self.events.append({"e": entity_id, "on": on, "at": now.isoformat()})
+        sun = self.hass.states.get("sun.sun")
+        people = self.hass.states.async_all("person")
+        noted: dict[str, Any] = {"e": entity_id, "on": on, "at": now.isoformat()}
+        if sun is not None and sun.state in ("above_horizon", "below_horizon"):
+            noted["d"] = sun.state == "below_horizon"
+        if people:
+            noted["h"] = any(p.state == "home" for p in people)
+        self.events.append(noted)
         cutoff = now - timedelta(days=KEEP_DAYS)
         if len(self.events) > MAX_EVENTS or len(self.events) % 50 == 0:
             self.events = [

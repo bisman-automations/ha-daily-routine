@@ -2015,3 +2015,65 @@ test("device lists show each device's integration", () => {
   assert.equal(appended[0].textContent, " (Matter)");
   delete globalThis.document;
 });
+
+// ----- 1.27.0 -----
+
+test("Why not? lists the reasons in plain words", async () => {
+  const panel = makePanel();
+  const routine = panel._data.routines[0];
+  panel._why = { [routine.id]: { reasons: ["skip_mode", "wrong_mode"], next_run: null, last_skip: { at: "2026-11-14T07:00:00", reason: "cooldown" }, unavailable: ["Kitchen list"] } };
+  const html = panel._routineCard(routine);
+  assert.match(html, /data-act="why"/);
+  assert.match(html, /the house is in a mode it doesn(&#39;|')t run in/);
+  assert.match(html, /the house isn(&#39;|')t in the right mode/);
+  assert.match(html, /Waiting for: Kitchen list/);
+  assert.match(html, /Last skipped .*it ran a moment ago/);
+  panel._why = { [routine.id]: { reasons: [], next_run: null, last_skip: null, unavailable: [] } };
+  assert.match(panel._routineCard(routine), /Nothing is stopping it/);
+});
+
+test("sun limits, house modes it skips and waiting for cheaper electricity round-trip", () => {
+  const panel = makePanel();
+  const routine = {
+    ...panel._data.routines[0], trigger: "sunset", not_before: "18:00:00", not_after: "20:30:00", skip_modes: ["guests"],
+    actions: [{ wait_cheaper: { entity_id: "sensor.price", minutes: 120 } }, { service: "light.turn_on", data: {}, target: { area_id: ["kitchen"] } }],
+  };
+  panel._draft = panel._draftFromRoutine(routine);
+  assert.equal(panel._draft.actions[0].kind, "cheaper");
+  const raw = panel._draftToRaw(panel._draft);
+  assert.equal(raw.not_before, "18:00:00");
+  assert.equal(raw.not_after, "20:30:00");
+  assert.deepEqual(raw.skip_modes, ["guests"]);
+  assert.deepEqual(raw.actions[0], { wait_cheaper: { entity_id: "sensor.price", minutes: 120 } });
+  panel._view = { name: "editor", room: "kitchen" };
+  openSteps(panel);
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /But not before/);
+  assert.match(html, /data-skipmode="guests" checked/);
+  assert.match(html, /Wait for cheaper electricity/);
+  // A time trigger has no sun limits.
+  panel._draft.trigger = "time";
+  assert.equal(panel._draftToRaw(panel._draft).not_before, null);
+  panel._draft.actions[0].cEntity = "";
+  assert.throws(() => panel._draftToRaw(panel._draft), /price sensor/);
+});
+
+test("habit ideas carry their conditions, and the weekly report has a card", () => {
+  const panel = makePanel();
+  panel._hass = { user: { is_admin: true } };
+  panel._data.habits = [{ id: "x", entity_id: "light.porch", on: true, time: "18:35:00", days: ["mon", "tue", "wed", "thu", "fri"], count: 6, name: "Porch", service: "light.turn_on", when_dark: true, someone_home: true }];
+  const [idea] = panel._habitIdeas();
+  assert.match(idea.hint, /when it was dark and someone was home.*only then/);
+  const draft = panel._applyTemplate(idea, null);
+  const raw = panel._draftToRaw(draft);
+  assert.deepEqual(raw.conditions.map((c) => c.kind), ["state", "presence"]);
+  assert.equal(raw.conditions[0].state, "below_horizon");
+  panel._data.settings.weekly_report = { enabled: true, weekday: 0, time: "08:00" };
+  panel._view = { name: "settings" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Weekly report/);
+  assert.match(html, /<option value="0" selected>Monday<\/option>/);
+  assert.match(html, /data-act="weekly-send"/);
+});

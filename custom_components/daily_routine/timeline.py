@@ -50,6 +50,7 @@ def today(coordinator: HomeRoutinesCoordinator, now: datetime) -> dict[str, Any]
                         "routine_id": routine["id"],
                         "name": routine["name"],
                         "room": routine["room"],
+                        "group": routine.get("group", ""),
                         "skip_next": bool(routine.get("skip_next")),
                         "paused_until": coordinator.paused_until(routine),
                     }
@@ -60,6 +61,7 @@ def today(coordinator: HomeRoutinesCoordinator, now: datetime) -> dict[str, Any]
                     "routine_id": routine["id"],
                     "name": routine["name"],
                     "room": routine["room"],
+                    "group": routine.get("group", ""),
                 }
             )
     planned.sort(key=lambda p: p["at"])

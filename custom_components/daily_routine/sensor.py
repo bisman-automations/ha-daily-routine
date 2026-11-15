@@ -11,6 +11,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, SIGNAL_ROUTINES_CHANGED
 from .devices import (
@@ -50,6 +51,7 @@ async def async_setup_entry(
             hass.async_create_task(sensor.async_remove(force_remove=True))
         async_sync_routine_devices(hass, entry, coordinator.routines)
 
+    async_add_entities([KindOfDaySensor(coordinator)])
     _sync()
     entry.async_on_unload(
         async_dispatcher_connect(hass, SIGNAL_ROUTINES_CHANGED, _sync)
@@ -134,3 +136,45 @@ class RoutineStatusSensor(SensorEntity):
         }
         if self.hass is not None:
             self.async_write_ha_state()
+
+
+class KindOfDaySensor(SensorEntity):
+    """Today's kind of day (Settings → Kinds of day), for automations and
+    other integrations: School day, Holiday… or Normal day."""
+
+    _attr_has_entity_name = False
+    _attr_name = "Kind of day"
+    _attr_unique_id = f"{DOMAIN}_kind_of_day"
+    _attr_translation_key = "kind_of_day"
+    _attr_should_poll = False
+    _attr_icon = "mdi:calendar-star"
+
+    def __init__(self, coordinator: Any) -> None:
+        self.coordinator = coordinator
+
+    @property
+    def native_value(self) -> str | None:
+        return self.coordinator.day_type(dt_util.now())
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "kinds": [
+                t["name"] for t in self.coordinator.settings.get("day_types") or []
+            ]
+        }
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self.coordinator.async_add_listener(self._handle_update))
+
+    @callback
+    def async_entity_id_changed(self, old_entity_id: str) -> None:
+        """Keep running when the entity ID is changed (Home Assistant 2026.11+)."""
+        parent = getattr(super(), "async_entity_id_changed", None)
+        if parent is not None:
+            parent(old_entity_id)
+
+    @callback
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
