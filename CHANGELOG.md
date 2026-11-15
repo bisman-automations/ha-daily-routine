@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.26.0] - 2026-11-15
+
+### Added
+
+- **Ideas from what you do.** Daily Routine notices lights, switches, fans and curtains you change by hand (in the app, by voice or at the wall) around the same time on most days, such as the porch light around 18:35 on weekdays, and offers a routine for it on the Today tab and under **+ New routine**. **No thanks** stops offering one. Changes made by automations, scripts and routines don't count.
+- **Power before and after.** When a routine's devices have power sensors, its card shows the power they used before and a minute after its last run (640 W → 85 W), and what it saves or adds on average.
+- **Only rooms someone is in.** A step for rooms can be limited to the rooms someone is in, or the empty ones, by each room's motion, occupancy or presence sensors. A room without any is left alone.
+- **Turn the volume up slowly.** A new step changes speakers' volume a little at a time over the minutes you pick, for waking up gently or winding down.
+- **Kinds of day.** Under **Settings → Kinds of day**, name days such as School day or Holiday and the calendar (and words) that say so. Routines can then run only on some kinds of day with **+ Kind of day**, as a condition or a step's **Only if**. The Today tab says what kind of day it is.
+- **Groups.** Give routines a group, such as Bedtime. The Routines tab lists them by group, with **Pause today**, **Pause a week** and **Resume all** for the whole group.
+- **A library of routines.** Under **+ New routine**, **Library** has ready-made routines with several steps, by topic: Gentle wake-up, Goodnight, Wind down, Leaving home, Lights off in empty rooms and more.
+
+### Changed
+
+- **Every device list says where a device comes from.** Wherever you pick devices (steps, lived-in lights, conditions, triggers), each one shows its integration, such as *Entry light (Philips Hue)*, so a light that's in Hue, Matter and HomeKit can be told apart.
+
 ## [1.25.0] - 2026-11-15
 
 ### Added
@@ -436,6 +452,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.26.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.25.0...v1.26.0
 [1.25.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.24.0...v1.25.0
 [1.24.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.23.0...v1.24.0
 [1.23.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.22.0...v1.23.0

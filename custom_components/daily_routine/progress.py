@@ -94,6 +94,10 @@ def step_label(
             )
             return f"Wait for {name} to be {level}"
         return f"Wait for {name} to be {' or '.join(wait['states'])}"
+    if "volume_ramp" in action:
+        ramp = action["volume_ramp"]
+        names = _names(hass, {"entity_id": ramp["entity_id"]})
+        return f"Turn {names} from {ramp['from']}% to {ramp['to']}%"
     if "set_mode" in action:
         return f"Set the house mode to {MODE_NAMES.get(action['set_mode'], action['set_mode'])}"
     if action.get("service") == "scene.apply":

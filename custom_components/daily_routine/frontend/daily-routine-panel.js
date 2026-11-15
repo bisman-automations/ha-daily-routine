@@ -48,7 +48,16 @@ const WEATHER_NAMES = {
   "snowy-rainy": "Sleet", sunny: "Sunny", windy: "Windy", "windy-variant": "Windy and cloudy",
 };
 // What a step's "only if" can check.
-const ONLY_IF_KINDS = [["", "Always"], ["state", "A device's state"], ["mode", "The house mode"], ["workday", "Workday or day off"], ["weather", "The weather"]];
+const ONLY_IF_KINDS = [["", "Always"], ["state", "A device's state"], ["mode", "The house mode"], ["workday", "Workday or day off"], ["day_type", "The kind of day"], ["weather", "The weather"]];
+const NORMAL_DAY = "Normal day";
+const ROOM_FILTERS = [["", "Every room picked"], ["occupied", "Only rooms someone is in"], ["empty", "Only empty rooms"]];
+
+// A device's name with the integration it comes from: the same light can be
+// in Hue, Matter and HomeKit, and the lists show which is which.
+function withIntegration(name, integration) {
+  if (!integration || String(name).endsWith(`(${integration})`)) return name;
+  return `${name} (${integration})`;
+}
 // "Together" steps become steps marked "at the same time as the step before".
 function flatSteps(actions) {
   return (actions || []).flatMap((a) => (a.together
@@ -77,7 +86,7 @@ function groupSteps(raws, steps) {
 }
 
 function cloneCond(c) {
-  return { ...c, people: [...(c.people || [])], sensors: [...(c.sensors || [])], modes: [...(c.modes || [])], conditions: [...(c.conditions || [])] };
+  return { ...c, people: [...(c.people || [])], sensors: [...(c.sensors || [])], modes: [...(c.modes || [])], conditions: [...(c.conditions || [])], types: [...(c.types || [])] };
 }
 // A condition from the editor as the server stores it (the same for a routine's
 // conditions and a step's "only if").
@@ -87,6 +96,7 @@ function condToRaw(c) {
   if (c.kind === "calendar") return { kind: "calendar", entity_id: c.entity_id, when: c.when === "event" ? "event" : "no_event", match: (c.match || "").trim() };
   if (c.kind === "mode") return { kind: "mode", modes: [...(c.modes || [])] };
   if (c.kind === "workday") return { kind: "workday", entity_id: c.entity_id, when: c.when === "day_off" ? "day_off" : "workday" };
+  if (c.kind === "day_type") return { kind: "day_type", types: [...(c.types || [])] };
   if (c.kind === "weather") {
     const test = ["is", "is_not", "above", "below"].includes(c.test) ? c.test : "is";
     return test === "is" || test === "is_not"
@@ -461,6 +471,102 @@ const TEMPLATES = [
   { id: "blank", title: "Blank routine", hint: "Start from scratch.", scope: "any", draft: {} },
 ];
 
+// The built-in library: fuller routines than the templates, several steps
+// each, by topic. Devices are left for you to pick where a room can't say.
+const LIBRARY = [
+  {
+    id: "lib_gentle_wake", topic: "Mornings", title: "Gentle wake-up", scope: "room",
+    hint: "On weekdays at 6:45 am, the bedroom lights fade up over 15 minutes while the speaker plays and turns up slowly. Pick the speaker.",
+    draft: { trigger: "time", time: "06:45:00", days: ["mon", "tue", "wed", "thu", "fri"], actions: [
+      { service: "light.turn_on", targetMode: "area", fields: { brightness_pct: 70, color_temp_kelvin: 2700, transition: 15 } },
+      { service: "media_player.media_play", targetMode: "entities" },
+      { kind: "ramp", entities: [], rFrom: 5, rTo: 30, rMinutes: 15 },
+    ] },
+  },
+  {
+    id: "lib_school_morning", topic: "Mornings", title: "School morning", scope: "house",
+    hint: "On weekdays at 7:00 am: open every curtain and say it's time to get ready. Pick the voice and speaker, and add + Kind of day to keep it to school days.",
+    draft: { trigger: "time", time: "07:00:00", days: ["mon", "tue", "wed", "thu", "fri"], actions: [
+      { service: "cover.open_cover", targetMode: "all_areas" },
+      { service: "tts.speak", targetMode: "entities", fields: { message: "Good morning! Time to get ready for school." } },
+    ] },
+  },
+  {
+    id: "lib_morning_heat", topic: "Mornings", title: "Warm house before getting up", scope: "house",
+    hint: "At 6:00 am on weekdays, set the thermostat to 21 °. Pick the thermostat.",
+    draft: { trigger: "time", time: "06:00:00", days: ["mon", "tue", "wed", "thu", "fri"], actions: [
+      { service: "climate.set_temperature", targetMode: "entities", fields: { temperature: 21 } },
+    ] },
+  },
+  {
+    id: "lib_goodnight", topic: "Evenings", title: "Goodnight", scope: "house",
+    hint: "At 10:30 pm: Night mode, lock up, close the curtains, then the lights fade out over 2 minutes.",
+    draft: { trigger: "time", time: "22:30:00", actions: [
+      { kind: "mode", mode: "night" },
+      { service: "lock.lock", targetMode: "all_areas" },
+      { service: "cover.close_cover", targetMode: "all_areas" },
+      { service: "light.turn_off", targetMode: "all_areas", fields: { transition: 2 } },
+    ] },
+  },
+  {
+    id: "lib_wind_down", topic: "Evenings", title: "Wind down", scope: "room",
+    hint: "An hour before bed: warm, dim lights in this room and the music turned down slowly over 20 minutes. Pick the speaker.",
+    draft: { trigger: "time", time: "21:30:00", actions: [
+      { service: "light.turn_on", targetMode: "area", fields: { brightness_pct: 35, color_temp_kelvin: 2200, transition: 5 } },
+      { kind: "ramp", entities: [], rFrom: 30, rTo: 8, rMinutes: 20 },
+    ] },
+  },
+  {
+    id: "lib_occupied_lights", topic: "Evenings", title: "Sunset lights where people are", scope: "house",
+    hint: "At sunset, turn on the lights only in rooms someone is in (by their motion sensors).",
+    draft: { trigger: "sunset", actions: [{ service: "light.turn_on", targetMode: "all_areas", rooms: "occupied", fields: { brightness_pct: 60 } }] },
+  },
+  {
+    id: "lib_leaving", topic: "Leaving and arriving", title: "Leaving home", scope: "house",
+    hint: "Once everyone has left: Away mode, lock up, lights off and the thermostat off.",
+    draft: { trigger: "everyone_leaves", usePeopleList: true, actions: [
+      { kind: "mode", mode: "away" },
+      { service: "lock.lock", targetMode: "all_areas" },
+      { service: "light.turn_off", targetMode: "all_areas" },
+      { service: "climate.turn_off", targetMode: "all_areas" },
+    ] },
+  },
+  {
+    id: "lib_arriving", topic: "Leaving and arriving", title: "Welcome home", scope: "house",
+    hint: "When someone arrives: Home mode, and the lights on if it's after sunset (set the hours under Options).",
+    draft: { trigger: "someone_arrives", usePeopleList: true, actions: [
+      { kind: "mode", mode: "home" },
+      { service: "light.turn_on", targetMode: "all_areas", fields: { brightness_pct: 70 } },
+    ] },
+  },
+  {
+    id: "lib_empty_rooms_off", topic: "Saving energy", title: "Lights off in empty rooms", scope: "house",
+    hint: "Every evening at 9:00 pm, turn off the lights in rooms nobody is in.",
+    draft: { trigger: "time", time: "21:00:00", actions: [{ service: "light.turn_off", targetMode: "all_areas", rooms: "empty" }] },
+  },
+  {
+    id: "lib_fans_off", topic: "Saving energy", title: "Fans off when the room is empty", scope: "room",
+    hint: "Turns this room's fans off once its motion sensors have been quiet for 15 minutes.",
+    draft: { trigger: "room_clear", clear_minutes: 15, useRoomSensors: true, actions: [{ service: "fan.turn_off", targetMode: "area" }] },
+  },
+  {
+    id: "lib_vacuum", topic: "Chores", title: "Vacuum while everyone's out", scope: "house",
+    hint: "Starts the vacuum 10 minutes after everyone has left, on weekdays. Pick the vacuum.",
+    draft: { trigger: "everyone_leaves", usePeopleList: true, days: ["mon", "tue", "wed", "thu", "fri"], actions: [
+      { kind: "delay", seconds: 600 },
+      { service: "vacuum.start", targetMode: "entities" },
+    ] },
+  },
+  {
+    id: "lib_movie", topic: "Comfort", title: "Movie time", scope: "room",
+    hint: "Press Run now (or ask Assist): close the curtains and dim this room's lights to 10%.",
+    draft: { trigger: "manual", actions: [
+      { service: "cover.close_cover", targetMode: "area" },
+      { service: "light.turn_on", targetMode: "area", fields: { brightness_pct: 10, transition: 0.5 } },
+    ] },
+  },
+];
+
 // How long after a restart a missed routine may still run, in minutes.
 const CATCH_UP_CHOICES = [0, 15, 30, 60, 120, 180];
 // Global timing settings: key, label, help, and the same limits the server checks.
@@ -562,6 +668,15 @@ function filterPicker(el, text) {
   for (const label of el.querySelectorAll("label")) {
     label.style.display = !q || label.textContent.toLowerCase().includes(q) ? "" : "none";
   }
+}
+
+// Power before and after the last run, and the average change.
+function powerHtml(power) {
+  if (!power?.last) return "";
+  const watts = (w) => (Math.abs(w) >= 1000 ? `${Math.round(w / 100) / 10} kW` : `${Math.round(w)} W`);
+  const change = power.average_change;
+  const avg = power.runs > 1 ? ` · ${change <= 0 ? "saves" : "adds"} about ${watts(Math.abs(change))} on average` : "";
+  return `<div class="muted small power-line">⚡ Last run: ${watts(power.last.before)} → ${watts(power.last.after)}${avg}</div>`;
 }
 
 function toggleIn(list, value, on) {
@@ -1065,7 +1180,7 @@ class DailyRoutinePanel extends HTMLElement {
 
   _newDraft(roomId) {
     return {
-      id: "", name: "", room: roomId || null, device_id: this._defaultDevice(roomId), enabled: true, zone: "zone.home",
+      id: "", name: "", group: "", room: roomId || null, device_id: this._defaultDevice(roomId), enabled: true, zone: "zone.home",
       value_entity: "", value_threshold: "", off_threshold: "", watch_entity: "", watch_states: "", hold_minutes: 0, watch_item: "", active_from: "", active_to: "",
       trigger: "time", time: "07:00:00", offset_minutes: 0, random_minutes: 0, paused_until: "", skip_next: false, days: [...WEEKDAYS],
       people: [], sensors: [], clear_minutes: 0,
@@ -1096,6 +1211,7 @@ class DailyRoutinePanel extends HTMLElement {
       draft.conditions.push({ kind: "sensors", mode: "quiet", minutes: spec.quietMinutes, sensors: houseSensors });
     }
     if (spec.modes) draft.modes = [...spec.modes];
+    if (spec.days) draft.days = [...spec.days];
     for (const key of ["offset_minutes", "watch_entity", "watch_item", "value_entity", "forecast_hours", "active_from", "active_to"]) {
       if (spec[key] !== undefined) draft[key] = spec[key];
     }
@@ -1103,7 +1219,7 @@ class DailyRoutinePanel extends HTMLElement {
     if (spec.actions) {
       draft.actions = spec.actions.map((a) => (a.kind
         ? { service: "", targetMode: "none", area: "", entities: [], data: "", ...a }
-        : { kind: "service", service: a.service, targetMode: a.targetMode, area: roomId || "", entities: [...(a.entities || [])], data: "", fields: { ...(a.fields || {}) } }));
+        : { kind: "service", service: a.service, targetMode: a.targetMode, area: roomId || "", entities: [...(a.entities || [])], data: "", fields: { ...(a.fields || {}) }, rooms: a.rooms || "" }));
     }
     if (draft.actions.length === 1) draft.actions[0]._open = true;
     return draft;
@@ -1112,7 +1228,7 @@ class DailyRoutinePanel extends HTMLElement {
   _draftFromRoutine(routine) {
     const areaIds = this._areas().map((a) => a.id);
     return {
-      id: routine.id, name: routine.name, room: routine.room || null, device_id: routine.device_id || "", enabled: routine.enabled, zone: routine.zone || "zone.home",
+      id: routine.id, name: routine.name, group: routine.group || "", room: routine.room || null, device_id: routine.device_id || "", enabled: routine.enabled, zone: routine.zone || "zone.home",
       value_entity: routine.value_entity || "", watch_entity: routine.watch_entity || "", watch_states: (routine.watch_states || []).join(", "), hold_minutes: routine.hold_minutes || 0, watch_item: routine.watch_item || "", value_threshold: routine.value_threshold ?? "", off_threshold: routine.off_threshold ?? "",
       active_from: routine.active_from ? hhmm(routine.active_from) : "", active_to: routine.active_to ? hhmm(routine.active_to) : "",
       trigger: routine.trigger, time: routine.time, offset_minutes: routine.offset_minutes || 0, days: [...routine.days],
@@ -1142,6 +1258,10 @@ class DailyRoutinePanel extends HTMLElement {
         const blank = { service: "", targetMode: "none", area: "", entities: [], data: "" };
         if ("run_routine" in a) return { ...blank, kind: "routine", routine: a.run_routine };
         if ("set_mode" in a) return { ...blank, kind: "mode", mode: a.set_mode };
+        if ("volume_ramp" in a) return {
+          ...blank, kind: "ramp", entities: [...a.volume_ramp.entity_id],
+          rFrom: a.volume_ramp.from, rTo: a.volume_ramp.to, rMinutes: a.volume_ramp.minutes,
+        };
         if ("wait_until" in a) return {
           ...blank, kind: "wait_until", wEntity: a.wait_until.entity_id, wStates: a.wait_until.states.join(", "),
           wMinutes: a.wait_until.minutes, wTimeout: a.wait_until.on_timeout,
@@ -1169,7 +1289,7 @@ class DailyRoutinePanel extends HTMLElement {
         const spec = actionSpec(a.service);
         const { fields, rest } = dataToFields(spec, a.data);
         return {
-          kind: "service", service: a.service, targetMode, area: areas[0] || "", entities: [...entities],
+          kind: "service", service: a.service, targetMode, area: areas[0] || "", entities: [...entities], rooms: a.rooms || "",
           voice: spec?.voice ? entities[0] || "" : "", fields,
           data: Object.keys(rest).length ? JSON.stringify(rest, null, 2) : "",
         };
@@ -1193,6 +1313,11 @@ class DailyRoutinePanel extends HTMLElement {
         return { run_routine: step.routine };
       }
       if (step.kind === "mode") return { set_mode: step.mode || "home" };
+      if (step.kind === "ramp") {
+        if (!step.entities.length) throw new Error(`Step ${index + 1}: pick the speakers to turn up.`);
+        const pct = (v, d) => Math.max(0, Math.min(100, Math.round(v === "" || v == null ? d : Number(v))));
+        return { volume_ramp: { entity_id: [...step.entities], from: pct(step.rFrom, 5), to: pct(step.rTo, 30), minutes: Math.max(1, Math.min(60, Math.round(Number(step.rMinutes) || 10))) } };
+      }
       if (step.kind === "wait_until") {
         if (!step.wEntity) throw new Error(`Step ${index + 1}: choose the device to wait for.`);
         const level = step.wBy === "level";
@@ -1242,6 +1367,7 @@ class DailyRoutinePanel extends HTMLElement {
       Object.assign(data, fieldsToData(spec, step.fields, index));
       const raw = { service: step.service.trim(), data };
       if (Object.keys(target).length && !spec?.untargeted) raw.target = target;
+      if (step.rooms && raw.target?.area_id) raw.rooms = step.rooms;
       return raw;
     }).map((raw, i) => {
       const cond = draft.actions[i].onlyIf;
@@ -1252,6 +1378,7 @@ class DailyRoutinePanel extends HTMLElement {
     return {
       id: draft.id || slugify(draft.name),
       name: draft.name.trim(),
+      group: String(draft.group || "").trim(),
       enabled: draft.enabled,
       room: draft.room || null,
       device_id: draft.device_id || null,
@@ -1340,7 +1467,8 @@ class DailyRoutinePanel extends HTMLElement {
           this._view = { name: "templates", room };
           break;
         case "template": {
-          const template = TEMPLATES.find((t) => t.id === el.dataset.tpl) || this._suggestions().find((t) => t.id === el.dataset.tpl);
+          const template = TEMPLATES.find((t) => t.id === el.dataset.tpl) || LIBRARY.find((t) => t.id === el.dataset.tpl)
+            || this._suggestions().find((t) => t.id === el.dataset.tpl) || this._habitIdeas().find((t) => t.id === el.dataset.tpl);
           this._draft = this._applyTemplate(template, template?.room ?? room);
           this._editorSession = null;
           this._simpleOpen = null;
@@ -1534,12 +1662,54 @@ class DailyRoutinePanel extends HTMLElement {
         case "add-delay":
           this._draft.actions.push({ _open: true, kind: "delay", seconds: 5, service: "", targetMode: "none", area: "", entities: [], data: "" });
           break;
+        case "group-pause":
+        case "group-resume": {
+          const day = new Date();
+          day.setDate(day.getDate() + Number(el.dataset.days || 0));
+          const until = act === "group-pause" ? `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}` : null;
+          try {
+            await this._call({ type: `${DOMAIN}/group/pause`, group: el.dataset.group, until });
+            this._showNotice(until ? `${el.dataset.group} is paused through ${formatDay(until)}.` : `${el.dataset.group} runs again.`);
+            await this._load();
+          } catch (err) {
+            this._showNotice(err.message || String(err), true);
+          }
+          return;
+        }
+        case "idea-dismiss":
+          try {
+            await this._call({ type: `${DOMAIN}/idea/dismiss`, idea_id: el.dataset.idea });
+            this._data.habits = (this._data.habits || []).filter((h) => h.id !== el.dataset.idea);
+          } catch (err) {
+            this._showNotice(err.message || String(err), true);
+          }
+          break;
+        case "day-type-add":
+          this._dayTypeRows = [...this._dayTypeRowsNow(), { name: "", calendar: this._calendars()[0]?.entity_id || "", words: "" }];
+          break;
+        case "day-type-remove":
+          this._dayTypeRows = this._dayTypeRowsNow().filter((_r, i) => i !== Number(el.dataset.i));
+          break;
+        case "day-types-save":
+          try {
+            const rows = this._dayTypeRowsNow();
+            this._dayTypeRows = rows;
+            const saved = await this._saveSettings({ day_types: rows.filter((r) => r.name.trim() || r.words.trim()).map((r) => ({ name: r.name.trim(), calendar: r.calendar, words: splitStates(r.words) })) });
+            if (saved) {
+              this._dayTypeRows = null;
+              await this._load(true);
+            }
+          } catch (err) {
+            this._showNotice(err.message || String(err), true);
+          }
+          return;
         case "add-kind": {
           const blank = { _open: true, service: "", targetMode: "none", area: "", entities: [], data: "" };
           const kind = el.dataset.kind;
           if (kind === "wait_until") this._draft.actions.push({ ...blank, kind, wEntity: "", wStates: "", wMinutes: 10, wTimeout: "continue" });
           else if (kind === "routine") this._draft.actions.push({ ...blank, kind, routine: "" });
           else if (kind === "scene") this._draft.actions.push({ ...blank, kind, entities: [], saved: {}, transition: "" });
+          else if (kind === "ramp") this._draft.actions.push({ ...blank, kind, entities: [], rFrom: 5, rTo: 30, rMinutes: 10 });
           else this._draft.actions.push({ ...blank, kind: "mode", mode: "night" });
           break;
         }
@@ -1681,6 +1851,7 @@ class DailyRoutinePanel extends HTMLElement {
           else if (kind === "mode") this._draft.conditions.push({ kind, modes: ["home"] });
           else if (kind === "workday") this._draft.conditions.push({ kind, entity_id: this._data.workday_sensors?.[0]?.entity_id || "", when: "workday" });
           else if (kind === "weather") this._draft.conditions.push({ kind, entity_id: this._data.weathers?.[0]?.entity_id || "", test: "is", conditions: ["rainy", "pouring"], value: "" });
+          else if (kind === "day_type") this._draft.conditions.push({ kind, types: [NORMAL_DAY] });
           else this._draft.conditions.push({ kind: "state", entity_id: "", state: "on" });
           break;
         }
@@ -1817,6 +1988,7 @@ class DailyRoutinePanel extends HTMLElement {
       if (!cond) return;
       if (el.dataset.cmode !== undefined) toggleIn(cond.modes, el.dataset.cmode, el.checked);
       else if (el.dataset.cweather !== undefined) toggleIn(cond.conditions, el.dataset.cweather, el.checked);
+      else if (el.dataset.cdaytype !== undefined) toggleIn((cond.types ||= []), el.dataset.cdaytype, el.checked);
       else cond[el.dataset.cf] = value;
       if (el.dataset.rerender !== undefined && !live) this._render();
       return;
@@ -1919,6 +2091,11 @@ class DailyRoutinePanel extends HTMLElement {
         toggleIn(cond.modes, el.dataset.cmode, el.checked);
         return;
       }
+      if (el.dataset.cdaytype !== undefined) {
+        cond.types = cond.types || [];
+        toggleIn(cond.types, el.dataset.cdaytype, el.checked);
+        return;
+      }
       if (el.dataset.cweather !== undefined) {
         cond.conditions = cond.conditions || [];
         toggleIn(cond.conditions, el.dataset.cweather, el.checked);
@@ -1942,6 +2119,7 @@ class DailyRoutinePanel extends HTMLElement {
   _newOnlyIf(kind) {
     if (kind === "mode") return { kind, modes: ["home"] };
     if (kind === "workday") return { kind, entity_id: this._data.workday_sensors?.[0]?.entity_id || "", when: "workday" };
+    if (kind === "day_type") return { kind, types: [NORMAL_DAY] };
     if (kind === "weather") return { kind, entity_id: this._data.weathers?.[0]?.entity_id || "", test: "is_not", conditions: ["rainy", "pouring"], value: "" };
     return { kind: "state", entity_id: "", state: "" };
   }
@@ -2004,7 +2182,32 @@ class DailyRoutinePanel extends HTMLElement {
     const banner = this._data?.paused && !editing ? this._pausedBanner() : "";
     const running = this._data && ["rooms", "activity", "todos"].includes(this._view.name) ? this._runningStrip() : "";
     this.shadowRoot.innerHTML = `${STYLES}<main>${this._renderHeader()}${banner}${notice}${running}${body}</main>`;
+    this._labelIntegrations();
     this._addSearches();
+  }
+
+  // Every device list shows which integration each device comes from.
+  _labelIntegrations() {
+    const root = this.shadowRoot;
+    const map = this._data?.integrations;
+    if (!root?.querySelectorAll || !map) return;
+    for (const option of root.querySelectorAll("select option")) {
+      const integration = map[option.value];
+      if (integration && !option.dataset.integ) {
+        option.dataset.integ = "1";
+        option.textContent = withIntegration(option.textContent, integration);
+      }
+    }
+    for (const label of root.querySelectorAll(".checks label")) {
+      const input = label.querySelector("input");
+      if (!input || label.querySelector(".integ")) continue;
+      const id = [...Object.values(input.dataset), input.value].find((v) => map[v]);
+      if (!id) continue;
+      const tag = document.createElement("span");
+      tag.className = "integ muted small";
+      tag.textContent = ` (${map[id]})`;
+      label.append(tag);
+    }
   }
 
   // A search box above every long list of devices to pick from (checkboxes or a
@@ -2164,6 +2367,7 @@ class DailyRoutinePanel extends HTMLElement {
           <div class="muted small">Next: ${esc(formatTime(status.next_run))}${esc(reason)}${detail}</div>
           ${waitLine}${this._skipHtml(routine)}
           ${state === "running" ? progressHtml(status.progress) : ""}
+          ${powerHtml(status.power)}
           <div class="muted small">Linked to: ${esc(this._linkedName(routine.device_id))}</div>
           ${this._historyHtml(status)}
           ${this._healthHtml(routine)}
@@ -2312,8 +2516,11 @@ class DailyRoutinePanel extends HTMLElement {
       this._showNotice("Settings saved.");
     } catch (err) {
       this._showNotice(err.message || String(err), true);
+      this._render();
+      return false;
     }
     this._render();
+    return true;
   }
 
   _pickerPeople(draft) {
@@ -2647,6 +2854,7 @@ class DailyRoutinePanel extends HTMLElement {
       ${this._editorCard()}
       ${this._summaryCard()}
       ${this._livedInCard()}
+      ${this._dayTypesCard()}
       ${this._renderAccess()}
       ${this._renderIntegrationOrder()}
       <section class="card">
@@ -2752,6 +2960,37 @@ class DailyRoutinePanel extends HTMLElement {
     </section>`;
   }
 
+  // Rows of the Kinds of day card: what's typed, else what's saved.
+  _dayTypeRowsNow() {
+    const rows = [...(this.shadowRoot?.querySelectorAll?.("[data-dt-row]") || [])];
+    if (rows.length) {
+      return rows.map((row) => ({
+        name: row.querySelector("[data-dt='name']")?.value || "",
+        calendar: row.querySelector("[data-dt='calendar']")?.value || "",
+        words: row.querySelector("[data-dt='words']")?.value || "",
+      }));
+    }
+    return this._dayTypeRows || (this._data.settings?.day_types || []).map((t) => ({ ...t, words: (t.words || []).join(", ") }));
+  }
+
+  _dayTypesCard() {
+    const rows = this._dayTypeRows || (this._data.settings?.day_types || []).map((t) => ({ ...t, words: (t.words || []).join(", ") }));
+    const calendars = this._calendars();
+    const rowHtml = rows.map((r, i) => `<div class="day-type" data-dt-row>
+        <label>Name<input data-dt="name" maxlength="40" value="${esc(r.name)}" placeholder="School day"></label>
+        <label>Calendar<select data-dt="calendar">${calendars.map((c) => `<option value="${esc(c.entity_id)}" ${c.entity_id === r.calendar ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select></label>
+        <label class="grow">When an event says<input data-dt="words" value="${esc(r.words)}" placeholder="any event, or words such as no school, holiday"></label>
+        <button class="ghost" data-act="day-type-remove" data-i="${i}">Remove</button></div>`).join("");
+    return `<section class="card">
+      <h3>Kinds of day</h3>
+      <p class="muted small">Name the kinds of day your routines care about, such as School day, Holiday or Work from home, and the calendar that says so. Each day is the first kind with a matching event today (any event, or one with these words in its title); any other day is a Normal day. Routines then use <strong>+ Kind of day</strong> under their conditions.</p>
+      ${this._data.day_type ? `<p class="pill">Today: ${esc(this._data.day_type)}</p>` : ""}
+      ${calendars.length ? `${rowHtml}
+      <div class="row-actions"><button class="ghost" data-act="day-type-add">+ Kind of day</button><button class="primary" data-act="day-types-save">Save</button></div>`
+        : `<p class="muted small">Add a calendar to Home Assistant (Google, iCloud, a school's calendar link…) to use this.</p>`}
+    </section>`;
+  }
+
   async _saveLivedIn() {
     const root = this.shadowRoot;
     const current = this._data.settings?.lived_in || {};
@@ -2809,7 +3048,9 @@ class DailyRoutinePanel extends HTMLElement {
       return `<li>${esc(w.name)} <span class="muted small">· ${esc(r ? this._describeTrigger(r) : "")}</span></li>`;
     }).join("");
     const runningRows = running.map((r) => `<li class="tl running"><span class="tl-time">Now</span><span class="tl-body"><strong>${esc(r.name)}</strong>${progressHtml(this._data.statuses[r.id].progress)}</span></li>`).join("");
-    return `<p class="muted small">House mode: <strong>${esc(modeName(t.mode))}</strong>${t.paused ? " · all routines are paused" : ""}</p>
+    const habits = this._habitCards();
+    return `<p class="muted small">House mode: <strong>${esc(modeName(t.mode))}</strong>${this._data.day_type && (this._data.settings?.day_types || []).length ? ` · ${esc(this._data.day_type)}` : ""}${t.paused ? " · all routines are paused" : ""}</p>
+      ${habits ? `<section class="card"><h3>Ideas from what you do</h3>${habits}</section>` : ""}
       <section class="card"><h3>Still to come</h3>
         ${runningRows || planned ? `<ul class="timeline">${runningRows}${planned}</ul>` : `<p class="muted">Nothing else is planned for today.</p>`}
       </section>
@@ -2931,7 +3172,24 @@ class DailyRoutinePanel extends HTMLElement {
     if (!matches.length) {
       return `<section class="empty"><h2>No matches</h2><p>Nothing matches “${esc(this._query)}”. Try fewer words.</p></section>`;
     }
-    return matches.map((routine) => this._routineCard(routine, { showRoom: true })).join("");
+    const groups = [...new Set(matches.map((r) => r.group || ""))].sort((a, b) => (a ? (b ? a.localeCompare(b) : -1) : 1));
+    if (groups.length === 1 && !groups[0]) return matches.map((routine) => this._routineCard(routine, { showRoom: true })).join("");
+    const admin = this._hass?.user?.is_admin;
+    return groups.map((g) => {
+      const members = matches.filter((r) => (r.group || "") === g);
+      const paused = members.length && members.every((r) => this._pausedDay(r));
+      const head = g
+        ? `<div class="group-head"><h2>${esc(g)} <span class="muted small">${members.length}</span></h2>${admin ? `<div class="row-actions">
+            ${paused ? `<button class="ghost" data-act="group-resume" data-group="${esc(g)}">Resume all</button>`
+              : `<button class="ghost" data-act="group-pause" data-group="${esc(g)}" data-days="0">Pause today</button>
+                 <button class="ghost" data-act="group-pause" data-group="${esc(g)}" data-days="6">Pause a week</button>`}</div>` : ""}</div>`
+        : `<div class="group-head"><h2>Not in a group <span class="muted small">${members.length}</span></h2></div>`;
+      return `<section class="group">${head}${members.map((routine) => this._routineCard(routine, { showRoom: true })).join("")}</section>`;
+    }).join("");
+  }
+
+  _groups() {
+    return [...new Set((this._data?.routines || []).map((r) => r.group).filter(Boolean))].sort();
   }
 
   // Ideas from this home: what it has (curtains, a phone alarm, locks, motion
@@ -2981,6 +3239,41 @@ class DailyRoutinePanel extends HTMLElement {
     return ideas.slice(0, 8);
   }
 
+  // What people keep doing by hand around the same time, offered as routines.
+  _habitIdeas() {
+    return (this._data?.habits || []).map((h) => {
+      const verb = h.service.endsWith("open_cover") ? "Open" : h.service.endsWith("close_cover") ? "Close" : h.on ? "Turn on" : "Turn off";
+      const weekdays = h.days.length === 5 ? "on weekdays" : "every day";
+      return {
+        id: `habit:${h.id}`, habit: h.id, room: null,
+        title: `${verb} ${h.name} at ${hhmm(h.time)}`,
+        hint: `You've done this by hand around then on ${h.count} of the last 14 days. A routine can do it ${weekdays}.`,
+        draft: { trigger: "time", time: h.time, days: [...h.days], actions: [{ service: h.service, targetMode: "entities", entities: [h.entity_id] }] },
+      };
+    });
+  }
+
+  _habitCards() {
+    const ideas = this._habitIdeas();
+    if (!ideas.length) return "";
+    const admin = this._hass?.user?.is_admin;
+    return `<div class="ideas">${ideas.map((t) => `<div class="card template idea habit">
+        <h3>${esc(t.title)}</h3><div class="muted small">${esc(t.hint)}</div>
+        <div class="row-actions"><button class="primary" data-act="template" data-tpl="${esc(t.id)}" data-room="">Make a routine</button>
+        ${admin ? `<button class="ghost" data-act="idea-dismiss" data-idea="${esc(t.habit)}">No thanks</button>` : ""}</div></div>`).join("")}</div>`;
+  }
+
+  // The built-in library: ready-made routines with several steps, by topic.
+  _libraryHtml(roomId) {
+    const items = LIBRARY.filter((t) => (roomId ? t.scope !== "house" : t.scope !== "room"));
+    if (!items.length) return "";
+    const topics = [...new Set(items.map((t) => t.topic))];
+    return `<details class="card library"><summary><strong>Library</strong> <span class="muted small">${items.length} ready-made routines, by topic</span></summary>
+      ${topics.map((topic) => `<h4>${esc(topic)}</h4><div class="grid">${items.filter((t) => t.topic === topic).map((t) => `<button class="card template" data-act="template" data-tpl="${esc(t.id)}" data-room="${esc(roomId || "")}">
+        <h3>${esc(t.title)}</h3><div class="muted small">${esc(t.hint)}</div></button>`).join("")}</div>`).join("")}
+    </details>`;
+  }
+
   _renderTemplates() {
     const roomId = this._view.room ?? null;
     const options = TEMPLATES.filter((t) => (roomId ? t.scope !== "house" : t.scope !== "room"));
@@ -2990,7 +3283,9 @@ class DailyRoutinePanel extends HTMLElement {
     const importBox = `<details class="card import"><summary><strong>Import a routine</strong> <span class="muted small">from a code someone shared</span></summary>
       <textarea data-import-code rows="4" placeholder="DR1:…"></textarea>
       <div class="row-actions"><button class="primary" data-act="import-routine">Import</button></div></details>`;
-    return `${ideaCards}${importBox}<p class="muted">Start from a template, or a blank routine. You can change everything afterwards.</p>
+    const habits = !roomId ? this._habitCards() : "";
+    const habitBlock = habits ? `<h2 class="small muted">From what you do by hand</h2>${habits}` : "";
+    return `${habitBlock}${ideaCards}${this._libraryHtml(roomId)}${importBox}<p class="muted">Start from a template, or a blank routine. You can change everything afterwards.</p>
       <div class="grid">${options.map((t) => `<button class="card template" data-act="template" data-tpl="${t.id}" data-room="${esc(roomId || "")}">
         <h3>${esc(t.title)}</h3><div class="muted small">${esc(t.hint)}</div></button>`).join("")}</div>`;
   }
@@ -3046,6 +3341,8 @@ class DailyRoutinePanel extends HTMLElement {
         <div class="say"><span class="word">When</span><div class="grow">${this._whenFields(d)}</div></div>
         <label class="say"><span class="word">In</span><select data-f="room" data-rerender><option value="" ${d.room ? "" : "selected"}>The whole house</option>${rooms}</select></label>
         <div class="say"><span class="word">Do</span><div class="grow">${this._stepsBody(d)}</div></div>
+        <label class="say"><span class="word">Group</span><input data-f="group" maxlength="40" list="dr-groups" value="${esc(d.group || "")}" placeholder="optional, for example Bedtime"></label>
+        <datalist id="dr-groups">${this._groups().map((g) => `<option value="${esc(g)}"></option>`).join("")}</datalist>
         <label class="check"><input type="checkbox" data-f="enabled" ${d.enabled ? "checked" : ""}> Turned on</label>
       </section>
       ${chips ? `<div class="chips-add" role="group" aria-label="More options">${chips}</div>` : ""}
@@ -3088,6 +3385,8 @@ class DailyRoutinePanel extends HTMLElement {
       <section class="card">
         <h3>Basics</h3>
         <label>Name<input data-f="name" value="${esc(d.name)}" placeholder="e.g. Morning curtains"></label>
+        <label>Group (optional)<input data-f="group" maxlength="40" list="dr-groups" value="${esc(d.group || "")}" placeholder="for example Bedtime"><span class="muted small">Routines in a group are listed together and can be paused together.</span></label>
+        <datalist id="dr-groups">${this._groups().map((g) => `<option value="${esc(g)}"></option>`).join("")}</datalist>
         <label>Linked device<select data-f="device_id">${this._deviceOptions(d.device_id, roomId)}</select></label>
         <p class="muted small">Each routine is a service under Daily Routine, linked to this device in Home Assistant.</p>
         <label class="check"><input type="checkbox" data-f="enabled" ${d.enabled ? "checked" : ""}> Enabled</label>
@@ -3253,6 +3552,7 @@ class DailyRoutinePanel extends HTMLElement {
           <button class="ghost" data-act="add-condition" data-kind="mode">+ House mode</button>
           <button class="ghost" data-act="add-condition" data-kind="workday">+ Workday or day off</button>
           <button class="ghost" data-act="add-condition" data-kind="weather">+ Weather</button>
+          <button class="ghost" data-act="add-condition" data-kind="day_type">+ Kind of day</button>
         </div>`;
   }
 
@@ -3264,7 +3564,8 @@ class DailyRoutinePanel extends HTMLElement {
           <button class="ghost" data-act="add-kind" data-kind="wait_until">+ Wait until…</button>
           <button class="ghost" data-act="add-kind" data-kind="scene">+ Make it look like this</button>
           <button class="ghost" data-act="add-kind" data-kind="routine">+ Run another routine</button>
-          <button class="ghost" data-act="add-kind" data-kind="mode">+ Set the house mode</button></div>`;
+          <button class="ghost" data-act="add-kind" data-kind="mode">+ Set the house mode</button>
+          <button class="ghost" data-act="add-kind" data-kind="ramp">+ Turn the volume up slowly</button></div>`;
   }
 
   _askBody(d) {
@@ -3328,6 +3629,7 @@ class DailyRoutinePanel extends HTMLElement {
       if (cond.kind === "mode") return this._modeRow(cond, `data-ci="${i}"`, remove);
       if (cond.kind === "workday") return this._workdayRow(cond, `data-ci="${i}"`, remove);
       if (cond.kind === "weather") return this._weatherRow(cond, `data-ci="${i}"`, remove);
+      if (cond.kind === "day_type") return this._dayTypeRow(cond, `data-ci="${i}"`, remove);
       return this._stateRow(cond, i, remove);
     }).join("");
   }
@@ -3361,6 +3663,22 @@ class DailyRoutinePanel extends HTMLElement {
       ${remove ? `<div class="step-head"><strong>House mode</strong>${remove}</div>` : ""}
       <p class="muted small">When the house is in one of these modes.</p>
       <div class="chips">${chips}</div>
+    </div>`;
+  }
+
+  _dayTypes() {
+    return [...(this._data?.settings?.day_types || []).map((t) => t.name), NORMAL_DAY];
+  }
+
+  _dayTypeRow(cond, attrs, remove) {
+    const known = this._dayTypes();
+    const picked = cond.types || [];
+    const names = [...known, ...picked.filter((t) => !known.includes(t))];
+    const chips = names.map((t) => `<label class="chip"><input type="checkbox" ${attrs} data-cdaytype="${esc(t)}" ${picked.includes(t) ? "checked" : ""}> ${esc(t)}</label>`).join("");
+    return `<div class="condition">
+      ${remove ? `<div class="step-head"><strong>Kind of day</strong>${remove}</div>` : ""}
+      <div class="chips">${chips}</div>
+      <p class="muted small">${known.length > 1 ? "Only on these kinds of day." : "Set up kinds of day (School day, Holiday…) from your calendars under Settings → Kinds of day."} Today is ${esc(this._data?.day_type || "not known yet")}.</p>
     </div>`;
   }
 
@@ -3453,6 +3771,7 @@ class DailyRoutinePanel extends HTMLElement {
     if (cond.kind === "mode") body = this._modeRow(cond, a, "");
     else if (cond.kind === "workday") body = this._workdayRow(cond, a, "");
     else if (cond.kind === "weather") body = this._weatherRow(cond, a, "");
+    else if (cond.kind === "day_type") body = this._dayTypeRow(cond, a, "");
     else if (cond.kind === "state") {
       body = `<div class="inline"><select ${a} data-cf="entity_id" aria-label="Device">${this._anyEntityOptions(cond.entity_id)}</select>
         <input ${a} data-cf="state" value="${esc(cond.state || "")}" placeholder="state, e.g. closed" aria-label="State"></div>`;
@@ -3556,6 +3875,9 @@ class DailyRoutinePanel extends HTMLElement {
     }
     else if (step.kind === "routine") text = `Run ${this._data.routines.find((r) => r.id === step.routine)?.name || "another routine"}`;
     else if (step.kind === "mode") text = `Set the house to ${modeName(step.mode || "home")}`;
+    else if (step.kind === "ramp") text = step.entities?.length
+      ? `Volume of ${names(step.entities)} from ${step.rFrom ?? 5}% to ${step.rTo ?? 30}% over ${step.rMinutes || 10} min`
+      : "Turn the volume up slowly";
     else if (step.kind === "todo") {
       const op = { add: "Add", complete: "Check off", remove: "Remove" }[step.todoOp] || "Change";
       text = `${op} “${step.todoItem || "…"}”${step.todoList ? ` on ${this._nameFor(step.todoList)}` : ""}`;
@@ -3595,7 +3917,8 @@ class DailyRoutinePanel extends HTMLElement {
       <option value="wait_until" ${step.kind === "wait_until" ? "selected" : ""}>Wait until a device changes</option>
       <option value="routine" ${step.kind === "routine" ? "selected" : ""}>Run another routine</option>
       <option value="mode" ${step.kind === "mode" ? "selected" : ""}>Set the house mode</option>
-      <option value="scene" ${step.kind === "scene" ? "selected" : ""}>Make it look like this</option></select></label>`;
+      <option value="scene" ${step.kind === "scene" ? "selected" : ""}>Make it look like this</option>
+      <option value="ramp" ${step.kind === "ramp" ? "selected" : ""}>Turn the volume up slowly</option></select></label>`;
     const onlyIf = this._onlyIf(step, i);
     if (step.kind === "scene") {
       step.saved ||= {};
@@ -3610,6 +3933,19 @@ class DailyRoutinePanel extends HTMLElement {
         <div class="row-actions"><button class="primary" data-act="scene-capture" data-i="${i}">Save how they look now</button></div>
         ${saved.length ? `<ul class="plain small saved-look">${saved.map((id) => `<li><strong>${esc(this._nameFor(id))}</strong>: ${esc(lookText(step.saved[id]))}</li>`).join("")}</ul>` : `<p class="muted small">Nothing saved yet.</p>`}
         <label>Fade over (minutes, lights only, optional)<input type="number" min="0" max="60" data-si="${i}" data-sf="transition" value="${esc(step.transition ?? "")}"></label>
+        ${onlyIf}</div>`;
+    }
+    if (step.kind === "ramp") {
+      step.entities ||= [];
+      const players = (this._data.all_entities || []).filter((e) => e.entity_id.startsWith("media_player."));
+      return `<div class="step">${head}${kind}
+        <p class="muted small">Changes the volume a little at a time, for waking up gently or winding down. Start the music first (with an action step) and the speakers go from one level to the other.</p>
+        <div class="checks">${players.map((e) => checkbox("sentity", e.entity_id, e.name, step.entities.includes(e.entity_id), i)).join("") || `<p class="muted small">No speakers found.</p>`}</div>
+        <div class="inline">
+          <label>From (%)<input type="number" min="0" max="100" step="5" data-si="${i}" data-sf="rFrom" value="${esc(step.rFrom ?? 5)}"></label>
+          <label>To (%)<input type="number" min="0" max="100" step="5" data-si="${i}" data-sf="rTo" value="${esc(step.rTo ?? 30)}"></label>
+          <label>Over (minutes)<input type="number" min="1" max="60" data-si="${i}" data-sf="rMinutes" value="${esc(step.rMinutes || 10)}"></label>
+        </div>
         ${onlyIf}</div>`;
     }
     if (step.kind === "routine") {
@@ -3704,8 +4040,12 @@ class DailyRoutinePanel extends HTMLElement {
       return `<label>${esc(f.label)}${opt}<input ${attrs} value="${esc(Array.isArray(value) ? value.join(", ") : value)}" placeholder="${esc(f.placeholder || "")}">${help}</label>`;
     }).join("");
     const voice = spec?.voice ? pick("tts", step.voice || "", `data-si="${i}" data-sf="voice"`, "Voice") : "";
+    const roomFilter = ["area", "all_areas"].includes(step.targetMode)
+      ? `<label>In<select data-si="${i}" data-sf="rooms">${ROOM_FILTERS.map(([v, l]) => `<option value="${v}" ${(step.rooms || "") === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>
+        <span class="muted small">By the rooms' motion, occupancy or presence sensors. A room without any is left alone.</span></label>`
+      : "";
     const target = spec?.voice || spec?.untargeted ? "" : `<label>Applies to<select data-si="${i}" data-sf="targetMode" data-rerender>${targetModes}</select></label>
-      ${entityChecks}`;
+      ${roomFilter}${entityChecks}`;
     return `<div class="step">${head}${kind}
       <label>Action<select data-si="${i}" data-sf="actionChoice" data-rerender>${actionOptions}</select></label>
       ${customField}
@@ -3885,6 +4225,14 @@ const STYLES = `<style>
   button.link { background: none; border: 0; padding: 4px 0; color: var(--primary-color, #03a9f4); font: inherit; cursor: pointer; text-decoration: underline; }
   .copy-panel { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: var(--secondary-background-color, #f2f2f2); }
   .ideas { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); margin-bottom: 16px; }
+  .group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: 16px 0 4px; }
+  .group-head h2 { margin: 0; font-size: 1.05rem; }
+  .power-line { margin-top: 2px; }
+  .integ { white-space: nowrap; }
+  .card.habit .row-actions { margin-top: 8px; }
+  .library h4 { margin: 12px 0 6px; }
+  .day-type { display: grid; grid-template-columns: 1fr 1fr 2fr auto; gap: 8px; align-items: end; margin-bottom: 8px; }
+  @media (max-width: 600px) { .day-type { grid-template-columns: 1fr; } }
   .picker-search { width: 100%; box-sizing: border-box; margin: 6px 0 4px; padding: 8px 10px; font: inherit; border-radius: 8px;
     border: 1px solid var(--divider-color, #ddd); background: var(--card-background-color, #fff); color: var(--primary-text-color); }
   input[type="color"] { width: 56px; height: 36px; padding: 2px; flex: none; }

@@ -203,7 +203,28 @@ def _overview(
         "weathers": [e for e in all_entities if e["entity_id"].startswith("weather.")],
         "alarm_sensors": _alarm_sensors(hass),
         "lived_in": coordinator.lived_in.status(dt_util.now()),
+        # Which integration each entity comes from, shown next to its name in
+        # every device list (one light can be in Hue, Matter and HomeKit).
+        "integrations": entity_integrations(hass),
+        "habits": coordinator.habits.ideas(dt_util.now()),
+        "day_type": coordinator.day_type(dt_util.now()),
+        "calendars": [
+            e for e in all_entities if e["entity_id"].startswith("calendar.")
+        ],
     }
+
+
+def entity_integrations(hass: HomeAssistant) -> dict[str, str]:
+    """Entity id -> the name of the integration it comes from."""
+    names: dict[str, str] = {}
+    found: dict[str, str] = {}
+    for entry in er.async_get(hass).entities.values():
+        if entry.disabled_by is not None or not entry.platform:
+            continue
+        if entry.platform not in names:
+            names[entry.platform] = integration_name(hass, entry.platform)
+        found[entry.entity_id] = names[entry.platform]
+    return found
 
 
 def _alarm_sensors(hass: HomeAssistant) -> list[dict[str, str]]:
@@ -277,6 +298,8 @@ def async_setup_panel_api(hass: HomeAssistant) -> None:
         ws_access_me,
         ws_access_get,
         ws_access_set,
+        ws_dismiss_idea,
+        ws_pause_group,
     ):
         websocket_api.async_register_command(hass, command)
     hass.data[_API_REGISTERED] = True
@@ -667,6 +690,48 @@ async def ws_pause_until(
         connection.send_error(msg["id"], "invalid_routine", str(err))
         return
     connection.send_result(msg["id"], {"until": msg["until"]})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/group/pause",
+        vol.Required("group"): str,
+        vol.Required("until"): vol.Any(None, str),
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_pause_group(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Pause every routine in a group through a day, or resume them (None)."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    try:
+        ids = await coordinator.async_pause_group(msg["group"], msg["until"])
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "invalid_routine", str(err))
+        return
+    connection.send_result(msg["id"], {"routine_ids": ids, "until": msg["until"]})
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/idea/dismiss", vol.Required("idea_id"): str}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_dismiss_idea(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Don't offer an idea from someone's habits again."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    await coordinator.habits.async_dismiss(msg["idea_id"][:200])
+    connection.send_result(msg["id"], {})
 
 
 @websocket_api.websocket_command(

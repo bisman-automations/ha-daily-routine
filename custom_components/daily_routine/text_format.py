@@ -68,9 +68,14 @@ def _number_text(seconds: float) -> str:
 def steps_to_text(actions: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for action in actions:
-        if action.get("only_if") or not ({"todo", "delay", "service"} & set(action)):
-            # Newer kinds of step (run a routine, wait until, house mode, a step's
-            # "only if") are written as they're stored, one per line.
+        if (
+            action.get("only_if")
+            or action.get("rooms")
+            or not ({"todo", "delay", "service"} & set(action))
+        ):
+            # Newer kinds of step (run a routine, wait until, house mode, a
+            # volume ramp, a step's "only if" or rooms) are written as they're
+            # stored, one per line.
             lines.append(json.dumps(action, separators=(", ", ": ")))
             continue
         if "todo" in action:

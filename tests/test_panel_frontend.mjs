@@ -376,7 +376,7 @@ test("the action dropdown shows plain labels, never service ids", () => {
   assert.match(html, /<option value="light.turn_off" selected>Turn off lights<\/option>/);
   assert.match(html, />Action</);
   assert.doesNotMatch(html, />light\.turn_off</);
-  assert.doesNotMatch(html, /<datalist/);
+  assert.doesNotMatch(html, /<datalist(?! id="dr-groups")/); // the group names are the only list
 });
 
 test("choosing Other shows a service name box, and picking a labelled action hides it", () => {
@@ -1898,4 +1898,120 @@ test("vacation and the daily summary show in the panel", () => {
   panel._render();
   assert.match(panel.shadowRoot.innerHTML, /Daily summary/);
   assert.match(panel.shadowRoot.innerHTML, /data-summary="only_away"/);
+});
+
+// ----- 1.26.0 -----
+
+test("ideas from habits become routines, and can be dismissed", () => {
+  const panel = makePanel();
+  panel._hass = { user: { is_admin: true } };
+  panel._data.habits = [{ id: "light.porch:on:18:35", entity_id: "light.porch", on: true, time: "18:35:00", days: ["mon", "tue", "wed", "thu", "fri"], count: 6, name: "Porch", service: "light.turn_on" }];
+  const [idea] = panel._habitIdeas();
+  assert.equal(idea.title, "Turn on Porch at 18:35");
+  assert.match(idea.hint, /6 of the last 14 days.*on weekdays/);
+  panel._view = { name: "templates", room: null };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /From what you do by hand/);
+  assert.match(html, /data-act="idea-dismiss" data-idea="light.porch:on:18:35"/);
+  const draft = panel._applyTemplate(idea, null);
+  const raw = panel._draftToRaw(draft);
+  assert.equal(raw.time, "18:35:00");
+  assert.deepEqual(raw.days, ["mon", "tue", "wed", "thu", "fri"]);
+  assert.deepEqual(raw.actions, [{ service: "light.turn_on", data: {}, target: { entity_id: ["light.porch"] } }]);
+});
+
+test("volume ramp, rooms someone is in, kind of day and group round-trip", () => {
+  const panel = makePanel();
+  panel._data.settings.day_types = [{ name: "School day", calendar: "calendar.school", words: [] }];
+  const routine = {
+    ...panel._data.routines[0],
+    group: "Mornings",
+    conditions: [{ kind: "day_type", types: ["School day"] }],
+    actions: [
+      { service: "light.turn_on", data: {}, target: { area_id: ["kitchen"] }, rooms: "occupied" },
+      { volume_ramp: { entity_id: ["media_player.kitchen"], from: 5, to: 30, minutes: 10 } },
+    ],
+  };
+  panel._draft = panel._draftFromRoutine(routine);
+  assert.equal(panel._draft.actions[1].kind, "ramp");
+  const raw = panel._draftToRaw(panel._draft);
+  assert.equal(raw.group, "Mornings");
+  assert.deepEqual(raw.conditions, [{ kind: "day_type", types: ["School day"] }]);
+  assert.equal(raw.actions[0].rooms, "occupied");
+  assert.deepEqual(raw.actions[1], { volume_ramp: { entity_id: ["media_player.kitchen"], from: 5, to: 30, minutes: 10 } });
+  panel._view = { name: "editor", room: "kitchen" };
+  openSteps(panel);
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Only rooms someone is in/);
+  assert.match(html, /Turn the volume up slowly/);
+  assert.match(html, /data-cdaytype="School day" checked/);
+  assert.match(html, /data-cdaytype="Normal day" >/);
+  assert.match(html, /data-f="group" maxlength="40" list="dr-groups" value="Mornings"/);
+  // A ramp needs speakers; rooms only go with rooms.
+  panel._draft.actions[1].entities = [];
+  assert.throws(() => panel._draftToRaw(panel._draft), /pick the speakers/);
+  panel._draft.actions[1].entities = ["media_player.kitchen"];
+  panel._draft.actions[0].targetMode = "entities";
+  panel._draft.actions[0].entities = ["light.kitchen"];
+  assert.equal(panel._draftToRaw(panel._draft).actions[0].rooms, undefined);
+});
+
+test("routines are listed by group, with pause buttons for admins", () => {
+  const panel = makePanel();
+  panel._hass = { user: { is_admin: true } };
+  const base = panel._data.routines[0];
+  panel._data.routines = [
+    { ...base, id: "a", name: "A", group: "Bedtime" },
+    { ...base, id: "b", name: "B", group: "" },
+  ];
+  panel._data.statuses = { a: { state: "idle" }, b: { state: "idle" } };
+  panel._view = { name: "all" };
+  const html = panel._allResults();
+  assert.match(html, /<h2>Bedtime <span class="muted small">1<\/span><\/h2>/);
+  assert.match(html, /data-act="group-pause" data-group="Bedtime" data-days="6"/);
+  assert.match(html, /Not in a group/);
+  assert.ok(html.indexOf("Bedtime") < html.indexOf("Not in a group"));
+});
+
+test("a routine card shows the power before and after its last run", () => {
+  const panel = makePanel();
+  const routine = panel._data.routines[0];
+  panel._data.statuses[routine.id] = { state: "idle", power: { last: { before: 640, after: 85 }, average_change: -1520, runs: 3 } };
+  const html = panel._routineCard(routine);
+  assert.match(html, /⚡ Last run: 640 W → 85 W · saves about 1.5 kW on average/);
+});
+
+test("every library routine opens in the editor", () => {
+  const panel = makePanel();
+  panel._view = { name: "templates", room: null };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /<strong>Library<\/strong>/);
+  const ids = [...panel.shadowRoot.innerHTML.matchAll(/data-tpl="(lib_[a-z_]+)"/g)].map((m) => m[1]);
+  assert.ok(ids.includes("lib_goodnight") && !ids.includes("lib_gentle_wake"));
+  panel._view = { name: "templates", room: "kitchen" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /data-tpl="lib_gentle_wake"/);
+  const wake = panel._applyTemplate({ id: "x", title: "Gentle wake-up", draft: { trigger: "time", time: "06:45:00", days: ["mon"], actions: [{ kind: "ramp", entities: ["media_player.kitchen"], rFrom: 5, rTo: 30, rMinutes: 15 }] } }, "kitchen");
+  assert.deepEqual(panel._draftToRaw(wake).actions[0].volume_ramp, { entity_id: ["media_player.kitchen"], from: 5, to: 30, minutes: 15 });
+});
+
+test("device lists show each device's integration", () => {
+  const panel = makePanel();
+  panel._data.integrations = { "light.a": "Philips Hue", "light.b": "Matter" };
+  const option = { value: "light.a", textContent: "Entry light", dataset: {} };
+  const plain = { value: "", textContent: "Choose…", dataset: {} };
+  const appended = [];
+  const input = { dataset: { lived: "light", val: "light.b" }, value: "on" };
+  const label = { querySelector: (sel) => (sel === "input" ? input : appended.length ? appended[0] : null), append: (el) => appended.push(el) };
+  globalThis.document = { createElement: () => ({}) };
+  panel.shadowRoot.querySelectorAll = (sel) => (sel === "select option" ? [option, plain] : sel === ".checks label" ? [label] : []);
+  panel._labelIntegrations();
+  panel._labelIntegrations(); // twice: still labelled once
+  assert.equal(option.textContent, "Entry light (Philips Hue)");
+  assert.equal(plain.textContent, "Choose…");
+  assert.equal(appended.length, 1);
+  assert.equal(appended[0].textContent, " (Matter)");
+  delete globalThis.document;
 });

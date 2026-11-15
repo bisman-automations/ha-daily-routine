@@ -75,6 +75,18 @@ from .const import (
     TRIGGER_VALUE_BELOW,
     WEEKDAYS,
 )
+from .day_types import (
+    calendars as day_type_calendars,
+    clean_day_types,
+    day_type as pick_day_type,
+)
+from .energy import (
+    KEEP_RUNS as POWER_RUNS,
+    power_sensors,
+    read_watts,
+    summary as power_summary,
+)
+from .habits import Habits
 from .linked import linked_groups
 from .lived_in import LivedIn, clean_settings as clean_lived_in
 from .planned import (
@@ -206,7 +218,14 @@ _CONDITION_REASON = {
     "mode": "wrong_mode",
     "workday": "workday_not_met",
     "weather": "weather_not_met",
+    "day_type": "day_type_not_met",
 }
+# Power is read again this long after a run (energy.SETTLE_SECONDS; tests shorten it).
+POWER_SETTLE_SECONDS = 60
+# A volume ramp changes the volume in this many steps.
+RAMP_STEPS = 20
+# Binary sensors that say someone is in a room.
+OCCUPANCY_CLASSES = ("occupancy", "motion", "presence")
 # How often calendars used by conditions are read again (and after midnight).
 CALENDAR_REFRESH = timedelta(minutes=30)
 CALENDAR_TIMEOUT_SECONDS = 20
@@ -260,6 +279,23 @@ def _calendars(routine: dict[str, Any]) -> list[str]:
         *(a["only_if"] for a in routine["actions"] if a.get("only_if")),
     ]
     return [c["entity_id"] for c in conditions if c["kind"] == "calendar"]
+
+
+def _uses_day_type(routine: dict[str, Any]) -> bool:
+    return any(
+        c["kind"] == "day_type"
+        for c in [
+            *routine["conditions"],
+            *(a["only_if"] for a in routine["actions"] if a.get("only_if")),
+        ]
+    )
+
+
+def _day_types_or_none(raw: Any) -> list[dict[str, Any]]:
+    try:
+        return clean_day_types(raw)
+    except vol.Invalid:
+        return []
 
 
 def _all_people(routine: dict[str, Any]) -> list[str]:
@@ -499,10 +535,14 @@ class HomeRoutinesCoordinator:
             "lived_in": clean_lived_in(None),
             # Which routine editor opens: simple (a sentence) or full.
             "editor": "simple",
+            "day_types": [],
             **{key: default for key, (default, *_rest) in TIMING_SETTINGS.items()},
         }
         self.lived_in = LivedIn(self)
         self.away = AwayHelper(self)
+        self.habits = Habits(self)
+        # Power before and after each run, per routine (energy.py).
+        self.power: dict[str, list[dict[str, Any]]] = {}
         self.voice = Voice(self)
         self._runtime: dict[str, dict[str, Any]] = {}
         # A routine's other triggers, each watched like a routine of its own
@@ -780,6 +820,7 @@ class HomeRoutinesCoordinator:
             "days": routine["days"],
             "time": routine["time"],
             "repeat": routine["repeat"],
+            "power": self.power_of(routine_id),
         }
 
     # ----- lifecycle -----
@@ -813,6 +854,7 @@ class HomeRoutinesCoordinator:
             "editor": "full" if saved.get("editor") == "full" else "simple",
             "daily_summary": summary_or_default(saved.get("daily_summary")),
             "vacation": vacation_or_none(saved.get("vacation")),
+            "day_types": _day_types_or_none(saved.get("day_types")),
             **{key: _timing_value(saved.get(key), key) for key in TIMING_SETTINGS},
         }
         for raw in data.get("routines", []):
@@ -824,6 +866,13 @@ class HomeRoutinesCoordinator:
             self._rt(rid).update({k: saved.get(k) for k in PERSISTED_KEYS})
         memories = data.get("memories")
         self.memories = memories if isinstance(memories, dict) else {}
+        power = data.get("power")
+        self.power = (
+            {k: v for k, v in power.items() if isinstance(v, list)}
+            if isinstance(power, dict)
+            else {}
+        )
+        await self.habits.async_load()
 
     async def async_start(self) -> None:
         # Calendars first, so a run right after starting can check them.
@@ -833,6 +882,7 @@ class HomeRoutinesCoordinator:
         self._schedule_health_interval()
         self.lived_in.start()
         self.away.start()
+        self.habits.start()
         self._forecast_unsub = async_track_time_interval(
             self.hass, self._check_forecasts, FORECAST_EVERY
         )
@@ -919,6 +969,7 @@ class HomeRoutinesCoordinator:
         self._drop_all_handles()
         self.lived_in.stop()
         self.away.stop()
+        self.habits.stop()
         self.voice.stop()
         if self._forecast_unsub is not None:
             self._forecast_unsub()
@@ -939,6 +990,7 @@ class HomeRoutinesCoordinator:
             "settings": self.settings,
             "runtime": runtime,
             "memories": self.memories,
+            "power": self.power,
         }
 
     async def _async_save(self) -> None:
@@ -1221,6 +1273,7 @@ class HomeRoutinesCoordinator:
         summary = clean_summary(
             raw.get("daily_summary", self.settings.get("daily_summary"))
         )
+        day_types = clean_day_types(raw.get("day_types", self.settings["day_types"]))
         self.settings = {
             "hidden_people": sorted(set(hidden)),
             "notify_services": sorted(set(services)),
@@ -1228,6 +1281,7 @@ class HomeRoutinesCoordinator:
             "lived_in": lived_in,
             "editor": editor,
             "daily_summary": summary,
+            "day_types": day_types,
             # Set by going on vacation, not by the Settings tab.
             "vacation": self.settings.get("vacation"),
             **timing,
@@ -1237,6 +1291,7 @@ class HomeRoutinesCoordinator:
         self._schedule_health_interval()
         await self._async_save()
         self._notify_listeners()
+        self._spawn(self._refresh_calendars())
         return self.settings
 
     async def async_settings_changed(self) -> None:
@@ -1343,6 +1398,9 @@ class HomeRoutinesCoordinator:
             return (state.state == "on") == (cond["when"] == "workday")
         if cond["kind"] == "weather":
             return _weather_ok(self.hass.states.get(cond["entity_id"]), cond)
+        if cond["kind"] == "day_type":
+            today = self.day_type(now)
+            return today is not None and today in cond["types"]
         return self._state_is(cond["entity_id"], cond["state"])
 
     def _calendar_ok(self, cond: dict[str, Any], now: datetime) -> bool:
@@ -1359,6 +1417,19 @@ class HomeRoutinesCoordinator:
             return False
         return calendar_matches(cond, day[1])
 
+    def day_type(self, now: datetime) -> str | None:
+        """Today's kind of day (School day, Normal day…). None: not read yet."""
+        kinds = self.settings.get("day_types") or []
+        today = now.date().isoformat()
+        titles: dict[str, list[str] | None] = {}
+        for entity_id in day_type_calendars(kinds):
+            day = self._calendar_days.get(entity_id)
+            titles[entity_id] = day[1] if day and day[0] == today else None
+        if kinds and any(t is None for t in titles.values()):
+            if self._calendar_tried != today:
+                self._spawn(self._refresh_calendars())
+        return pick_day_type(kinds, titles)
+
     # ----- calendars -----
 
     async def _on_calendar_interval(self, _now: datetime) -> None:
@@ -1369,7 +1440,10 @@ class HomeRoutinesCoordinator:
         """Read today's events from every calendar a condition uses."""
         if self._calendar_refreshing:
             return
-        wanted = sorted({c for r in self.routines for c in _calendars(r)})
+        wanted = sorted(
+            {c for r in self.routines for c in _calendars(r)}
+            | set(day_type_calendars(self.settings.get("day_types") or []))
+        )
         if not wanted:
             self._calendar_days.clear()
             return
@@ -1390,7 +1464,7 @@ class HomeRoutinesCoordinator:
         finally:
             self._calendar_refreshing = False
         for routine in self.routines:
-            if _calendars(routine):
+            if _calendars(routine) or _uses_day_type(routine):
                 self._evaluate_pending(routine)
         self._notify_listeners()
 
@@ -2693,6 +2767,7 @@ class HomeRoutinesCoordinator:
         rt["state"] = "running"
         rt["last_run"] = now.isoformat()
         self._keep_for_undo(routine, now)
+        self._note_power(routine)
         self._notify_listeners()
         self._fire_event(EVENT_ROUTINE_STARTED, routine)
 
@@ -2780,6 +2855,8 @@ class HomeRoutinesCoordinator:
                 )
         if later:
             self._plan_retry(routine, tries + 1)
+        if (before := rt.pop("power_before", None)) is not None:
+            self._spawn(self._read_power_after(rid, *before))
         await self._async_save()
         self._notify_listeners()
 
@@ -2979,6 +3056,34 @@ class HomeRoutinesCoordinator:
                 acted = True
                 await self.async_set_mode(action["set_mode"])
                 continue
+
+            if "volume_ramp" in action:
+                acted = True
+                ramp = action["volume_ramp"]
+                seconds = ramp["minutes"] * SECONDS_PER_MINUTE
+                if track and rt.get("progress"):
+                    rt["progress"]["until"] = (
+                        dt_util.now() + timedelta(seconds=seconds)
+                    ).isoformat()
+                    self._notify_listeners()
+                error = await self._ramp_volume(ramp, seconds)
+                if error is None:
+                    continue
+                run.failures.append(_Failure(index, "volume_ramp", None, error))
+                if routine["on_step_error"] == "continue":
+                    continue
+                run.result = "error:volume_ramp"
+                run.stopped_at = index
+                break
+
+            if "rooms" in action and only is None:
+                action = self._only_rooms(action)
+                if not action.get("target"):
+                    word = "someone is in" if action["rooms"] == "occupied" else "empty"
+                    run.details.append(f"Step {index + 1}: no room was {word}")
+                    if track:
+                        _trace_mark(rt, "skipped", f"No room was {word}")
+                    continue
 
             if "todo" in action:
                 step = action["todo"]
@@ -3479,6 +3584,112 @@ class HomeRoutinesCoordinator:
             return f"{other['name']} failed", True
         reason = self._rt(other_id)["last_result"] or "its conditions weren't met"
         return f"{other['name']} didn't run ({reason})", False
+
+    def busy(self) -> bool:
+        """A routine or the lived-in lights are changing things right now."""
+        return any(rt.get("state") == "running" for rt in self._runtime.values()) or (
+            self.lived_in.active(dt_util.now())
+        )
+
+    def resolve_targets(self, target: dict[str, Any] | None, domain: str) -> list[str]:
+        return self._resolve_targets(target, domain)
+
+    def room_occupied(self, area_id: str) -> bool | None:
+        """Someone is in the room, by its motion, occupancy or presence sensors.
+        None: it has none, or none can be read."""
+        seen = None
+        for entity_id in self._area_entities(area_id):
+            if not entity_id.startswith("binary_sensor."):
+                continue
+            state = self.hass.states.get(entity_id)
+            if state is None or state.attributes.get("device_class") not in (
+                OCCUPANCY_CLASSES
+            ):
+                continue
+            if state.state == "on":
+                return True
+            if state.state == "off":
+                seen = False
+        return seen
+
+    def _only_rooms(self, action: dict[str, Any]) -> dict[str, Any]:
+        """The step for only the rooms someone is in (or only the empty ones).
+        A room whose sensors can't tell is left alone."""
+        want = action["rooms"] == "occupied"
+        target = dict(action.get("target") or {})
+        target["area_id"] = [
+            a for a in target.get("area_id", []) if self.room_occupied(a) is want
+        ]
+        if not target["area_id"]:
+            del target["area_id"]
+        result = {k: v for k, v in action.items() if k != "target"}
+        if target:
+            result["target"] = target
+        return result
+
+    async def _ramp_volume(self, ramp: dict[str, Any], seconds: float) -> str | None:
+        """Turn speakers up (or down) bit by bit. Returns what went wrong, or None."""
+        players = [e for e in ramp["entity_id"] if self.hass.states.get(e)]
+        if not players:
+            return "The speakers aren't available"
+        start, end = ramp["from"] / 100, ramp["to"] / 100
+        for step in range(RAMP_STEPS + 1):
+            level = round(start + (end - start) * step / RAMP_STEPS, 3)
+            error = await self._call_service(
+                "media_player",
+                "volume_set",
+                {"volume_level": level},
+                {"entity_id": players},
+            )
+            if error is not None:
+                return f"Couldn't set the volume: {error}"
+            if step < RAMP_STEPS:
+                await asyncio.sleep(seconds / RAMP_STEPS)
+        return None
+
+    def _note_power(self, routine: dict[str, Any]) -> None:
+        """Read the power of the routine's devices before it runs."""
+        entities: list[str] = []
+        for action in routine["actions"]:
+            for step in action.get("together", [action]):
+                if "service" in step:
+                    domain = step["service"].split(".", 1)[0]
+                    entities.extend(self._resolve_targets(step.get("target"), domain))
+                if "volume_ramp" in step:
+                    entities.extend(step["volume_ramp"]["entity_id"])
+        sensors = power_sensors(self.hass, entities)
+        watts = read_watts(self.hass, sensors) if sensors else None
+        rt = self._rt(routine["id"])
+        if watts is None:
+            rt.pop("power_before", None)
+        else:
+            rt["power_before"] = (sensors, watts)
+
+    async def _read_power_after(
+        self, routine_id: str, sensors: list[str], before: float
+    ) -> None:
+        await asyncio.sleep(POWER_SETTLE_SECONDS)
+        after = read_watts(self.hass, sensors)
+        if after is None or self._find(routine_id) is None:
+            return
+        readings = self.power.setdefault(routine_id, [])
+        readings.append(
+            {"at": dt_util.now().isoformat(), "before": before, "after": after}
+        )
+        del readings[:-POWER_RUNS]
+        await self._async_save()
+        self._notify_listeners()
+
+    def power_of(self, routine_id: str) -> dict[str, Any] | None:
+        return power_summary(self.power.get(routine_id) or [])
+
+    async def async_pause_group(self, group: str, until: str | None) -> list[str]:
+        """Pause (or resume, with None) every routine in a group."""
+        ids = [r["id"] for r in self.routines if group and r.get("group") == group]
+        if not ids:
+            raise vol.Invalid(f"No routines in the group '{group}'.")
+        await self.async_pause_until(ids, until)
+        return ids
 
     def _keep_for_undo(self, routine: dict[str, Any], now: datetime) -> None:
         """Note how the devices this routine changes are now, for Undo."""

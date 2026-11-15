@@ -38,6 +38,7 @@ ENTITY_ID_RE = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z0-9_]+$")
 MAX_CATCH_UP_MINUTES = 180
 MAX_RETRIES = 3
 MAX_DELAY_SECONDS = 86400
+MAX_GROUP_NAME = 40
 
 # Services that put entities into a known state. A step whose entities are already
 # in that state is skipped when "skip no-op steps" is on.
@@ -149,6 +150,7 @@ CONDITION_KINDS = (
     "mode",
     "workday",
     "weather",
+    "day_type",
 )
 WORKDAY_WHEN = ("workday", "day_off")
 # The weather: what it's doing (rainy, sunny...), or the temperature.
@@ -172,6 +174,11 @@ WEATHER_STATES = (
 )
 # A calendar condition: run only on days with a matching event, or skip those days.
 CALENDAR_WHEN = ("event", "no_event")
+# Kinds of day (School day, Holiday…) come from calendars in Settings; a day
+# with none of them is a "Normal day".
+NORMAL_DAY = "Normal day"
+MAX_DAY_TYPE_NAME = 40
+MAX_DAY_TYPES = 8
 MAX_CALENDAR_MATCH = 100
 PRESENCE_WHO = ("everyone", "anyone")
 PRESENCE_WHERE = ("in", "away")
@@ -365,7 +372,10 @@ def _normalize_action(raw: Any, index: int) -> dict[str, Any]:
 
 # Steps run at the same time: up to this many in one "together" step.
 MAX_TOGETHER = 10
-TOGETHER_KINDS = {"service", "todo", "run_routine", "set_mode"}
+TOGETHER_KINDS = {"service", "todo", "run_routine", "set_mode", "volume_ramp"}
+# A step on rooms can be limited to the rooms someone is in, or the empty ones.
+ROOM_FILTERS = ("occupied", "empty")
+MAX_RAMP_MINUTES = 60
 
 
 def _normalize_step(raw: dict[str, Any], index: int) -> dict[str, Any]:
@@ -396,6 +406,26 @@ def _normalize_step(raw: dict[str, Any], index: int) -> dict[str, Any]:
         if mode not in MODES:
             raise vol.Invalid(f"Step {index}: pick the house mode.")
         return {"set_mode": mode}
+    if "volume_ramp" in raw:
+        ramp = raw.get("volume_ramp")
+        if not isinstance(ramp, dict):
+            raise vol.Invalid(f"Step {index}: set the speakers and the volume.")
+        players = _entity_list(ramp.get("entity_id"), f"Step {index}")
+        if not players or any(not e.startswith("media_player.") for e in players):
+            raise vol.Invalid(f"Step {index}: pick the speakers to turn up.")
+        return {
+            "volume_ramp": {
+                "entity_id": players,
+                "from": _int(ramp.get("from") or 0, 0, 100, f"Step {index}: from"),
+                "to": _int(ramp.get("to") or 30, 0, 100, f"Step {index}: to"),
+                "minutes": _int(
+                    ramp.get("minutes") or 10,
+                    1,
+                    MAX_RAMP_MINUTES,
+                    f"Step {index}: over",
+                ),
+            }
+        }
     if "wait_until" in raw:
         wait = raw.get("wait_until")
         if not isinstance(wait, dict):
@@ -456,11 +486,20 @@ def _normalize_step(raw: dict[str, Any], index: int) -> dict[str, Any]:
     action: dict[str, Any] = {"service": service, "data": dict(data)}
     if target:
         action["target"] = target
+    rooms = raw.get("rooms")
+    if rooms:
+        if rooms not in ROOM_FILTERS:
+            raise vol.Invalid(f"Step {index}: rooms someone is in, or empty ones.")
+        if not target.get("area_id"):
+            raise vol.Invalid(
+                f"Step {index}: pick rooms to only do it in some of them."
+            )
+        action["rooms"] = rooms
     return action
 
 
 # Steps that change something (waiting alone does nothing).
-DOING_STEPS = {"service", "todo", "run_routine", "set_mode", "together"}
+DOING_STEPS = {"service", "todo", "run_routine", "set_mode", "together", "volume_ramp"}
 
 
 def _presence_condition(
@@ -572,6 +611,15 @@ def _normalize_condition(raw: Any, index: int) -> dict[str, Any]:
                 raise vol.Invalid("Set the temperature for this condition.")
             cond["value"] = _number(raw.get("value"), "The temperature")
         return cond
+    if kind == "day_type":
+        types = [
+            " ".join(str(t).split())[:MAX_DAY_TYPE_NAME]
+            for t in _as_list(raw.get("types"))
+        ]
+        types = list(dict.fromkeys(t for t in types if t))
+        if not types:
+            raise vol.Invalid("Pick the kinds of day for this condition.")
+        return {"kind": "day_type", "types": types}
     raise vol.Invalid(f"Condition {index}: pick what to check.")
 
 
@@ -862,6 +910,8 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "name": name,
         "enabled": bool(raw.get("enabled", True)),
         "room": room,
+        # Routines with the same group show together and pause together.
+        "group": " ".join(str(raw.get("group") or "").split())[:MAX_GROUP_NAME],
         "device_id": device_id,
         "trigger": trigger,
         "value_entity": value_entity,
