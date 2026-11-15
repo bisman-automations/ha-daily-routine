@@ -134,6 +134,8 @@ const REASON_LABELS = {
 const ACTIONS = [
   { service: "light.turn_on", label: "Turn on lights", fields: [
     { key: "brightness_pct", label: "Brightness", type: "pct", optional: true },
+    { key: "color_temp_kelvin", label: "White (warm to cool)", type: "kelvin", optional: true },
+    { key: "rgb_color", label: "Color", type: "color", optional: true },
     { key: "transition", label: "Fade in over (minutes)", type: "minutes", optional: true },
   ] },
   { service: "light.turn_off", label: "Turn off lights", fields: [
@@ -141,11 +143,12 @@ const ACTIONS = [
   ] },
   { service: "switch.turn_on", label: "Turn on switches" },
   { service: "switch.turn_off", label: "Turn off switches" },
-  { service: "fan.turn_on", label: "Turn on fans" },
+  { service: "fan.turn_on", label: "Turn on fans", fields: [{ key: "percentage", label: "Speed", type: "pct", optional: true }] },
   { service: "fan.turn_off", label: "Turn off fans" },
   { service: "cover.open_cover", label: "Open curtains and blinds" },
   { service: "cover.close_cover", label: "Close curtains and blinds" },
   { service: "cover.stop_cover", label: "Stop curtains and blinds" },
+  { service: "cover.set_cover_position", label: "Move curtains and blinds to", fields: [{ key: "position", label: "Open by", type: "pct" }] },
   { service: "lock.lock", label: "Lock doors" },
   { service: "lock.unlock", label: "Unlock doors" },
   { service: "scene.turn_on", label: "Activate a scene" },
@@ -157,7 +160,10 @@ const ACTIONS = [
     { key: "message", label: "What to say", type: "text", placeholder: "for example Time to get ready for school" },
     { key: "media_player_entity_id", label: "Speaker", type: "entity", domain: "media_player" },
   ] },
-  { service: "climate.set_temperature", label: "Set the thermostat", fields: [{ key: "temperature", label: "Temperature", type: "number", step: 0.5 }] },
+  { service: "climate.set_temperature", label: "Set the thermostat", fields: [
+    { key: "temperature", label: "Temperature", type: "number", step: 0.5 },
+    { key: "hvac_mode", label: "Mode", type: "select", optional: true, options: [["heat", "Heat"], ["cool", "Cool"], ["heat_cool", "Heat and cool"], ["auto", "Auto"], ["off", "Off"]] },
+  ] },
   { service: "climate.turn_off", label: "Turn off the thermostat" },
   { service: "vacuum.start", label: "Start the vacuum" },
   { service: "vacuum.return_to_base", label: "Send the vacuum home" },
@@ -169,7 +175,57 @@ const ACTIONS = [
     { key: "name", label: "Remembered as", type: "text", placeholder: "the same name as the Remember step" },
   ] },
 ];
-const actionSpec = (service) => ACTIONS.find((a) => a.service === service);
+// Home Assistant's own descriptions of every action's settings (hass.services),
+// so an action not in ACTIONS still gets proper fields instead of JSON.
+let SERVICE_DESCRIPTIONS = {};
+const actionSpec = (service) => ACTIONS.find((a) => a.service === service) || describedSpec(service);
+
+function describedSpec(service) {
+  const [domain, name] = String(service || "").split(".");
+  const described = SERVICE_DESCRIPTIONS?.[domain]?.[name];
+  if (!described) return undefined;
+  const fields = [];
+  const add = (key, f) => {
+    const field = fieldFromSelector(key, f);
+    if (field) fields.push(field);
+  };
+  for (const [key, f] of Object.entries(described.fields || {})) {
+    if (f?.fields) for (const [sub, g] of Object.entries(f.fields)) add(sub, g);
+    else add(key, f);
+  }
+  return { service, label: described.name || service, fields, described: true };
+}
+
+// One setting of an action, from its selector in Home Assistant's description.
+function fieldFromSelector(key, f) {
+  if (key === "entity_id") return null;
+  const sel = f?.selector || {};
+  const kind = Object.keys(sel)[0] || "text";
+  const opts = sel[kind] || {};
+  const label = f.name || humanize(key);
+  const optional = !f.required;
+  const base = { key, label, optional, help: f.description || "" };
+  if (kind === "number") return { ...base, type: "number", step: opts.step === "any" ? "any" : opts.step || 1, min: opts.min, max: opts.max, unit: opts.unit_of_measurement || "" };
+  if (kind === "boolean") return { ...base, type: "bool" };
+  if (kind === "select") {
+    const options = (opts.options || []).map((o) => (typeof o === "object" ? [o.value, o.label || o.value] : [o, humanize(String(o))]));
+    return { ...base, type: "select", options, multiple: Boolean(opts.multiple) };
+  }
+  if (kind === "color_rgb") return { ...base, type: "color" };
+  if (kind === "color_temp") return { ...base, type: "kelvin" };
+  if (kind === "time") return { ...base, type: "time" };
+  if (kind === "entity") return { ...base, type: "entity", domain: [opts.domain || (opts.filter?.[0]?.domain)].flat().filter(Boolean)[0] || "" };
+  if (kind === "object") return { ...base, type: "object" };
+  return { ...base, type: "text", placeholder: f.example !== undefined ? String(f.example) : "" };
+}
+
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex || ""));
+  return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : null;
+}
+function rgbToHex(rgb) {
+  return Array.isArray(rgb) && rgb.length === 3 ? `#${rgb.map((n) => Number(n).toString(16).padStart(2, "0")).join("")}` : "";
+}
 
 // Fields an action asks for, turned into its data.
 function fieldsToData(spec, values, index) {
@@ -180,7 +236,30 @@ function fieldsToData(spec, values, index) {
       if (f.optional) continue;
       throw new Error(`Step ${index + 1}: fill in ${f.label.toLowerCase()}.`);
     }
-    if (["percent", "pct", "number", "minutes"].includes(f.type)) {
+    if (f.type === "bool") {
+      if (raw === true || raw === "true") data[f.key] = true;
+      else if (raw === false || raw === "false") data[f.key] = false;
+      continue;
+    }
+    if (f.type === "color") {
+      const rgb = hexToRgb(raw);
+      if (rgb) data[f.key] = rgb;
+      continue;
+    }
+    if (f.type === "object") {
+      try {
+        data[f.key] = typeof raw === "string" ? JSON.parse(raw) : raw;
+      } catch (_err) {
+        throw new Error(`Step ${index + 1}: ${f.label.toLowerCase()} isn't valid.`);
+      }
+      continue;
+    }
+    if (f.type === "select" && f.multiple) {
+      const list = Array.isArray(raw) ? raw : String(raw).split(",").map((x) => x.trim()).filter(Boolean);
+      if (list.length) data[f.key] = list;
+      continue;
+    }
+    if (["percent", "pct", "number", "minutes", "kelvin"].includes(f.type)) {
       const n = Number(raw);
       if (Number.isNaN(n)) throw new Error(`Step ${index + 1}: ${f.label.toLowerCase()} must be a number.`);
       if (f.type === "percent") data[f.key] = Math.max(0, Math.min(100, n)) / 100;
@@ -201,7 +280,9 @@ function dataToFields(spec, data) {
   for (const f of spec?.fields || []) {
     if (!(f.key in rest)) continue;
     const value = rest[f.key];
-    fields[f.key] = f.type === "percent" ? Math.round(Number(value) * 100) : f.type === "minutes" ? Math.round((Number(value) / 60) * 100) / 100 : value;
+    if (f.type === "color") fields[f.key] = rgbToHex(value);
+    else if (f.type === "object") fields[f.key] = JSON.stringify(value);
+    else fields[f.key] = f.type === "percent" ? Math.round(Number(value) * 100) : f.type === "minutes" ? Math.round((Number(value) / 60) * 100) / 100 : value;
     delete rest[f.key];
   }
   return { fields, rest };
@@ -411,6 +492,36 @@ function splitStates(text) {
   return String(text || "").split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+// Long lists of devices (checkboxes) and device drop-downs get a search box.
+function isDevicePicker(el) {
+  if (el.tagName === "SELECT") {
+    const options = [...el.options].filter((o) => o.value);
+    if (options.length < 10) return false;
+    if (el.dataset.sf === "actionChoice") return false;
+    if (["device_id", "routine"].includes(el.dataset.f || el.dataset.sf)) return true;
+    return options.filter((o) => o.value.includes(".")).length >= options.length / 2;
+  }
+  if (el.querySelector("[data-cweather]")) return false; // kinds of weather, not devices
+  return el.querySelectorAll("label").length >= 8;
+}
+
+function filterPicker(el, text) {
+  const q = text.trim().toLowerCase();
+  if (el.tagName === "SELECT") {
+    if (!el._all) el._all = [...el.options].map((o) => ({ value: o.value, text: o.text }));
+    const current = el.value;
+    el.innerHTML = el._all
+      .filter((o) => !q || !o.value || o.value === current || o.text.toLowerCase().includes(q))
+      .map((o) => `<option value="${esc(o.value)}" ${o.value === current ? "selected" : ""}>${esc(o.text)}</option>`)
+      .join("");
+    el.value = current;
+    return;
+  }
+  for (const label of el.querySelectorAll("label")) {
+    label.style.display = !q || label.textContent.toLowerCase().includes(q) ? "" : "none";
+  }
+}
+
 function toggleIn(list, value, on) {
   const i = list.indexOf(value);
   if (on && i < 0) list.push(value);
@@ -475,6 +586,7 @@ class DailyRoutinePanel extends HTMLElement {
 
   set hass(hass) {
     this._hass = hass;
+    if (hass?.services) SERVICE_DESCRIPTIONS = hass.services;
     if (!this._data) this._load();
     if (this.isConnected) this._subscribe();
   }
@@ -1296,6 +1408,11 @@ class DailyRoutinePanel extends HTMLElement {
           else this._draft.actions.push({ ...blank, kind: "mode", mode: "night" });
           break;
         }
+        case "clear-field": {
+          const step = this._draft.actions[Number(el.dataset.i)];
+          if (step?.fields) delete step.fields[el.dataset.key];
+          break;
+        }
         case "add-more-trigger":
           this._draft.more_triggers = [...(this._draft.more_triggers || []), { trigger: "time", time: "22:00:00", offset_minutes: 0, people: [], zone: "zone.home", modes: [], value_entity: "", value_threshold: "", watch_entity: "", watch_states: "", hold_minutes: 0 }];
           break;
@@ -1362,6 +1479,12 @@ class DailyRoutinePanel extends HTMLElement {
   _onField(event, live = false) {
     const el = event.target;
     if (!el.dataset) return;
+    if (el.dataset.pickerSearch !== undefined) {
+      this._searchText[el.dataset.pickerSearch] = el.value;
+      const target = this._pickers?.get(el);
+      if (target) filterPicker(target, el.value);
+      return;
+    }
     if (el.dataset.tf !== undefined) {
       this._onTodoField(el, live);
       return;
@@ -1612,6 +1735,33 @@ class DailyRoutinePanel extends HTMLElement {
     const banner = this._data?.paused && !editing ? this._pausedBanner() : "";
     const running = this._data && ["rooms", "activity", "todos"].includes(this._view.name) ? this._runningStrip() : "";
     this.shadowRoot.innerHTML = `${STYLES}<main>${this._renderHeader()}${banner}${notice}${running}${body}</main>`;
+    this._addSearches();
+  }
+
+  // A search box above every long list of devices to pick from (checkboxes or a
+  // drop-down), so the right one is quick to find. What's typed survives redraws.
+  _addSearches() {
+    const root = this.shadowRoot;
+    if (!root?.querySelectorAll || typeof document === "undefined") return;
+    this._searchText = this._searchText || {};
+    this._pickers = new WeakMap();
+    let n = 0;
+    for (const el of root.querySelectorAll(".checks, select")) {
+      if (!isDevicePicker(el)) continue;
+      const key = `${this._view.name}:${n++}`;
+      const input = document.createElement("input");
+      input.type = "search";
+      input.className = "picker-search";
+      input.placeholder = "Search…";
+      input.setAttribute("aria-label", "Search");
+      input.dataset.pickerSearch = key;
+      el.before(input);
+      this._pickers.set(input, el);
+      if (this._searchText[key]) {
+        input.value = this._searchText[key];
+        filterPicker(el, input.value);
+      }
+    }
   }
 
   _tabs() {
@@ -2859,11 +3009,18 @@ class DailyRoutinePanel extends HTMLElement {
     const fields = (spec?.fields || []).map((f) => {
       const attrs = `data-sfi="${i}" data-sfield="${esc(f.key)}"`;
       const value = values[f.key] ?? "";
+      const opt = f.optional ? " – optional" : "";
+      const help = f.help ? `<span class="muted small">${esc(f.help)}</span>` : "";
       if (f.type === "entity") return pick(f.domain, value, attrs, f.label);
-      if (f.type === "percent" || f.type === "pct") return `<label>${esc(f.label)} (%)${f.optional ? " – optional" : ""}<input type="number" min="0" max="100" step="5" ${attrs} value="${esc(value)}"></label>`;
+      if (f.type === "percent" || f.type === "pct") return `<label>${esc(f.label)} (%)${opt}<input type="number" min="0" max="100" step="5" ${attrs} value="${esc(value)}"></label>`;
       if (f.type === "minutes") return `<label>${esc(f.label)} – optional<input type="number" min="0" max="120" step="0.5" ${attrs} value="${esc(value)}"></label>`;
-      if (f.type === "number") return `<label>${esc(f.label)}<input type="number" step="${f.step || 1}" ${attrs} value="${esc(value)}"></label>`;
-      return `<label>${esc(f.label)}<input ${attrs} value="${esc(value)}" placeholder="${esc(f.placeholder || "")}"></label>`;
+      if (f.type === "kelvin") return `<label>${esc(f.label)} (K)${opt}<input type="number" min="1500" max="9000" step="100" ${attrs} value="${esc(value)}" placeholder="2700 warm · 6500 cool"></label>`;
+      if (f.type === "color") return `<label>${esc(f.label)}${opt}<span class="inline"><input type="color" ${attrs} value="${esc(value || "#ffffff")}"> ${value ? `<button class="ghost" data-act="clear-field" data-i="${i}" data-key="${esc(f.key)}">No color</button>` : `<span class="muted small">not set</span>`}</span></label>`;
+      if (f.type === "bool") return `<label>${esc(f.label)}${opt}<select ${attrs}><option value="" ${value === "" ? "selected" : ""}>Leave as it is</option><option value="true" ${value === true || value === "true" ? "selected" : ""}>Yes</option><option value="false" ${value === false || value === "false" ? "selected" : ""}>No</option></select>${help}</label>`;
+      if (f.type === "select" && !f.multiple) return `<label>${esc(f.label)}${opt}<select ${attrs}><option value="">${f.optional ? "Leave as it is" : "Choose…"}</option>${f.options.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(value) ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>${help}</label>`;
+      if (f.type === "time") return `<label>${esc(f.label)}${opt}<input type="time" ${attrs} value="${esc(value)}">${help}</label>`;
+      if (f.type === "number") return `<label>${esc(f.label)}${f.unit ? ` (${esc(f.unit)})` : ""}${opt}<input type="number" step="${esc(f.step || 1)}" ${f.min !== undefined ? `min="${esc(f.min)}"` : ""} ${f.max !== undefined ? `max="${esc(f.max)}"` : ""} ${attrs} value="${esc(value)}">${help}</label>`;
+      return `<label>${esc(f.label)}${opt}<input ${attrs} value="${esc(Array.isArray(value) ? value.join(", ") : value)}" placeholder="${esc(f.placeholder || "")}">${help}</label>`;
     }).join("");
     const voice = spec?.voice ? pick("tts", step.voice || "", `data-si="${i}" data-sf="voice"`, "Voice") : "";
     const target = spec?.voice || spec?.untargeted ? "" : `<label>Applies to<select data-si="${i}" data-sf="targetMode" data-rerender>${targetModes}</select></label>
@@ -2874,7 +3031,9 @@ class DailyRoutinePanel extends HTMLElement {
       ${voice}
       ${target}
       ${fields}
-      <label>Advanced: extra settings (optional JSON)<textarea data-si="${i}" data-sf="data" rows="2" placeholder='{"brightness": 128}'>${esc(step.data)}</textarea></label>
+      ${step.data && step.data.trim() ? `<details class="leftover"><summary class="muted small">Other settings this step has</summary>
+        <p class="muted small">Settings without a field of their own, kept as they are. Clear the box to remove them.</p>
+        <textarea data-si="${i}" data-sf="data" rows="2">${esc(step.data)}</textarea></details>` : ""}
       ${onlyIf}
     </div>`;
   }
@@ -2982,6 +3141,10 @@ const STYLES = `<style>
   .tl.skipped { border-left-color: var(--warning-color, #ffa600); }
   .tl.running { border-left-color: var(--primary-color, #03a9f4); }
   .tl-time { font-variant-numeric: tabular-nums; color: var(--secondary-text-color); padding-top: 2px; }
+  .picker-search { width: 100%; box-sizing: border-box; margin: 6px 0 4px; padding: 8px 10px; font: inherit; border-radius: 8px;
+    border: 1px solid var(--divider-color, #ddd); background: var(--card-background-color, #fff); color: var(--primary-text-color); }
+  input[type="color"] { width: 56px; height: 36px; padding: 2px; flex: none; }
+  details.leftover textarea { width: 100%; box-sizing: border-box; }
   .only-if { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--divider-color, #ddd); }
   .mode-pick select { min-width: 110px; }
   .checks.scroll { max-height: 260px; overflow: auto; }

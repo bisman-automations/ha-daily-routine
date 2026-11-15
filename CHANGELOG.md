@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.0] - 2026-11-14
+
+### Added
+
+- **Search wherever you pick a device.** Long lists of lights, sensors and other devices, and device drop-downs, have a search box above them, in the routine editor, the to-do rules and Settings.
+- **Every action's settings are proper fields.** Instead of a box for extra settings in JSON, each action shows its own settings: a light's brightness, white temperature, color and fade, a fan's speed, how far to open curtains, the thermostat's mode, and for any other action, the settings Home Assistant describes for it (numbers, choices, yes or no, times). Settings a saved step already had that have no field are kept, under "Other settings this step has".
+
 ## [1.22.0] - 2026-11-14
 
 ### Added
@@ -396,6 +403,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.23.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.22.0...v1.23.0
 [1.22.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.21.1...v1.22.0
 [1.21.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.21.0...v1.21.1
 [1.21.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.20.0...v1.21.0

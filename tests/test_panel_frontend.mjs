@@ -1195,8 +1195,9 @@ test("plain actions ask for their settings instead of JSON, and round-trip", () 
   assert.equal(draft.actions[0].voice, "tts.piper");
   assert.deepEqual(draft.actions[0].fields, { message: "Good morning", media_player_entity_id: "media_player.kitchen" });
   assert.equal(draft.actions[1].fields.volume_level, 35);
-  // Settings the action doesn't ask for stay in the advanced JSON.
-  assert.deepEqual(JSON.parse(draft.actions[2].data), { hvac_mode: "heat" });
+  // The thermostat's mode is a field of its own now; nothing is left over.
+  assert.equal(draft.actions[2].fields.hvac_mode, "heat");
+  assert.equal(draft.actions[2].data, "");
   panel._draft = draft;
   panel._view = { name: "editor", room: "kitchen" };
   panel._render();
@@ -1579,4 +1580,51 @@ test("Settings has lived-in lights, and the header a house mode picker for admin
   assert.doesNotMatch(html, /data-val="lock.front"/);
   assert.match(html, /On now/);
   assert.match(html, /data-mode-pick[^>]*>.*value="away" selected/s);
+});
+
+test("any action gets fields from Home Assistant's description, not JSON", () => {
+  const panel = makePanel();
+  panel.hass = {
+    services: {
+      media_player: {
+        play_media: {
+          name: "Play media",
+          fields: {
+            media: { name: "Media", required: true, selector: { text: {} } },
+            enqueue: { name: "Enqueue", selector: { select: { options: ["play", "next", "add"] } } },
+            announce: { name: "Announce", selector: { boolean: {} } },
+            advanced: { fields: { volume: { name: "Volume", selector: { number: { min: 0, max: 100, unit_of_measurement: "%" } } } } },
+          },
+        },
+      },
+    },
+  };
+  panel._data = structuredClone(overview);
+  const stored = {
+    ...overview.routines[0], id: "music", name: "Music", trigger: "time",
+    actions: [{ service: "media_player.play_media", target: { entity_id: ["media_player.kitchen"] }, data: { media: "jazz", enqueue: "next", announce: true, volume: 30 } }],
+  };
+  const draft = panel._draftFromRoutine(stored);
+  assert.equal(draft.actions[0].data, "");
+  assert.deepEqual(draft.actions[0].fields, { media: "jazz", enqueue: "next", announce: true, volume: 30 });
+  panel._draft = draft;
+  panel._view = { name: "editor", room: "kitchen" };
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Enqueue/);
+  assert.match(html, /value="next" selected/);
+  assert.match(html, /Volume \(%\)/);
+  assert.doesNotMatch(html, /optional JSON/);
+  assert.deepEqual(panel._draftToRaw(draft).actions[0].data, { media: "jazz", enqueue: "next", announce: true, volume: 30 });
+});
+
+test("light colors and white temperature are fields", () => {
+  const panel = makePanel();
+  const stored = {
+    ...overview.routines[0], id: "warm", name: "Warm", trigger: "time",
+    actions: [{ service: "light.turn_on", target: { area_id: ["kitchen"] }, data: { rgb_color: [255, 128, 0], color_temp_kelvin: 2700 } }],
+  };
+  const draft = panel._draftFromRoutine(stored);
+  assert.equal(draft.actions[0].fields.rgb_color, "#ff8000");
+  assert.deepEqual(panel._draftToRaw(draft).actions[0].data, { rgb_color: [255, 128, 0], color_temp_kelvin: 2700 });
 });

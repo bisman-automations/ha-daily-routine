@@ -108,6 +108,8 @@ The sidebar has these tabs:
 
 The **House mode** list at the top of the page (administrators) switches the house between Home, Away, Night, Guests and Vacation.
 
+Wherever you pick devices, a long list has a search box above it. Each step's action shows its own settings as fields (brightness, color, speed, position, a thermostat's mode, and for any other action the settings Home Assistant describes for it), so nothing needs typing as JSON.
+
 Each routine card has **Run now**, **Undo** (for two hours after it ran), **Edit**, **Duplicate**, **Enable/Disable**, and **Delete**. Under the routine's details, **Recent runs** lists its last five runs, including skips and failures and why they happened. A yellow warning appears on the card when something the routine needs is missing or unavailable, such as a device or to-do list. Duplicate opens a copy you can change before saving. In the editor, **Linked device** picks the device the routine belongs to. Each device is shown with the integration it comes from, such as *Office Curtains (SwitchBot Cloud)*, so devices with the same name can be told apart. Only real devices are offered, not services such as a Music Assistant player or another integration's service; a routine already linked to one keeps it until you change it.
 
 ## Routines as devices
