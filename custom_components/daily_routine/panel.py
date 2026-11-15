@@ -461,6 +461,21 @@ def _status(coordinator: HomeRoutinesCoordinator) -> dict[str, Any]:
 
 # Live updates are sent at most this often while a routine is running.
 PUSH_SECONDS = 0.3
+# One payload is shared by every open screen for the same update, while it's
+# this fresh (the lived-in line reads the clock).
+SHARE_SECONDS = 1.0
+_shared: dict[str, Any] = {}
+
+
+def _shared_status(coordinator: HomeRoutinesCoordinator) -> dict[str, Any]:
+    """``_status`` built once per update, however many screens are open."""
+    now = coordinator.hass.loop.time()
+    key = (id(coordinator), coordinator.notify_count)
+    if _shared.get("key") == key and now - _shared.get("at", 0) < SHARE_SECONDS:
+        return _shared["payload"]
+    payload = _status(coordinator)
+    _shared.update(key=key, at=now, payload=payload)
+    return payload
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/subscribe"})
@@ -475,14 +490,19 @@ def ws_subscribe(
         connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
         return
     pending: list[asyncio.TimerHandle] = []
+    last: list[dict[str, Any]] = []
 
     @callback
     def _send() -> None:
         pending.clear()
-        if (current := _coordinator(hass)) is not None:
-            connection.send_message(
-                websocket_api.event_message(msg["id"], _status(current))
-            )
+        if (current := _coordinator(hass)) is None:
+            return
+        payload = _shared_status(current)
+        # Nothing this screen can show changed: nothing to send.
+        if last and last[0] == payload:
+            return
+        last[:] = [payload]
+        connection.send_message(websocket_api.event_message(msg["id"], payload))
 
     @callback
     def _changed() -> None:

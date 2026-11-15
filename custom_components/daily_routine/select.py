@@ -47,7 +47,9 @@ class HouseModeSelect(SelectEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
-        self.async_on_remove(self.coordinator.async_add_listener(self._handle_update))
+        self.async_on_remove(
+            self.coordinator.async_add_listener(self._handle_update, now=True)
+        )
 
     @callback
     def async_entity_id_changed(self, old_entity_id: str) -> None:

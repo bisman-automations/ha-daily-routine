@@ -10,6 +10,7 @@ Porch light around 6:40 pm most days".
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -128,6 +129,31 @@ def service_for(entity_id: str, on: bool) -> str:
     return f"{domain}.turn_{'on' if on else 'off'}"
 
 
+@callback
+def _habit_domain(event_data: Mapping[str, Any]) -> bool:
+    """A state change worth looking at: a light, switch, fan and so on."""
+    return str(event_data["entity_id"]).split(".", 1)[0] in HABIT_DOMAINS
+
+
+def drop_old(events: list[dict[str, Any]], cutoff: datetime) -> None:
+    """Drop events older than ``cutoff``, and the oldest past ``MAX_EVENTS``.
+
+    Events are kept oldest first, so only the front is read: the first one
+    recent enough ends the search (the whole list used to be parsed again
+    every 50 changes).
+    """
+    if len(events) > MAX_EVENTS:
+        del events[: len(events) - MAX_EVENTS]
+    drop = 0
+    for event in events:
+        at = dt_util.parse_datetime(str(event.get("at")))
+        if at is not None and at >= cutoff:
+            break
+        drop += 1
+    if drop:
+        del events[:drop]
+
+
 class Habits:
     """Notes changes made by hand, and turns repeated ones into ideas."""
 
@@ -141,6 +167,9 @@ class Habits:
         self.dismissed: set[str] = set()
         self._unsub: Any = None
         self._dirty = False
+        # The last ideas found, and what they were found from (ideas()).
+        self._ideas_key: tuple[Any, ...] | None = None
+        self._ideas: list[dict[str, Any]] = []
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
@@ -150,8 +179,10 @@ class Habits:
     @callback
     def start(self) -> None:
         if self._unsub is None:
+            # Only changes to lights, switches and the like reach _on_change:
+            # Home Assistant skips the rest before calling into it.
             self._unsub = self.hass.bus.async_listen(
-                EVENT_STATE_CHANGED, self._on_change
+                EVENT_STATE_CHANGED, self._on_change, event_filter=_habit_domain
             )
 
     @callback
@@ -200,13 +231,7 @@ class Habits:
         if people:
             noted["h"] = any(p.state == "home" for p in people)
         self.events.append(noted)
-        cutoff = now - timedelta(days=KEEP_DAYS)
-        if len(self.events) > MAX_EVENTS or len(self.events) % 50 == 0:
-            self.events = [
-                e
-                for e in self.events[-MAX_EVENTS:]
-                if (at := dt_util.parse_datetime(e["at"])) and at >= cutoff
-            ]
+        drop_old(self.events, now - timedelta(days=KEEP_DAYS))
         self._dirty = True
         self._store.async_delay_save(self._data, 60)
 
@@ -230,9 +255,22 @@ class Habits:
         return done
 
     def ideas(self, now: datetime) -> list[dict[str, Any]]:
-        found = suggest(
-            self.events, now, covered=self.covered(), dismissed=self.dismissed
+        # Ideas change only with a new habit event, a dismissal, a routine
+        # change (what's covered) or a new day: until then, the last ones.
+        last = self.events[-1]["at"] if self.events else None
+        key = (
+            len(self.events),
+            last,
+            frozenset(self.dismissed),
+            self._coordinator.revision,
+            now.date(),
         )
+        if key != self._ideas_key:
+            self._ideas = suggest(
+                self.events, now, covered=self.covered(), dismissed=self.dismissed
+            )
+            self._ideas_key = key
+        found = [dict(idea) for idea in self._ideas]
         for idea in found:
             state = self.hass.states.get(idea["entity_id"])
             idea["name"] = state.name if state else idea["entity_id"]

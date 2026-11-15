@@ -898,6 +898,11 @@ function formatTime(iso) {
   return isNaN(date) ? iso : date.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
 }
 
+// Whether the page can't be seen (another tab, or a screen that's switched off).
+function pageHidden() {
+  return typeof document !== "undefined" && Boolean(document.hidden);
+}
+
 class DailyRoutinePanel extends HTMLElement {
   constructor() {
     super();
@@ -930,6 +935,10 @@ class DailyRoutinePanel extends HTMLElement {
   }
 
   disconnectedCallback() {
+    if (this._onVisible) {
+      document.removeEventListener("visibilitychange", this._onVisible);
+      this._onVisible = null;
+    }
     clearInterval(this._timer);
     clearInterval(this._ticker);
     this._ticker = null;
@@ -949,6 +958,23 @@ class DailyRoutinePanel extends HTMLElement {
 
   _onStatus(status) {
     this._live = true;
+    if (pageHidden()) {
+      // Nobody's looking (another tab, a screen that's off): keep only the
+      // newest and draw it once when the page is seen again.
+      this._hiddenStatus = status;
+      if (!this._onVisible) {
+        this._onVisible = () => {
+          const waiting = this._hiddenStatus;
+          if (!pageHidden() && waiting) {
+            this._hiddenStatus = null;
+            this._onStatus(waiting);
+          }
+        };
+        document.addEventListener("visibilitychange", this._onVisible);
+      }
+      return;
+    }
+    this._hiddenStatus = null;
     if (!this._data) return;
     if (status.revision !== this._data.revision) {
       this._load(true);
@@ -991,6 +1017,7 @@ class DailyRoutinePanel extends HTMLElement {
   }
 
   _updateCountdowns() {
+    if (pageHidden()) return;
     for (const el of this.shadowRoot?.querySelectorAll("[data-until]") || []) {
       const left = Math.max(0, Math.round((new Date(el.dataset.until) - Date.now()) / 1000));
       el.textContent = left ? ` · ${clockText(left)} left` : "";

@@ -410,6 +410,9 @@ PERSISTED_KEYS = (
 )
 # How long to wait before saving a state we just saw. Noisy sensors then do not write on every change.
 SEEN_SAVE_DELAY_SECONDS = 10
+# Saves made while routines run are gathered up for this long (a sunset with
+# several routines writes the file once, not once per step of each).
+RUN_SAVE_DELAY_SECONDS = 2
 # How often to check whether a routine needs attention (a device or list is missing or unavailable).
 # Timing options on the Settings tab: default, lowest and highest allowed value, and the name shown in errors.
 TIMING_SETTINGS = {
@@ -619,6 +622,13 @@ class HomeRoutinesCoordinator:
         # How things were just before each routine's last run, for Undo (in memory).
         self._undo: dict[str, dict[str, Any]] = {}
         self._listeners: list[Callable[[], None]] = []
+        # Told straight away (the pause switch, House mode): an automation that
+        # changes one and reads it back sees the new state.
+        self._now_listeners: list[Callable[[], None]] = []
+        # One update for everything changed in the same moment (_notify_listeners).
+        self._notify_pending = False
+        # Counts updates, so the panel can share one payload per update.
+        self.notify_count = 0
         self._handles: dict[tuple[str, str], Callable[[], None]] = {}
         # What a run couldn't do, for Try again and the tries planned later.
         self._retry: dict[str, _Retry] = {}
@@ -790,15 +800,33 @@ class HomeRoutinesCoordinator:
             _LOGGER.debug("Could not create persistent notification")
 
     def _notify_listeners(self) -> None:
+        """Tell the sensors and the panel, once for everything changed in the
+        same moment: a burst of state changes or a run's several steps would
+        otherwise rebuild every routine's status each time. Listeners added
+        with ``now=True`` are told at once, every time."""
+        for listener in list(self._now_listeners):
+            listener()
+        if self._notify_pending:
+            return
+        self._notify_pending = True
+        self.hass.loop.call_soon(self._send_notify)
+
+    @callback
+    def _send_notify(self) -> None:
+        self._notify_pending = False
+        self.notify_count += 1
         for listener in list(self._listeners):
             listener()
 
-    def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
-        self._listeners.append(listener)
+    def async_add_listener(
+        self, listener: Callable[[], None], *, now: bool = False
+    ) -> Callable[[], None]:
+        listeners = self._now_listeners if now else self._listeners
+        listeners.append(listener)
 
         def remove() -> None:
-            if listener in self._listeners:
-                self._listeners.remove(listener)
+            if listener in listeners:
+                listeners.remove(listener)
 
         return remove
 
@@ -1112,6 +1140,12 @@ class HomeRoutinesCoordinator:
 
     async def _async_save(self) -> None:
         await self._store.async_save(self._payload())
+
+    @callback
+    def _save_soon(self) -> None:
+        """Save shortly, together with anything else that changes meanwhile
+        (Home Assistant writes it on shutdown if it's still waiting)."""
+        self._store.async_delay_save(self._payload, RUN_SAVE_DELAY_SECONDS)
 
     async def async_reload(self) -> None:
         """Restart every schedule and watcher from the current routine list."""
@@ -1895,7 +1929,7 @@ class HomeRoutinesCoordinator:
             rid, H_EXPIRE, async_track_point_in_time(self.hass, _expire, ends)
         )
         if newly:
-            self._spawn(self._async_save())
+            self._save_soon()
         return True
 
     def _resume_waiting(self, routine: dict[str, Any], now: datetime) -> None:
@@ -1916,7 +1950,7 @@ class HomeRoutinesCoordinator:
         rid = routine["id"]
         rt = self._rt(rid)
         if rt["pending_date"] is not None:
-            self._spawn(self._async_save())
+            self._save_soon()
         rt["pending_date"] = None
         rt["pending_since"] = None
         self._drop_handle(rid, H_EXPIRE)
@@ -2609,7 +2643,7 @@ class HomeRoutinesCoordinator:
             ):
                 self._start_state_run(routine)
         if changed:
-            self._spawn(self._async_save())
+            self._save_soon()
 
     # ----- starting everything -----
 
@@ -3004,6 +3038,7 @@ class HomeRoutinesCoordinator:
                 self._record(rid, "skipped", "skipped_once")
                 self._fire_event(EVENT_ROUTINE_SKIPPED, routine, "skipped_once")
                 self.revision += 1
+                # Written now: a restart mustn't skip it a second time.
                 await self._async_save()
                 self._notify_listeners()
                 return False
@@ -3044,7 +3079,7 @@ class HomeRoutinesCoordinator:
             self._record(rid, "failed", f"{result} – waiting to finish")
             self._arm_pending(routine, dt_util.now())
             self._fire_event(EVENT_ROUTINE_FINISHED, routine, result)
-            await self._async_save()
+            self._save_soon()
             self._notify_listeners()
             return False
 
@@ -3108,7 +3143,7 @@ class HomeRoutinesCoordinator:
             self._plan_retry(routine, tries + 1)
         if (before := rt.pop("power_before", None)) is not None:
             self._spawn(self._read_power_after(rid, *before))
-        await self._async_save()
+        self._save_soon()
         self._notify_listeners()
 
     def _plan_retry(self, routine: dict[str, Any], tries: int) -> None:
@@ -4208,7 +4243,7 @@ class HomeRoutinesCoordinator:
             {"at": dt_util.now().isoformat(), "before": before, "after": after}
         )
         del readings[:-POWER_RUNS]
-        await self._async_save()
+        self._save_soon()
         self._notify_listeners()
 
     def power_of(self, routine_id: str) -> dict[str, Any] | None:

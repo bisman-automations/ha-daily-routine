@@ -115,6 +115,9 @@ class LivedIn:
         self.coordinator = coordinator
         self.hass = coordinator.hass
         self._unsub: Callable[[], None] | None = None
+        # Started (between start and stop); the timer itself runs only while
+        # lived-in is on or it still has lights to turn off (sync).
+        self._running = False
         self._next: datetime | None = None
         # Lights this turned on, so only those are turned off again.
         self.ours: set[str] = set()
@@ -126,9 +129,24 @@ class LivedIn:
 
     def start(self) -> None:
         self.stop()
-        self._unsub = async_track_time_interval(self.hass, self._tick, TICK)
+        self._running = True
+        self.sync()
 
     def stop(self) -> None:
+        self._running = False
+        self._disarm()
+
+    def sync(self) -> None:
+        """Tick every minute only while there's something to do: lived-in is
+        on, or lights it turned on still have to go off. Settings changes
+        call ``async_step``, which ends here."""
+        wanted = self._running and bool(self.settings["enabled"] or self.ours)
+        if wanted and self._unsub is None:
+            self._unsub = async_track_time_interval(self.hass, self._tick, TICK)
+        elif not wanted:
+            self._disarm()
+
+    def _disarm(self) -> None:
         if self._unsub is not None:
             self._unsub()
             self._unsub = None
@@ -166,6 +184,12 @@ class LivedIn:
 
     async def async_step(self, now: datetime) -> None:
         """Change one light when it's time, or turn them all off when it's over."""
+        try:
+            await self._step(now)
+        finally:
+            self.sync()
+
+    async def _step(self, now: datetime) -> None:
         if not self.active(now):
             self._next = None
             if self.ours:

@@ -5,6 +5,16 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.31.1] - 2026-11-15
+
+### Changed
+
+- **One update at a time.** When lots of things change at once (a burst of sensors, a routine's steps), the routine status sensors and the sidebar are now updated once for that moment instead of once per change. With 40 routines, a burst of 300 sensor changes did about 1,600 status checks; it now does 40. The pause switch, House mode and Kind of day still update straight away, so automations that change them and read them back see the new value.
+- **Fewer writes while routines run.** What routines save while they run (waiting, done, failed, power used) is now written once a couple of seconds later, together with everything else that changed, instead of after every step. Your own changes (saving a routine, settings, skipping, pausing) are still written straight away, and Home Assistant writes anything still waiting when it shuts down.
+- **Habits cost less.** Daily Routine now only looks at changes to lights, switches, fans and the like when it learns your habits (Home Assistant skips the rest before asking it), drops old habit notes from the oldest end instead of reading them all again, and works out habit ideas again only when something they depend on changes.
+- **Lived-in lights rest when off.** The once-a-minute check now runs only while lived-in lights are on, or still have lights to turn off.
+- **Sidebar and card push.** Live updates are built once for every open screen, aren't sent when nothing changed, and a sidebar in a hidden tab or on a switched-off screen catches up once when it's seen again instead of redrawing every time.
+
 ## [1.31.0] - 2026-11-15
 
 ### Added
@@ -513,6 +523,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.31.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.31.0...v1.31.1
 [1.31.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.30.0...v1.31.0
 [1.30.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.29.0...v1.30.0
 [1.29.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.28.0...v1.29.0

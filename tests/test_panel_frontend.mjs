@@ -2288,3 +2288,43 @@ test("restart report and coming-home summary settings show", () => {
   assert.match(panel.shadowRoot.innerHTML, /data-report-setting="missed_report" checked/);
   assert.match(panel.shadowRoot.innerHTML, /data-report-setting="away_summary" >/);
 });
+
+// ----- 1.31.1: less work -----
+
+test("a hidden page keeps the newest status and draws it when seen again", () => {
+  const panel = makePanel();
+  let renders = 0;
+  panel._render = () => { renders += 1; };
+  const listeners = {};
+  globalThis.document = {
+    hidden: true,
+    addEventListener: (name, fn) => { listeners[name] = fn; },
+    removeEventListener: (name) => { delete listeners[name]; },
+  };
+  const base = { revision: panel._data.revision, paused: false, log_count: 0, mode: "home" };
+  panel._onStatus({ ...base, statuses: { a: { state: "running" } } });
+  panel._onStatus({ ...base, statuses: { a: { state: "idle" } } });
+  assert.equal(renders, 0);
+  assert.equal(panel._hiddenStatus.statuses.a.state, "idle");
+  globalThis.document.hidden = false;
+  listeners.visibilitychange();
+  assert.equal(renders, 1);
+  assert.equal(panel._data.statuses.a.state, "idle");
+  assert.equal(panel._hiddenStatus, null);
+  panel.disconnectedCallback();
+  assert.equal(listeners.visibilitychange, undefined);
+  delete globalThis.document;
+});
+
+test("countdowns don't update while the page is hidden", () => {
+  const panel = makePanel();
+  let asked = 0;
+  panel.shadowRoot.querySelectorAll = () => { asked += 1; return []; };
+  globalThis.document = { hidden: true };
+  panel._updateCountdowns();
+  assert.equal(asked, 0);
+  globalThis.document.hidden = false;
+  panel._updateCountdowns();
+  assert.ok(asked > 0);
+  delete globalThis.document;
+});

@@ -79,7 +79,7 @@ async def test_progress_shows_the_step_and_clears_after(hass: HomeAssistant):
     coord = await _started(hass, routine)
     seen: list[Any] = []
     coord.async_add_listener(
-        lambda: seen.append(coord.get_status("routine_one")["progress"])
+        lambda: seen.append(coord.get_status("routine_one")["progress"]), now=True
     )
     result = await coord.async_start_run("routine_one")
     assert result == {"started": True, "ran": None, "reason": None}
