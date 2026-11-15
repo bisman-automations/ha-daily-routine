@@ -123,6 +123,7 @@ class DailyRoutineCard extends HTMLElement {
         const until = el.dataset.pause === "1" ? `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}` : null;
         await this._hass.callWS({ type: `${DOMAIN}/group/pause`, group: this._config.group, until });
       }
+      else if (el.dataset.act === "tick") await this._hass.callWS({ type: `${DOMAIN}/routine/tick`, routine_id: id, item: el.dataset.item, done: el.dataset.done === "1" });
       else if (el.dataset.act === "answer") await this._hass.callWS({ type: `${DOMAIN}/routine/answer`, routine_id: id, run: el.dataset.run === "1" });
       this._note = null;
     } catch (err) {
@@ -145,7 +146,11 @@ class DailyRoutineCard extends HTMLElement {
         if (s.state === "running") {
           rows.push(`<li class="row running"><div class="when">Now</div><div class="what"><strong>${esc(s.name)}</strong>
             <div class="progress"><div class="bar" data-p='${esc(JSON.stringify(s.progress || null))}' style="width:${percent(s.progress)}%"></div></div>
-            <div class="small">${s.progress ? `Step ${s.progress.step} of ${s.progress.total} · ${esc(s.progress.label)}` : "Starting…"}</div></div></li>`);
+            <div class="small">${s.progress ? `Step ${s.progress.step} of ${s.progress.total} · ${esc(s.progress.label)}` : "Starting…"}</div>
+            ${s.ticklist ? `<div class="buttons">${s.ticklist.items.map((item) => {
+              const done = (s.ticklist.ticked || []).includes(item);
+              return `<button class="${done ? "" : "ghost"}" data-act="tick" data-id="${esc(id)}" data-item="${esc(item)}" data-done="${done ? "" : "1"}">${done ? "✓" : "○"} ${esc(item)}</button>`;
+            }).join("")}</div>` : ""}</div></li>`);
         } else if (s.state === "asking") {
           rows.push(`<li class="row asking"><div class="when">Now</div><div class="what"><strong>${esc(s.name)}</strong>
             <div class="small">Run it now?</div>

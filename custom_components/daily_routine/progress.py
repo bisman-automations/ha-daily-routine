@@ -97,6 +97,13 @@ def step_label(
     if "wait_cheaper" in action:
         hours = action["wait_cheaper"]["minutes"] / 60
         return f"Wait for the cheapest electricity in the next {hours:g} hours"
+    if "check_battery" in action:
+        return f"Check batteries under {action['check_battery']['below']}%"
+    if "tick_list" in action:
+        count = len(action["tick_list"]["items"])
+        return (
+            f"Wait for {count} {'thing' if count == 1 else 'things'} to be ticked off"
+        )
     if "check_open" in action:
         count = len(action["check_open"]["entity_id"])
         return (

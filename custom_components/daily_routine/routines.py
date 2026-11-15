@@ -6,6 +6,7 @@ from datetime import date
 import re
 from typing import Any
 
+from .battery import DEFAULT_BELOW
 from .checklist import CHECKABLE, MAX_CHECKED
 from .const import (
     MAX_ACTIONS,
@@ -34,6 +35,7 @@ from .const import (
 )
 from .schema import vol
 from .todo import MAX_ITEM_LENGTH, normalize_todo_step
+from .weather_shift import clean_hot_shift
 
 ROUTINE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 SERVICE_RE = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*$")
@@ -458,6 +460,41 @@ def _normalize_step(raw: dict[str, Any], index: int) -> dict[str, Any]:
                 "day_type": bool(brief.get("day_type", True)),
             }
         }
+    if "check_battery" in raw:
+        check = raw.get("check_battery")
+        if not isinstance(check, dict):
+            check = {}
+        try:
+            level = int(check.get("below", DEFAULT_BELOW))
+        except (TypeError, ValueError) as err:
+            raise vol.Invalid(f"Step {index}: give the battery level.") from err
+        if not 1 <= level <= 99:
+            raise vol.Invalid(f"Step {index}: the battery level is 1 to 99%.")
+        return {"check_battery": {"below": level}}
+    if "tick_list" in raw:
+        ticks = raw.get("tick_list")
+        if not isinstance(ticks, dict):
+            raise vol.Invalid(f"Step {index}: list the things to tick off.")
+        items = [
+            " ".join(str(i).split())[:60]
+            for i in ticks.get("items") or []
+            if str(i or "").strip()
+        ]
+        items = list(dict.fromkeys(items))
+        if not 1 <= len(items) <= MAX_TICKS:
+            raise vol.Invalid(f"Step {index}: 1 to {MAX_TICKS} things to tick off.")
+        try:
+            minutes = int(ticks.get("minutes", 30))
+        except (TypeError, ValueError) as err:
+            raise vol.Invalid(f"Step {index}: give the minutes to wait.") from err
+        if not 1 <= minutes <= 240:
+            raise vol.Invalid(f"Step {index}: wait 1 to 240 minutes.")
+        timeout = ticks.get("on_timeout") or "continue"
+        if timeout not in ("continue", "stop"):
+            raise vol.Invalid(f"Step {index}: go on or stop when time's up.")
+        return {
+            "tick_list": {"items": items, "minutes": minutes, "on_timeout": timeout}
+        }
     if "check_open" in raw:
         check = raw.get("check_open")
         if not isinstance(check, dict):
@@ -598,6 +635,7 @@ DOING_STEPS = {
     "volume_ramp",
     "briefing",
     "check_open",
+    "check_battery",
 }
 
 
@@ -842,6 +880,9 @@ def _conditions_from(
     return conditions
 
 
+MAX_TICKS = 12
+
+
 def normalize_routine(raw: Any) -> dict[str, Any]:
     """Validate a routine from the UI or storage and fill in defaults."""
     if not isinstance(raw, dict):
@@ -1043,6 +1084,12 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         "ignore_holds": bool(raw.get("ignore_holds", False)),
         # Speaker steps still run during quiet hours (Settings), for alarms.
         "loud_ok": bool(raw.get("loud_ok", False)),
+        # On hot days (by the forecast), its time moves by some minutes.
+        "hot_shift": clean_hot_shift(
+            raw.get("hot_shift"),
+            trigger,
+            (TRIGGER_TIME, TRIGGER_SUNRISE, TRIGGER_SUNSET),
+        ),
         # Scheduled runs don't happen while the house is in these modes.
         "skip_modes": _modes(raw.get("skip_modes")),
         # Sunrise and sunset, but not before or after these times ("HH:MM:SS").

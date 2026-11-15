@@ -556,6 +556,13 @@ const LIBRARY = [
     ] },
   },
   {
+    id: "lib_welcome_announce", topic: "Leaving and arriving", title: "Say who's home", scope: "house",
+    hint: "When someone arrives, say “… is home” on a speaker (not during quiet hours). {who} in a message is the person who arrived. Pick the voice and speaker.",
+    draft: { trigger: "someone_arrives", usePeopleList: true, actions: [
+      { service: "tts.speak", targetMode: "entities", fields: { message: "{who} is home." } },
+    ] },
+  },
+  {
     id: "lib_arriving", topic: "Leaving and arriving", title: "Welcome home", scope: "house",
     hint: "When someone arrives: Home mode, and the lights on if it's after sunset (set the hours under Options).",
     draft: { trigger: "someone_arrives", usePeopleList: true, actions: [
@@ -587,6 +594,19 @@ const LIBRARY = [
     draft: { trigger: "value_above", valueClass: "power", valueThreshold: 10, actions: [
       { kind: "wait_until", wEntity: "", wOnValue: true, wBy: "level", wBelow: 5, wAbove: "", wStates: "", wFor: 5, wMinutes: 240, wTimeout: "stop" },
       { service: "notify.persistent_notification", targetMode: "none", fields: { message: "The laundry is done." } },
+    ] },
+  },
+  {
+    id: "lib_batteries", topic: "Chores", title: "Battery check", scope: "house",
+    hint: "Every Sunday at 10:00 am, one notification naming every battery under 20%, so nothing goes flat unnoticed.",
+    draft: { trigger: "time", time: "10:00:00", days: ["sun"], actions: [{ kind: "battery", bBelow: 20 }] },
+  },
+  {
+    id: "lib_bedtime_check", topic: "Evenings", title: "Bedtime checklist", scope: "house",
+    hint: "At 9:30 pm, a checklist shows on the dashboard card; once it's all ticked off, the lights go off.",
+    draft: { trigger: "time", time: "21:30:00", actions: [
+      { kind: "ticks", tItems: "Back door locked\nStove off\nTablets charging", tMinutes: 60, tTimeout: "continue" },
+      { service: "light.turn_off", targetMode: "all_areas", fields: { transition: 1 } },
     ] },
   },
   {
@@ -703,6 +723,35 @@ function filterPicker(el, text) {
 }
 
 // How reliably the routine's devices answered over 30 days.
+// A running routine's checklist: tap a thing to tick it off.
+function tickListHtml(routineId, ticklist) {
+  if (!ticklist) return "";
+  const ticked = new Set(ticklist.ticked || []);
+  return `<ul class="ticklist">${ticklist.items.map((item) => {
+    const done = ticked.has(item);
+    return `<li><button class="${done ? "" : "ghost"}" data-act="tick" data-id="${esc(routineId)}" data-item="${esc(item)}" data-done="${done ? "" : "1"}" aria-pressed="${done}">${done ? "✓" : "○"} ${esc(item)}</button></li>`;
+  }).join("")}</ul>`;
+}
+
+// Routines that keep failing or being skipped, with what to look at.
+function attentionHtml(rows) {
+  if (!rows?.length) return "";
+  return `<section class="card attention"><h3>Not working well</h3>
+    <p class="muted small">These worked on fewer than half of their tries in the last two weeks. <strong>Why not?</strong> and <strong>History</strong> on their cards say more.</p>
+    <ul class="plain">${rows.map((r) => `<li><strong>${esc(r.name)}</strong> <span class="muted small">ran ${r.ran} of ${r.tries} times${r.failed ? ` · failed ${r.failed}` : ""}${r.skipped ? ` · skipped ${r.skipped}` : ""}</span>
+      <button class="ghost" data-act="why" data-id="${esc(r.routine_id)}">Why not?</button></li>`).join("")}</ul></section>`;
+}
+
+// The last 30 days' power change by routine.
+function energyHtml(energy) {
+  const rows = energy?.rows || [];
+  if (!rows.length) return "";
+  const watts = (w) => (Math.abs(w) >= 1000 ? `${Math.round(Math.abs(w) / 100) / 10} kW` : `${Math.round(Math.abs(w))} W`);
+  return `<section class="card"><h3>Power over the last 30 days</h3>
+    <p class="muted small">From the power sensors on the devices each routine changes, a minute after each run.${energy.turned_off ? ` Altogether routines turned off ${esc(watts(energy.turned_off))}.` : ""}</p>
+    <ul class="plain">${rows.map((r) => `<li><strong>${esc(r.name)}</strong> <span class="muted small">${r.runs} ${r.runs === 1 ? "run" : "runs"} · ${r.average_change <= 0 ? "turned off" : "turned on"} ${esc(watts(r.average_change))} a run on average</span></li>`).join("")}</ul></section>`;
+}
+
 // The guest network, while the house is in Guests mode.
 function guestWifiHtml(wifi) {
   if (!wifi) return "";
@@ -1330,6 +1379,7 @@ class DailyRoutinePanel extends HTMLElement {
       active_from: routine.active_from ? hhmm(routine.active_from) : "", active_to: routine.active_to ? hhmm(routine.active_to) : "",
       trigger: routine.trigger, time: routine.time, offset_minutes: routine.offset_minutes || 0, days: [...routine.days],
       random_minutes: routine.random_minutes || 0, skip_modes: [...(routine.skip_modes || [])], ignore_holds: Boolean(routine.ignore_holds), loud_ok: Boolean(routine.loud_ok),
+      hotEntity: routine.hot_shift?.entity_id || "", hotAbove: routine.hot_shift?.above ?? 28, hotMinutes: routine.hot_shift?.minutes ?? -60,
       not_before: routine.not_before ? hhmm(routine.not_before) : "", not_after: routine.not_after ? hhmm(routine.not_after) : "", paused_until: routine.paused_until || "", skip_next: Boolean(routine.skip_next),
       people: [...routine.people], sensors: [...routine.sensors], clear_minutes: routine.clear_minutes,
       conditions: (routine.conditions || []).map((c) => ({ ...c, people: [...(c.people || [])], sensors: [...(c.sensors || [])] })),
@@ -1357,6 +1407,8 @@ class DailyRoutinePanel extends HTMLElement {
         if ("run_routine" in a) return { ...blank, kind: "routine", routine: a.run_routine };
         if ("set_mode" in a) return { ...blank, kind: "mode", mode: a.set_mode };
         if ("briefing" in a) return { ...blank, kind: "briefing", bVoice: a.briefing.voice, bSpeaker: a.briefing.speaker, bWeather: a.briefing.weather || "", entities: [...a.briefing.calendars], bDay: a.briefing.day_type !== false };
+        if ("check_battery" in a) return { ...blank, kind: "battery", bBelow: a.check_battery.below };
+        if ("tick_list" in a) return { ...blank, kind: "ticks", tItems: a.tick_list.items.join("\n"), tMinutes: a.tick_list.minutes, tTimeout: a.tick_list.on_timeout };
         if ("check_open" in a) return { ...blank, kind: "check_open", entities: [...a.check_open.entity_id], cStop: Boolean(a.check_open.stop) };
         if ("wait_cheaper" in a) return { ...blank, kind: "cheaper", cEntity: a.wait_cheaper.entity_id, cMinutes: a.wait_cheaper.minutes };
         if ("volume_ramp" in a) return {
@@ -1418,6 +1470,12 @@ class DailyRoutinePanel extends HTMLElement {
         if (!step.bVoice) throw new Error(`Step ${index + 1}: choose the voice.`);
         if (!step.bSpeaker) throw new Error(`Step ${index + 1}: choose the speaker.`);
         return { briefing: { voice: step.bVoice, speaker: step.bSpeaker, weather: step.bWeather || null, calendars: [...(step.entities || [])], day_type: step.bDay !== false } };
+      }
+      if (step.kind === "battery") return { check_battery: { below: Math.max(1, Math.min(99, Math.round(Number(step.bBelow) || 20))) } };
+      if (step.kind === "ticks") {
+        const items = String(step.tItems || "").split("\n").map((x) => x.trim()).filter(Boolean);
+        if (!items.length) throw new Error(`Step ${index + 1}: list the things to tick off.`);
+        return { tick_list: { items, minutes: Math.max(1, Math.min(240, Math.round(Number(step.tMinutes) || 30))), on_timeout: step.tTimeout === "stop" ? "stop" : "continue" } };
       }
       if (step.kind === "check_open") {
         if (!(step.entities || []).length) throw new Error(`Step ${index + 1}: choose the doors and windows to check.`);
@@ -1513,6 +1571,9 @@ class DailyRoutinePanel extends HTMLElement {
       skip_modes: [...(draft.skip_modes || [])],
       ignore_holds: Boolean(draft.ignore_holds),
       loud_ok: Boolean(draft.loud_ok),
+      hot_shift: ["time", "sunrise", "sunset"].includes(draft.trigger) && draft.hotEntity && Number(draft.hotMinutes)
+        ? { entity_id: draft.hotEntity, above: Number(draft.hotAbove), minutes: Math.round(Number(draft.hotMinutes)) }
+        : null,
       not_before: ["sunrise", "sunset"].includes(draft.trigger) && draft.not_before ? `${draft.not_before}:00`.slice(0, 8) : null,
       not_after: ["sunrise", "sunset"].includes(draft.trigger) && draft.not_after ? `${draft.not_after}:00`.slice(0, 8) : null,
       paused_until: draft.paused_until || null,
@@ -1781,6 +1842,13 @@ class DailyRoutinePanel extends HTMLElement {
         case "add-delay":
           this._draft.actions.push({ _open: true, kind: "delay", seconds: 5, service: "", targetMode: "none", area: "", entities: [], data: "" });
           break;
+        case "tick":
+          try {
+            await this._call({ type: `${DOMAIN}/routine/tick`, routine_id: el.dataset.id, item: el.dataset.item, done: el.dataset.done === "1" });
+          } catch (err) {
+            this._showNotice(err.message || String(err), true);
+          }
+          return;
         case "history": {
           const id = el.dataset.id;
           this._history = this._history || {};
@@ -1931,6 +1999,8 @@ class DailyRoutinePanel extends HTMLElement {
           else if (kind === "scene") this._draft.actions.push({ ...blank, kind, entities: [], saved: {}, transition: "" });
           else if (kind === "briefing") this._draft.actions.push({ ...blank, kind, bVoice: (this._data.all_entities || []).find((e) => e.entity_id.startsWith("tts."))?.entity_id || "", bSpeaker: "", bWeather: this._data.weathers?.[0]?.entity_id || "", entities: [], bDay: true });
           else if (kind === "cheaper") this._draft.actions.push({ ...blank, kind, cEntity: "", cMinutes: 180 });
+          else if (kind === "battery") this._draft.actions.push({ ...blank, kind, bBelow: 20 });
+          else if (kind === "ticks") this._draft.actions.push({ ...blank, kind, tItems: "", tMinutes: 30, tTimeout: "continue" });
           else if (kind === "check_open") this._draft.actions.push({ ...blank, kind, entities: this._openings().map((e) => e.entity_id), cStop: false });
           else if (kind === "ramp") this._draft.actions.push({ ...blank, kind, entities: [], rFrom: 5, rTo: 30, rMinutes: 10 });
           else this._draft.actions.push({ ...blank, kind: "mode", mode: "night" });
@@ -2605,6 +2675,7 @@ class DailyRoutinePanel extends HTMLElement {
           <div class="muted small">Next: ${esc(formatTime(status.next_run))}${esc(reason)}${detail}</div>
           ${waitLine}${this._skipHtml(routine)}
           ${state === "running" ? progressHtml(status.progress) : ""}
+          ${state === "running" ? tickListHtml(routine.id, status.ticklist) : ""}
           ${powerHtml(status.power)}${reliabilityHtml(status.reliability)}
           <div class="muted small">Linked to: ${esc(this._linkedName(routine.device_id))}</div>
           ${this._historyHtml(status)}
@@ -3027,6 +3098,7 @@ class DailyRoutinePanel extends HTMLElement {
       .join("")}</div>`;
     const a = this._activity;
     if (!a) return `${windows}<p class="muted">Loading activity…</p>`;
+    const energy = energyHtml(this._data.energy);
 
     const t = a.totals;
     const tile = (label, value) => `<div class="tile"><span class="muted small">${esc(label)}</span><strong>${esc(String(value))}</strong></div>`;
@@ -3074,7 +3146,7 @@ class DailyRoutinePanel extends HTMLElement {
 
     return `${windows}
       ${tiles}
-      ${attentionCard}
+      ${attentionCard}${energy}
       <section class="card"><h3>Runs per day</h3>${days}</section>
       <section class="card"><h3>Why runs failed</h3>${reasonList(a.failure_reasons, "No failures in this period.")}</section>
       <section class="card"><h3>Why runs were skipped</h3><p class="muted small">Triggered, but the conditions were not met, so nothing ran.</p>${reasonList(a.skip_reasons, "Nothing was skipped in this period.")}</section>
@@ -3226,6 +3298,8 @@ class DailyRoutinePanel extends HTMLElement {
       <p class="muted small">While the house is in one of the modes below (Away or Vacation to start with), the lights you pick turn on and off at random in the evening, a few at a time, so the house looks lived in. They're turned off again at the end, and when you come home.</p>
       <label class="check"><input type="checkbox" data-lived="enabled" ${li.enabled ? "checked" : ""}> Turn on lived-in lights</label>
       ${status.active ? `<p class="pill run">On now${on.length ? `: ${esc(on.join(", "))}` : ""}</p>` : ""}
+      <label>How<select data-lived="pattern"><option value="random" ${li.pattern !== "last_week" ? "selected" : ""}>At random, a few at a time</option><option value="last_week" ${li.pattern === "last_week" ? "selected" : ""}>Like last week: the lights you switched by hand a week ago, at the same times</option></select></label>
+      <p class="muted small">Like last week uses what you did by hand on the same evening a week earlier; on an evening with nothing to copy, it goes back to random.</p>
       <h4>In these modes</h4><div class="chips">${modes}</div>
       <div class="inline">
         <label>From<select data-lived="startKind" data-rerender>
@@ -3339,6 +3413,7 @@ class DailyRoutinePanel extends HTMLElement {
     const startTime = root.querySelector('[data-lived="start"]')?.value;
     const lived = {
       enabled: Boolean(root.querySelector('[data-lived="enabled"]')?.checked),
+      pattern: root.querySelector('[data-lived="pattern"]')?.value || current.pattern || "random",
       lights: picked("light"),
       modes: picked("mode"),
       start: startKind === "sunset" ? "sunset" : (startTime || (current.start !== "sunset" && current.start) || "18:00"),
@@ -3387,7 +3462,7 @@ class DailyRoutinePanel extends HTMLElement {
       const r = routine(w.routine_id);
       return `<li>${esc(w.name)} <span class="muted small">· ${esc(r ? this._describeTrigger(r) : "")}</span></li>`;
     }).join("");
-    const runningRows = running.map((r) => `<li class="tl running"><span class="tl-time">Now</span><span class="tl-body"><strong>${esc(r.name)}</strong>${progressHtml(this._data.statuses[r.id].progress)}</span></li>`).join("");
+    const runningRows = running.map((r) => `<li class="tl running"><span class="tl-time">Now</span><span class="tl-body"><strong>${esc(r.name)}</strong>${progressHtml(this._data.statuses[r.id].progress)}${tickListHtml(r.id, this._data.statuses[r.id].ticklist)}</span></li>`).join("");
     const habits = this._habitCards();
     return `<p class="muted small">House mode: <strong>${esc(modeName(t.mode))}</strong>${this._data.day_type && (this._data.settings?.day_types || []).length ? ` · ${esc(this._data.day_type)}` : ""}${t.paused ? " · all routines are paused" : ""}</p>
       ${this._data.hold ? `<p class="pill warn">Calendar hold: ${esc(this._data.hold)}. Routines don't run on their own until it's over.</p>` : ""}
@@ -3488,7 +3563,7 @@ class DailyRoutinePanel extends HTMLElement {
   }
 
   _renderAll() {
-    return `${this._awayCard()}<div class="toolbar"><input type="search" data-search value="${esc(this._query || "")}"
+    return `${this._awayCard()}${attentionHtml(this._data.attention)}<div class="toolbar"><input type="search" data-search value="${esc(this._query || "")}"
         placeholder="Search by name, room, device, trigger or day" aria-label="Search routines"></div>
       <div class="muted small" data-count>${esc(this._countText())}</div>
       <div class="list" data-results>${this._allResults()}</div>`;
@@ -3828,6 +3903,7 @@ class DailyRoutinePanel extends HTMLElement {
           <p class="muted small">For example sunset, but not before 18:00 in winter and not after 20:00 in summer.</p>` : ""}
         ${timeBased && (this._editorMode() === "full" || Number(d.random_minutes)) ? `<label>Vary the time by up to (minutes, earlier or later)<input type="number" min="0" max="120" data-f="random_minutes" value="${esc(d.random_minutes || 0)}"></label>
         <p class="muted small">A different time each day, so lights while you're away don't look like a timer. 0 runs at the same time every day.</p>` : ""}
+        ${timeBased && (this._data.weathers || []).length && (this._editorMode() === "full" || d.hotEntity) ? this._hotFields(d) : ""}
         ${timeBased || valueTrigger || stateTrigger || todoDone || planned ? `<div class="chips">${days}</div>` : ""}
         ${presence ? this._zoneField(d) : ""}
         ${presence ? `<h4>Who</h4><p class="muted small">Pick the people this routine watches. People without location tracking can't be checked.</p><div class="checks">${peopleList}</div>
@@ -3934,6 +4010,15 @@ class DailyRoutinePanel extends HTMLElement {
         </div>`;
   }
 
+  // On hot days (by the forecast), the time moves.
+  _hotFields(d) {
+    const weathers = this._data.weathers || [];
+    return `<label>On hot days<select data-f="hotEntity" data-rerender><option value="">Same time every day</option>${weathers.map((w) => `<option value="${esc(w.entity_id)}" ${w.entity_id === d.hotEntity ? "selected" : ""}>${esc(w.name)}</option>`).join("")}</select></label>
+      ${d.hotEntity ? `<div class="inline"><label>When the high is at least<input type="number" step="0.5" data-f="hotAbove" value="${esc(d.hotAbove ?? 28)}"></label>
+      <label>Move it by (minutes, negative is earlier)<input type="number" min="-180" max="180" data-f="hotMinutes" value="${esc(d.hotMinutes ?? -60)}"></label></div>` : ""}
+      ${d.hotEntity ? `<p class="muted small">For example close the blinds an hour earlier when the forecast says 30° or more. Without a forecast it runs at its usual time.</p>` : ""}`;
+  }
+
   _stepsBody(d) {
     const roomId = d.room || null;
     const steps = d.actions.map((step, i) => this._stepEditor(step, i, roomId)).join("");
@@ -3946,7 +4031,9 @@ class DailyRoutinePanel extends HTMLElement {
           <button class="ghost" data-act="add-kind" data-kind="ramp">+ Turn the volume up slowly</button>
           <button class="ghost" data-act="add-kind" data-kind="cheaper">+ Wait for cheaper electricity</button>
           <button class="ghost" data-act="add-kind" data-kind="briefing">+ Say the day ahead</button>
-          <button class="ghost" data-act="add-kind" data-kind="check_open">+ Check doors and windows</button></div>`;
+          <button class="ghost" data-act="add-kind" data-kind="check_open">+ Check doors and windows</button>
+          <button class="ghost" data-act="add-kind" data-kind="battery">+ Check batteries</button>
+          <button class="ghost" data-act="add-kind" data-kind="ticks">+ Wait for a checklist</button></div>`;
   }
 
   _askBody(d) {
@@ -4277,7 +4364,11 @@ class DailyRoutinePanel extends HTMLElement {
     else if (step.kind === "routine") text = `Run ${this._data.routines.find((r) => r.id === step.routine)?.name || "another routine"}`;
     else if (step.kind === "mode") text = `Set the house to ${modeName(step.mode || "home")}`;
     else if (step.kind === "briefing") text = step.bSpeaker ? `Say the day ahead on ${this._nameFor(step.bSpeaker)}` : "Say the day ahead";
-    else if (step.kind === "check_open") text = step.entities?.length ? `Tell me if any of ${step.entities.length} doors and windows is open` : "Check doors and windows";
+    else if (step.kind === "battery") text = `Tell me about batteries under ${step.bBelow ?? 20}%`;
+    else if (step.kind === "ticks") {
+      const count = String(step.tItems || "").split("\n").filter((x) => x.trim()).length;
+      text = count ? `Wait for ${count} ${count === 1 ? "thing" : "things"} to be ticked off` : "Wait for a checklist";
+    } else if (step.kind === "check_open") text = step.entities?.length ? `Tell me if any of ${step.entities.length} doors and windows is open` : "Check doors and windows";
     else if (step.kind === "cheaper") text = step.cEntity ? `Wait for the cheapest electricity in the next ${Math.round((Number(step.cMinutes) || 180) / 60 * 10) / 10} hours` : "Wait for cheaper electricity";
     else if (step.kind === "ramp") text = step.entities?.length
       ? `Volume of ${names(step.entities)} from ${step.rFrom ?? 5}% to ${step.rTo ?? 30}% over ${step.rMinutes || 10} min`
@@ -4325,7 +4416,9 @@ class DailyRoutinePanel extends HTMLElement {
       <option value="ramp" ${step.kind === "ramp" ? "selected" : ""}>Turn the volume up slowly</option>
       <option value="cheaper" ${step.kind === "cheaper" ? "selected" : ""}>Wait for cheaper electricity</option>
       <option value="briefing" ${step.kind === "briefing" ? "selected" : ""}>Say the day ahead</option>
-      <option value="check_open" ${step.kind === "check_open" ? "selected" : ""}>Check doors and windows</option></select></label>`;
+      <option value="check_open" ${step.kind === "check_open" ? "selected" : ""}>Check doors and windows</option>
+      <option value="battery" ${step.kind === "battery" ? "selected" : ""}>Check batteries</option>
+      <option value="ticks" ${step.kind === "ticks" ? "selected" : ""}>Wait for a checklist</option></select></label>`;
     const onlyIf = this._onlyIf(step, i);
     if (step.kind === "scene") {
       step.saved ||= {};
@@ -4354,6 +4447,20 @@ class DailyRoutinePanel extends HTMLElement {
         <h4>Today's events from</h4>
         <div class="checks">${this._calendars().map((e) => checkbox("sentity", e.entity_id, e.name, step.entities.includes(e.entity_id), i)).join("") || `<p class="muted small">No calendars found.</p>`}</div>
         <label class="check"><input type="checkbox" data-si="${i}" data-sf="bDay" ${step.bDay !== false ? "checked" : ""}> Say the kind of day (from Settings → Kinds of day)</label>
+        ${onlyIf}</div>`;
+    }
+    if (step.kind === "battery") {
+      return `<div class="step">${head}${kind}
+        <p class="muted small">Looks at every battery in the house and sends one notification naming those running low (“Low batteries: Back door 12%, Smoke alarm (low)”). Nothing is sent when they're all fine. Good as a weekly routine.</p>
+        <label>Tell me about batteries under (%)<input type="number" min="1" max="99" data-si="${i}" data-sf="bBelow" value="${esc(step.bBelow ?? 20)}"></label>
+        ${onlyIf}</div>`;
+    }
+    if (step.kind === "ticks") {
+      return `<div class="step">${head}${kind}
+        <p class="muted small">Shows a checklist on the routine's card, the Today tab and the dashboard card, and waits until everything is ticked off, such as a bedtime check: back door locked, stove off, kids' tablets charging.</p>
+        <label>Things to tick off, one on each line<textarea rows="4" data-si="${i}" data-sf="tItems">${esc(step.tItems || "")}</textarea></label>
+        <div class="inline"><label>Wait up to (minutes)<input type="number" min="1" max="240" data-si="${i}" data-sf="tMinutes" value="${esc(step.tMinutes ?? 30)}"></label>
+        <label>If it isn't done by then<select data-si="${i}" data-sf="tTimeout"><option value="continue" ${step.tTimeout !== "stop" ? "selected" : ""}>Go on with the rest</option><option value="stop" ${step.tTimeout === "stop" ? "selected" : ""}>Stop the routine</option></select></label></div>
         ${onlyIf}</div>`;
     }
     if (step.kind === "check_open") {
@@ -4722,6 +4829,9 @@ const STYLES = `<style>
   .history-chart .axis { font-size: 9px; fill: var(--secondary-text-color); }
   .guest-wifi .wifi-line { display: flex; flex-direction: column; margin: 6px 0; font-size: 20px; }
   .mono { font-family: var(--code-font-family, monospace); letter-spacing: .03em; }
+  .ticklist { list-style: none; padding: 0; margin: 6px 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .ticklist button { font-size: 15px; padding: 8px 12px; }
+  .attention li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0; }
   .dry-steps { margin: 4px 0 0; padding-left: 18px; color: var(--secondary-text-color); }
   .key.fail { background: var(--error-color, #db4437); }
   .key.skip { background: var(--warning-color, #ffa600); }

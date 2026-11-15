@@ -37,7 +37,35 @@ DEFAULT = {
     "start": "sunset",
     "end": "23:00",
     "modes": ["away", "vacation"],
+    # "random", or "last_week": what was done by hand a week ago, same time.
+    "pattern": "random",
 }
+PATTERNS = ("random", "last_week")
+
+
+def replay_wanted(
+    events: list[dict[str, Any]], lights: list[str], now: datetime
+) -> dict[str, bool] | None:
+    """Each light's state a week ago at this time, from what was done by hand
+    that evening (``habits`` events: {e, on, at}). None when nothing was done
+    to these lights that day, so the random pattern takes over."""
+    then = now - timedelta(days=7)
+    start = then.replace(hour=12, minute=0, second=0, microsecond=0)
+    wanted: dict[str, bool] = {}
+    seen_any = False
+    for event in sorted(events, key=lambda e: str(e.get("at"))):
+        entity = event.get("e")
+        if entity not in lights:
+            continue
+        at = dt_util.parse_datetime(str(event.get("at") or ""))
+        if at is None:
+            continue
+        at = dt_util.as_local(at)
+        if start <= at <= then + timedelta(hours=12):
+            seen_any = True
+        if start <= at <= then:
+            wanted[entity] = bool(event.get("on"))
+    return wanted if seen_any else None
 
 
 def clean_settings(raw: Any) -> dict[str, Any]:
@@ -62,8 +90,12 @@ def clean_settings(raw: Any) -> dict[str, Any]:
     modes = [m for m in MODES if m in (raw.get("modes") or [])]
     if not modes:
         raise vol.Invalid("Pick the house modes for lived-in lights.")
+    pattern = raw.get("pattern") or "random"
+    if pattern not in PATTERNS:
+        raise vol.Invalid("Pick random or like last week for lived-in lights.")
     return {
         "enabled": bool(raw.get("enabled")),
+        "pattern": pattern,
         "lights": list(dict.fromkeys(lights)),
         "start": start,
         "end": end,
@@ -139,10 +171,15 @@ class LivedIn:
             if self.ours:
                 await self._switch(sorted(self.ours), on=False)
             return
-        if self._next is not None and now < self._next:
-            return
         lights = [e for e in self.settings["lights"] if self.hass.states.get(e)]
         if not lights:
+            return
+        if self.settings.get("pattern") == "last_week":
+            wanted = replay_wanted(self.coordinator.habits.events, lights, now)
+            if wanted is not None:
+                await self._replay(wanted)
+                return
+        if self._next is not None and now < self._next:
             return
         off = [e for e in lights if e not in self.ours]
         # Keep about half of them on, changing one at a time.
@@ -156,6 +193,15 @@ class LivedIn:
         elif self.ours:
             await self._switch([self.random.choice(sorted(self.ours))], on=False)
         self._next = now + timedelta(minutes=self.random.randint(MIN_GAP, MAX_GAP))
+
+    async def _replay(self, wanted: dict[str, bool]) -> None:
+        """Lights as they were a week ago now; off only the ones it turned on."""
+        on = [e for e, state in wanted.items() if state and e not in self.ours]
+        off = [e for e, state in wanted.items() if not state and e in self.ours]
+        if on:
+            await self._switch(on, on=True)
+        if off:
+            await self._switch(off, on=False)
 
     async def _switch(self, entities: list[str], *, on: bool) -> None:
         for entity_id in entities:

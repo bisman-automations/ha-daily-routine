@@ -46,6 +46,7 @@ from homeassistant.util import dt as dt_util, slugify
 
 from .access import async_get_access
 from .away import AwayHelper, clean_summary, summary_or_default, vacation_or_none
+from .battery import battery_text, is_battery, low_batteries
 from .briefing import briefing_text, events_text, weather_text
 from .checklist import checklist_text, left_open
 from .const import (
@@ -85,6 +86,7 @@ from .day_types import (
 )
 from .energy import (
     KEEP_RUNS as POWER_RUNS,
+    month_energy,
     power_sensors,
     read_watts,
     summary as power_summary,
@@ -121,7 +123,7 @@ from .routines import (
     normalize_routine,
     uses_conditions,
 )
-from .run_log import RunLog
+from .run_log import RunLog, needs_attention
 from .schema import vol
 from .todo import (
     FAILED_OUTCOMES,
@@ -132,6 +134,7 @@ from .todo import (
 )
 from .undo import UNDO_FOR, restore, snapshot
 from .voice import Voice
+from .weather_shift import shift_minutes
 from .weekly import clean_weekly, weekly_or_default
 
 _LOGGER = logging.getLogger(__name__)
@@ -297,6 +300,20 @@ def _uses_day_type(routine: dict[str, Any]) -> bool:
             *(a["only_if"] for a in routine["actions"] if a.get("only_if")),
         ]
     )
+
+
+def _with_who(action: dict[str, Any], who: str) -> dict[str, Any]:
+    """A step with "{who}" in its text filled in: "{who} is home"."""
+    data = action.get("data") or {}
+    if not any(isinstance(v, str) and "{who}" in v for v in data.values()):
+        return action
+    return {
+        **action,
+        "data": {
+            k: v.replace("{who}", who) if isinstance(v, str) else v
+            for k, v in data.items()
+        },
+    }
 
 
 def _clamp(when: datetime, routine: dict[str, Any]) -> datetime:
@@ -578,6 +595,8 @@ class HomeRoutinesCoordinator:
         # The forecast of each weather a forecast condition uses (read with
         # the forecast triggers, every FORECAST_EVERY).
         self._forecast_cache: dict[str, list[dict[str, Any]]] = {}
+        # Who just arrived (or left), by routine id: "{who}" in a step's text.
+        self._who: dict[str, str] = {}
         # Power before and after each run, per routine (energy.py).
         self.power: dict[str, list[dict[str, Any]]] = {}
         self.voice = Voice(self)
@@ -862,6 +881,7 @@ class HomeRoutinesCoordinator:
             "hold": None if routine.get("ignore_holds") else self.hold(dt_util.now()),
             "group": routine.get("group", ""),
             "paused_until": self.paused_until(routine),
+            "ticklist": rt.get("ticklist") if rt["state"] == "running" else None,
         }
 
     # ----- lifecycle -----
@@ -1923,7 +1943,7 @@ class HomeRoutinesCoordinator:
             for day_offset in range(-1, 368 if seasonal else 8):
                 candidate_date = (after + timedelta(days=day_offset)).date()
                 base = datetime.combine(candidate_date, target, tzinfo=after.tzinfo)
-                candidate = base + shift(base)
+                candidate = base + shift(base) + self._hot(routine, base)
                 if candidate > after and self._allowed_day(routine, base):
                     return candidate
             return None
@@ -1939,11 +1959,19 @@ class HomeRoutinesCoordinator:
             if event_dt is None:
                 return None
             base = dt_util.as_local(event_dt) + offset
-            candidate = _clamp(base + shift(base), routine)
+            candidate = _clamp(base + shift(base), routine) + self._hot(routine, base)
             if candidate > after and self._allowed_day(routine, base):
                 return candidate
             cursor = event_dt + timedelta(minutes=1)
         return None
+
+    def _hot(self, routine: dict[str, Any], base: datetime) -> timedelta:
+        """How far a hot day (by the forecast) moves this day's run."""
+        rule = routine.get("hot_shift")
+        if not rule:
+            return timedelta()
+        forecast = self._forecast_cache.get(rule["entity_id"])
+        return timedelta(minutes=shift_minutes(rule, forecast, base.date()))
 
     def _next_planned(
         self, routine: dict[str, Any], after: datetime
@@ -2090,6 +2118,19 @@ class HomeRoutinesCoordinator:
                 self._forecast_cache[entity] = forecasts[entity] or []
         for gone in set(self._forecast_cache) - set(self._forecast_entities()):
             del self._forecast_cache[gone]
+        # A new forecast can move a hot-day routine's time.
+        for routine in self.routines:
+            if not routine.get("hot_shift") or not routine["enabled"]:
+                continue
+            moved = shift_minutes(
+                routine["hot_shift"],
+                self._forecast_cache.get(routine["hot_shift"]["entity_id"]),
+                now.date(),
+            )
+            rt = self._rt(routine["id"])
+            if rt.get("hot_moved") != moved:
+                rt["hot_moved"] = moved
+                self._schedule_one(routine, now)
         for routine in routines:
             entity = routine["watch_entity"]
             if entity not in forecasts:
@@ -2120,6 +2161,8 @@ class HomeRoutinesCoordinator:
             ]:
                 if cond["kind"] == "forecast":
                     found.add(cond["entity_id"])
+            if routine.get("hot_shift"):
+                found.add(routine["hot_shift"]["entity_id"])
         return found
 
     async def _read_forecast(self, entity_id: str) -> list[dict[str, Any]] | None:
@@ -2275,6 +2318,8 @@ class HomeRoutinesCoordinator:
             leaves = trigger == TRIGGER_EVERYONE_LEAVES and is_away and not was_away
             arrives = trigger == TRIGGER_SOMEONE_ARRIVES and was_away and not is_away
             if leaves or arrives:
+                new = _event.data.get("new_state")
+                self._note_who(rid, new.name if new else "Someone")
                 self._spawn(self._execute_routine(routine, now, scheduled=True))
 
         unsub = async_track_state_change_event(self.hass, people, _on_change)
@@ -2312,6 +2357,7 @@ class HomeRoutinesCoordinator:
             arrives = trigger == TRIGGER_PERSON_ARRIVES and is_in and not was_in
             now = dt_util.now()
             if (leaves or arrives) and self._allowed_day(routine, now):
+                self._note_who(rid, new.name)
                 self._spawn(self._execute_routine(routine, now, scheduled=True))
 
         unsub = async_track_state_change_event(self.hass, people, _changed)
@@ -3103,6 +3149,34 @@ class HomeRoutinesCoordinator:
                     _trace_mark(rt, "skipped", "Quiet hours")
                 continue
 
+            if "check_battery" in action:
+                acted = True
+                low = self._low_batteries(action["check_battery"]["below"])
+                if not low:
+                    run.details.append("Every battery was fine")
+                    continue
+                text = battery_text(low)
+                run.details.append(text)
+                await self._notify(text, f"{DOMAIN}_battery_{routine['id']}")
+                continue
+
+            if "tick_list" in action:
+                ticked_all = await self._wait_ticks(routine, action["tick_list"])
+                if ticked_all:
+                    run.details.append("Everything was ticked off")
+                    continue
+                run.details.append("Not everything was ticked off in time")
+                if action["tick_list"]["on_timeout"] == "stop":
+                    run.result = "stopped:tick_list"
+                    run.stopped_at = index
+                    if track:
+                        _trace_mark(rt, "stopped", "Not everything was ticked off")
+                    break
+                continue
+
+            if "service" in action and self._who.get(routine["id"]):
+                action = _with_who(action, self._who[routine["id"]])
+
             if "check_open" in action:
                 acted = True
                 found = self._left_open(action["check_open"]["entity_id"])
@@ -3880,6 +3954,58 @@ class HomeRoutinesCoordinator:
             {"entity_id": [brief["voice"]]},
         )
         return None if error is None else f"Couldn't say the briefing: {error}"
+
+    def _note_who(self, routine_id: str, name: str) -> None:
+        """Remember who set off a presence trigger, for "{who}" in its steps."""
+        self._who[routine_id.split("~", 1)[0]] = name
+
+    def _low_batteries(self, below: int) -> list[tuple[str, str]]:
+        readings = [
+            (state.name, state.domain, state.state)
+            for state in self.hass.states.async_all(("sensor", "binary_sensor"))
+            if is_battery(state.domain, dict(state.attributes))
+        ]
+        return low_batteries(readings, below)
+
+    async def _wait_ticks(self, routine: dict[str, Any], ticks: dict[str, Any]) -> bool:
+        """Show a checklist on the dashboard and wait until it's all ticked off."""
+        rt = self._rt(routine["id"])
+        done = asyncio.Event()
+        rt["ticklist"] = {"items": list(ticks["items"]), "ticked": []}
+        rt["tick_done"] = done
+        self._notify_listeners()
+        try:
+            await asyncio.wait_for(done.wait(), ticks["minutes"] * SECONDS_PER_MINUTE)
+        except TimeoutError:
+            return False
+        finally:
+            rt.pop("ticklist", None)
+            rt.pop("tick_done", None)
+            self._notify_listeners()
+        return True
+
+    def async_tick_item(self, routine_id: str, item: str, done: bool) -> list[str]:
+        """Tick (or untick) a thing on a running routine's checklist."""
+        rt = self._rt(routine_id)
+        ticklist = rt.get("ticklist")
+        if not ticklist or item not in ticklist["items"]:
+            raise HomeAssistantError("That checklist isn't showing any more")
+        ticked = [i for i in ticklist["ticked"] if i != item]
+        if done:
+            ticked.append(item)
+        ticklist["ticked"] = [i for i in ticklist["items"] if i in ticked]
+        if len(ticklist["ticked"]) == len(ticklist["items"]) and rt.get("tick_done"):
+            rt["tick_done"].set()
+        self._notify_listeners()
+        return ticklist["ticked"]
+
+    def attention(self, now: datetime) -> list[dict[str, Any]]:
+        """Routines that often fail or are skipped (last 14 days, 3+ tries)."""
+        return needs_attention(self.run_log.events(), now, self.routines)
+
+    def energy_month(self, now: datetime) -> dict[str, Any]:
+        names = {r["id"]: r["name"] for r in self.routines}
+        return month_energy(self.power, names, now)
 
     def _left_open(self, entity_ids: list[str]) -> list[tuple[str, str]]:
         """Which of these devices are open, unlocked or on (checklist.py)."""

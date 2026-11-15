@@ -2209,3 +2209,48 @@ test("tomorrow's dry run and a routine's history chart", () => {
   assert.match(card, /Ran 2 .*Skipped 1 .*Failed 1/);
   assert.match(card, /data-act="history"/);
 });
+
+test("battery and checklist steps round-trip, and the hot-day fields", () => {
+  const panel = makePanel();
+  panel._data.weathers = [{ entity_id: "weather.home", name: "Home" }];
+  const routine = { ...panel._data.routines[0], trigger: "time", time: "18:00:00", hot_shift: { entity_id: "weather.home", above: 30, minutes: -60 },
+    actions: [{ check_battery: { below: 15 } }, { tick_list: { items: ["Stove off", "Door locked"], minutes: 20, on_timeout: "stop" } }] };
+  const draft = panel._draftFromRoutine(routine);
+  assert.equal(draft.actions[0].kind, "battery");
+  assert.equal(draft.actions[1].tItems, "Stove off\nDoor locked");
+  assert.equal(draft.hotEntity, "weather.home");
+  const raw = panel._draftToRaw(draft);
+  assert.deepEqual(raw.actions[0], { check_battery: { below: 15 } });
+  assert.deepEqual(raw.actions[1], { tick_list: { items: ["Stove off", "Door locked"], minutes: 20, on_timeout: "stop" } });
+  assert.deepEqual(raw.hot_shift, { entity_id: "weather.home", above: 30, minutes: -60 });
+  assert.match(panel._stepSummary(draft.actions[1]), /Wait for 2 things to be ticked off/);
+  assert.match(panel._hotFields(draft), /When the high is at least/);
+  assert.equal(panel._draftToRaw({ ...draft, trigger: "manual" }).hot_shift, null);
+  assert.throws(() => panel._draftToRaw({ ...draft, actions: [{ ...draft.actions[1], tItems: "" }] }), /things to tick off/);
+});
+
+test("a running checklist, routines that need a look and the month's power show", () => {
+  const panel = makePanel();
+  const routine = panel._data.routines[0];
+  panel._data.statuses[routine.id] = { state: "running", progress: { step: 1, total: 2, label: "Checklist" }, ticklist: { items: ["Stove off", "Door"], ticked: ["Door"] } };
+  const card = panel._routineCard(routine);
+  assert.match(card, /data-act="tick"[^>]*data-item="Stove off"[^>]*data-done="1"/);
+  assert.match(card, /✓ Door/);
+  panel._data.attention = [{ routine_id: routine.id, name: "Morning curtains", tries: 6, ran: 1, failed: 2, skipped: 3, score: 17 }];
+  panel._view = { name: "all" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /Not working well[\s\S]*Morning curtains[\s\S]*ran 1 of 6 times/);
+  panel._data.energy = { rows: [{ routine_id: "a", name: "Goodnight", runs: 3, total_change: -1500, average_change: -500 }], turned_off: 1500 };
+  panel._activity = structuredClone(activityFixture);
+  panel._view = { name: "activity" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /Power over the last 30 days[\s\S]*turned off 1.5 kW[\s\S]*Goodnight/);
+});
+
+test("lived-in lights can copy last week", () => {
+  const panel = makePanel();
+  panel._data.settings.lived_in = { enabled: true, lights: [], start: "sunset", end: "23:00", modes: ["away"], pattern: "last_week" };
+  panel._view = { name: "settings" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /<option value="last_week" selected>Like last week/);
+});

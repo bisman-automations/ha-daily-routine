@@ -230,3 +230,46 @@ def daily_counts(
         if key in counts:
             counts[key][event["outcome"]] += 1
     return [{"day": day, **row} for day, row in counts.items()]
+
+
+# A routine needs a look when, of its last ATTENTION_DAYS days of tries
+# (at least ATTENTION_MIN), this share or more failed or were skipped.
+ATTENTION_DAYS = 14
+ATTENTION_MIN = 3
+ATTENTION_SHARE = 0.5
+
+
+def needs_attention(
+    events: list[dict[str, Any]], now: datetime, routines: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Enabled routines that keep failing or being skipped, worst first."""
+    since = now - timedelta(days=ATTENTION_DAYS)
+    counts: dict[str, dict[str, int]] = {}
+    for event in events:
+        if _when(event) < since:
+            continue
+        row = counts.setdefault(
+            event["routine_id"], {"ran": 0, "failed": 0, "skipped": 0}
+        )
+        row[event["outcome"]] += 1
+    found = []
+    for routine in routines:
+        if not routine.get("enabled", True):
+            continue
+        found_row = counts.get(routine["id"])
+        if not found_row:
+            continue
+        row = found_row
+        tries = row["ran"] + row["failed"] + row["skipped"]
+        bad = row["failed"] + row["skipped"]
+        if tries >= ATTENTION_MIN and bad / tries >= ATTENTION_SHARE:
+            found.append(
+                {
+                    "routine_id": routine["id"],
+                    "name": routine["name"],
+                    "tries": tries,
+                    **row,
+                    "score": round(100 * row["ran"] / tries),
+                }
+            )
+    return sorted(found, key=lambda r: r["score"])

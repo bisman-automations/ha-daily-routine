@@ -211,6 +211,8 @@ def _overview(
         "day_type": coordinator.day_type(dt_util.now()),
         "hold": coordinator.hold(dt_util.now()),
         "guest_wifi": guest_card(coordinator.settings, coordinator.mode),
+        "attention": coordinator.attention(dt_util.now()),
+        "energy": coordinator.energy_month(dt_util.now()),
         "can_undo_recent": any(
             coordinator.can_undo(r["id"]) for r in coordinator.routines
         ),
@@ -311,6 +313,7 @@ def async_setup_panel_api(hass: HomeAssistant) -> None:
         ws_why,
         ws_history,
         ws_tomorrow,
+        ws_tick,
     ):
         websocket_api.async_register_command(hass, command)
     hass.data[_API_REGISTERED] = True
@@ -872,6 +875,34 @@ def ws_history(
             )
         },
     )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/routine/tick",
+        vol.Required("routine_id"): str,
+        vol.Required("item"): str,
+        vol.Required("done"): bool,
+    }
+)
+@require_access
+@callback
+def ws_tick(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Tick off a thing on a running routine's checklist (the card or panel)."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    try:
+        ticked = coordinator.async_tick_item(
+            msg["routine_id"], msg["item"], msg["done"]
+        )
+    except HomeAssistantError as err:
+        connection.send_error(msg["id"], "not_found", str(err))
+        return
+    connection.send_result(msg["id"], {"ticked": ticked})
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/plan/tomorrow"})
