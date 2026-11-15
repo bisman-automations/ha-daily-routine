@@ -37,6 +37,10 @@ TRIGGER_CALENDAR_EVENT = "calendar_event"
 TRIGGER_FORECAST = "forecast"
 # At the cheapest electricity hour in the routine's hours.
 TRIGGER_CHEAPEST = "cheapest"
+# When an NFC tag is scanned (Home Assistant's tags), or a button is pressed
+# (an event entity: a Pico, a Zigbee remote, a doorbell).
+TRIGGER_TAG = "tag"
+TRIGGER_BUTTON = "button"
 
 TRIGGERS = (
     TRIGGER_TIME,
@@ -57,6 +61,8 @@ TRIGGERS = (
     TRIGGER_CALENDAR_EVENT,
     TRIGGER_FORECAST,
     TRIGGER_CHEAPEST,
+    TRIGGER_TAG,
+    TRIGGER_BUTTON,
 )
 
 ROUTINE_SUBENTRY = "routine"

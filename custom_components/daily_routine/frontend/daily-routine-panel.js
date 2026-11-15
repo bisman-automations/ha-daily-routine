@@ -27,6 +27,8 @@ const TRIGGER_LABELS = {
   calendar_event: "Before (or after) a calendar event",
   forecast: "When the forecast shows rain, snow or a freeze",
   cheapest: "At the cheapest electricity hour",
+  tag: "When an NFC tag is scanned",
+  button: "When a button is pressed",
   manual: "Only when I press Run",
 };
 // The simple editor's optional sections, added with a chip.
@@ -38,7 +40,7 @@ const SIMPLE_SECTIONS = [
 const MODES = [["home", "Home"], ["away", "Away"], ["night", "Night"], ["guests", "Guests"], ["vacation", "Vacation"]];
 const modeName = (mode) => (MODES.find(([id]) => id === mode) || [mode, mode])[1];
 // Triggers a routine can have as well as its own ("Or also when").
-const MORE_TRIGGER_KINDS = ["time", "sunrise", "sunset", "everyone_leaves", "someone_arrives", "person_leaves", "person_arrives", "value_above", "value_below", "state_is", "mode_changes", "alarm", "calendar_event"];
+const MORE_TRIGGER_KINDS = ["time", "sunrise", "sunset", "everyone_leaves", "someone_arrives", "person_leaves", "person_arrives", "value_above", "value_below", "state_is", "mode_changes", "alarm", "calendar_event", "tag", "button"];
 const MAX_MORE_TRIGGERS = 4;
 const WEATHER_NAMES = {
   "clear-night": "Clear (night)", cloudy: "Cloudy", exceptional: "Exceptional", fog: "Fog", hail: "Hail", lightning: "Lightning",
@@ -96,7 +98,7 @@ function condToRaw(c) {
 const PRESENCE_TRIGGERS = ["everyone_leaves", "someone_arrives", "person_leaves", "person_arrives"];
 // Triggers that react to something happening. A run they start doesn't wait the
 // rest of the day for its conditions by default: the moment has passed.
-const EVENT_TRIGGERS = [...PRESENCE_TRIGGERS, "value_above", "value_below", "state_is", "todo_done", "mode_changes", "forecast"];
+const EVENT_TRIGGERS = [...PRESENCE_TRIGGERS, "value_above", "value_below", "state_is", "todo_done", "mode_changes", "forecast", "tag", "button"];
 const defaultWait = (trigger) => (EVENT_TRIGGERS.includes(trigger) ? "no" : "day");
 const PER_PERSON_TRIGGERS = ["person_leaves", "person_arrives"];
 const VALUE_TRIGGERS = ["value_above", "value_below"];
@@ -767,6 +769,10 @@ class DailyRoutinePanel extends HTMLElement {
       this._render();
       return;
     }
+    if (this._tags === undefined && this._me?.is_admin) {
+      this._tags = [];
+      this._call({ type: "tag/list" }).then((tags) => { this._tags = Array.isArray(tags) ? tags : []; }).catch(() => {});
+    }
     try {
       const data = await this._call({ type: `${DOMAIN}/overview` });
       const json = JSON.stringify(data);
@@ -927,6 +933,11 @@ class DailyRoutinePanel extends HTMLElement {
     return [main, ...more].join(" · or ");
   }
 
+  _tagName(id) {
+    const tag = (this._tags || []).find((t) => t.id === id);
+    return tag?.name || id || "a tag";
+  }
+
   _describeOne(routine) {
     const when = TRIGGER_LABELS[routine.trigger] || routine.trigger;
     if (routine.trigger === "mode_changes") {
@@ -944,6 +955,11 @@ class DailyRoutinePanel extends HTMLElement {
       return `${[kinds, cold].filter(Boolean).join(" or ")} forecast within ${routine.forecast_hours || 3} h`;
     }
     if (routine.trigger === "cheapest") return `Cheapest hour between ${hhmm(routine.active_from)} and ${hhmm(routine.active_to)}`;
+    if (routine.trigger === "tag") return `Tag “${this._tagName(routine.watch_item)}” is scanned`;
+    if (routine.trigger === "button") {
+      const presses = (routine.watch_states || []).length ? ` (${routine.watch_states.join(" or ")})` : "";
+      return `${this._nameFor(routine.watch_entity)} is pressed${presses}`;
+    }
     const windowText = routine.active_from && routine.active_to ? ` · only ${hhmm(routine.active_from)}–${hhmm(routine.active_to)}` : "";
     if (VALUE_TRIGGERS.includes(routine.trigger)) {
       const level = `${routine.value_threshold}${this._unitSuffix(routine.value_entity)}`;
@@ -1129,7 +1145,13 @@ class DailyRoutinePanel extends HTMLElement {
         if ("wait_until" in a) return {
           ...blank, kind: "wait_until", wEntity: a.wait_until.entity_id, wStates: a.wait_until.states.join(", "),
           wMinutes: a.wait_until.minutes, wTimeout: a.wait_until.on_timeout,
+          wBy: a.wait_until.below != null || a.wait_until.above != null ? "level" : "state",
+          wBelow: a.wait_until.below ?? "", wAbove: a.wait_until.above ?? "", wFor: a.wait_until.for_minutes || 0,
         };
+        if (a.service === "scene.apply") {
+          const saved = a.data?.entities || {};
+          return { ...blank, kind: "scene", entities: Object.keys(saved), saved: structuredClone(saved), transition: a.data?.transition ?? "" };
+        }
         if ("todo" in a) return {
           kind: "todo", todoOp: a.todo.op, todoList: a.todo.list, todoItem: a.todo.item,
           todoDue: a.todo.due ? String(a.todo.due.within ?? "any") : "any",
@@ -1173,9 +1195,23 @@ class DailyRoutinePanel extends HTMLElement {
       if (step.kind === "mode") return { set_mode: step.mode || "home" };
       if (step.kind === "wait_until") {
         if (!step.wEntity) throw new Error(`Step ${index + 1}: choose the device to wait for.`);
-        const states = splitStates(step.wStates);
-        if (!states.length) throw new Error(`Step ${index + 1}: type the state to wait for.`);
-        return { wait_until: { entity_id: step.wEntity, states, minutes: Math.max(1, Math.min(240, Number(step.wMinutes) || 10)), on_timeout: step.wTimeout === "stop" ? "stop" : "continue" } };
+        const level = step.wBy === "level";
+        const states = level ? [] : splitStates(step.wStates);
+        const num = (v) => (v === "" || v == null ? null : Number(v));
+        if (!level && !states.length) throw new Error(`Step ${index + 1}: type the state to wait for.`);
+        if (level && num(step.wBelow) == null && num(step.wAbove) == null) throw new Error(`Step ${index + 1}: type the level to wait for.`);
+        const wait = { entity_id: step.wEntity, states, minutes: Math.max(1, Math.min(240, Number(step.wMinutes) || 10)), on_timeout: step.wTimeout === "stop" ? "stop" : "continue" };
+        if (level && num(step.wBelow) != null) wait.below = num(step.wBelow);
+        if (level && num(step.wAbove) != null) wait.above = num(step.wAbove);
+        if (Number(step.wFor) > 0) wait.for_minutes = Math.min(240, Math.round(Number(step.wFor)));
+        return { wait_until: wait };
+      }
+      if (step.kind === "scene") {
+        const saved = Object.fromEntries(step.entities.filter((id) => step.saved?.[id]).map((id) => [id, step.saved[id]]));
+        if (!Object.keys(saved).length) throw new Error(`Step ${index + 1}: pick the devices and press Save how they look now.`);
+        const data = { entities: saved };
+        if (step.transition !== "" && step.transition != null) data.transition = Number(step.transition) * 60;
+        return { service: "scene.apply", data };
       }
       if (step.kind === "todo") {
         const item = (step.todoItem || "").trim();
@@ -1503,6 +1539,7 @@ class DailyRoutinePanel extends HTMLElement {
           const kind = el.dataset.kind;
           if (kind === "wait_until") this._draft.actions.push({ ...blank, kind, wEntity: "", wStates: "", wMinutes: 10, wTimeout: "continue" });
           else if (kind === "routine") this._draft.actions.push({ ...blank, kind, routine: "" });
+          else if (kind === "scene") this._draft.actions.push({ ...blank, kind, entities: [], saved: {}, transition: "" });
           else this._draft.actions.push({ ...blank, kind: "mode", mode: "night" });
           break;
         }
@@ -1515,6 +1552,61 @@ class DailyRoutinePanel extends HTMLElement {
           const run = el.dataset.run === "1";
           await this._call({ type: `${DOMAIN}/routine/answer`, routine_id: el.dataset.id, run });
           this._showNotice(run ? "Running it now." : "Skipped this time.");
+          return;
+        }
+        case "scene-capture": {
+          const step = this._draft.actions[Number(el.dataset.i)];
+          if (!step.entities.length) throw new Error("Pick the devices first.");
+          step.saved = {};
+          for (const id of step.entities) {
+            const state = this._hass?.states?.[id];
+            if (state) step.saved[id] = captureLook(state);
+          }
+          break;
+        }
+        case "share-open":
+          this._shareFor = this._shareFor === el.dataset.id ? null : el.dataset.id;
+          break;
+        case "share-copy": {
+          const code = this.shadowRoot.querySelector("[data-share-code]")?.value || "";
+          try {
+            await navigator.clipboard.writeText(code);
+            this._showNotice("Copied. Paste it into Daily Routine's Import on another home.");
+          } catch (_err) {
+            this.shadowRoot.querySelector("[data-share-code]")?.select();
+          }
+          return;
+        }
+        case "import-routine": {
+          const code = this.shadowRoot.querySelector("[data-import-code]")?.value || "";
+          const { draft, missing } = this._importRoutine(code);
+          this._draft = draft;
+          this._editorSession = null;
+          this._simpleOpen = null;
+          this._view = { name: "editor", room: draft.room || null };
+          this._preview = null;
+          this._notice = missing.length ? `Imported. Not in this home, so check these steps: ${missing.join(", ")}.` : "Imported. Check it, then Save.";
+          break;
+        }
+        case "vacation-start": {
+          const until = this._awayUntil;
+          if (!until) throw new Error("Pick the last day you're away.");
+          const ids = [...(this._awayPicks || new Set((this._data.routines || []).filter((r) => r.kind !== "todo" && !r.companion_of).map((r) => r.id)))];
+          const lived = this.shadowRoot.querySelector("[data-vacation-lived]")?.checked !== false;
+          const summary = this.shadowRoot.querySelector("[data-vacation-summary]")?.checked !== false;
+          await this._call({ type: `${DOMAIN}/vacation/start`, until, routine_ids: ids, lived_in: lived, summary });
+          this._showNotice(`Enjoy your trip! Vacation until ${formatDay(until)}.`);
+          await this._load();
+          return;
+        }
+        case "vacation-end":
+          await this._call({ type: `${DOMAIN}/vacation/end` });
+          this._showNotice("Welcome home. Everything is back how it was.");
+          await this._load();
+          return;
+        case "summary-send": {
+          const res = await this._call({ type: `${DOMAIN}/summary/send` });
+          this._showNotice(`Sent: ${res.text}`);
           return;
         }
         case "copy-open":
@@ -1676,6 +1768,12 @@ class DailyRoutinePanel extends HTMLElement {
     }
     if (!live && el.dataset.modePick !== undefined) {
       this._setMode(el.value);
+      return;
+    }
+    if (!live && el.dataset.summary !== undefined) {
+      const current = this._data.settings?.daily_summary || { enabled: false, time: "21:00", only_away: false };
+      const value = el.type === "checkbox" ? el.checked : el.value;
+      this._saveSettings({ daily_summary: { ...current, [el.dataset.summary]: value } });
       return;
     }
     if (!live && el.dataset.editorDefault !== undefined) {
@@ -2081,11 +2179,48 @@ class DailyRoutinePanel extends HTMLElement {
         <button class="ghost" data-act="edit" data-id="${esc(routine.id)}">Edit</button>
         <button class="ghost" data-act="duplicate" data-id="${esc(routine.id)}">Duplicate</button>
         ${routine.room ? `<button class="ghost" data-act="copy-open" data-id="${esc(routine.id)}">Copy to rooms</button>` : ""}
+        <button class="ghost" data-act="share-open" data-id="${esc(routine.id)}">Share</button>
         <button class="ghost" data-act="toggle-enabled" data-id="${esc(routine.id)}">${routine.enabled ? "Disable" : "Enable"}</button>
         <button class="ghost danger" data-act="delete" data-id="${esc(routine.id)}">Delete</button>
       </div>
       ${this._copyFor === routine.id ? this._copyPanel(routine) : ""}
+      ${this._shareFor === routine.id ? this._sharePanel(routine) : ""}
     </article>`;
+  }
+
+  // Share a routine as a code another home can import. Rooms travel by name.
+  _sharePanel(routine) {
+    return `<div class="copy-panel">
+      <p class="small">Send this code to someone with Daily Routine. They paste it under <strong>+ New routine</strong> → <strong>Import a routine</strong>. Rooms are matched by name; devices they don't have are pointed out so they can pick their own.</p>
+      <textarea data-share-code readonly rows="4">${esc(shareCode(routine, this._areas()))}</textarea>
+      <div class="row-actions"><button class="primary" data-act="share-copy">Copy</button><button class="ghost" data-act="share-open" data-id="${esc(routine.id)}">Close</button></div>
+    </div>`;
+  }
+
+  // A shared routine as a new draft: its rooms matched by name here.
+  _importRoutine(code) {
+    let shared;
+    try {
+      shared = JSON.parse(decodeURIComponent(escape(atob(code.trim().replace(/^DR1:/, "")))));
+    } catch (_err) {
+      throw new Error("That isn't a Daily Routine code. Copy the whole code and try again.");
+    }
+    if (!shared?.routine?.actions) throw new Error("That isn't a Daily Routine code. Copy the whole code and try again.");
+    const areas = this._areas();
+    const byName = (name) => areas.find((a) => a.name.toLowerCase() === String(name || "").toLowerCase())?.id;
+    const roomFor = (id) => (areas.some((a) => a.id === id) ? id : byName(shared.areas?.[id]));
+    const missing = new Set();
+    const known = new Set((this._data.all_entities || []).map((e) => e.entity_id));
+    const fix = (action) => {
+      if (action.together) return { ...action, together: action.together.map(fix) };
+      const target = action.target ? { ...action.target } : null;
+      if (target?.area_id) target.area_id = target.area_id.map(roomFor).filter(Boolean);
+      for (const id of target?.entity_id || []) if (!known.has(id)) missing.add(id);
+      return target ? { ...action, target } : action;
+    };
+    const routine = { ...shared.routine, room: shared.routine.room ? roomFor(shared.routine.room) || null : null, actions: shared.routine.actions.map(fix) };
+    const draft = { ...this._draftFromRoutine(routine), id: "", isNew: true, enabled: true };
+    return { draft, missing: [...missing] };
   }
 
   // Copy a routine to other rooms: steps aimed at its room aim at each new room.
@@ -2117,8 +2252,16 @@ class DailyRoutinePanel extends HTMLElement {
     const paused = routines.filter((r) => this._pausedDay(r));
     const picks = this._awayPicks || new Set(routines.map((r) => r.id));
     const list = routines.map((r) => `<label class="check"><input type="checkbox" data-away="${esc(r.id)}" ${picks.has(r.id) ? "checked" : ""}> ${esc(r.name)}${this._pausedDay(r) ? ` <span class="muted small">(paused until ${esc(formatDay(this._pausedDay(r)))})</span>` : ""}</label>`).join("");
+    const vacation = this._data.settings?.vacation;
+    if (vacation) {
+      return `<section class="card away vacation-on">
+        <strong>🏖 On vacation until ${esc(formatDay(vacation.until))}</strong>
+        <p class="muted small">The house is in Vacation mode${(vacation.routines || []).length ? `, ${vacation.routines.length} routine${vacation.routines.length === 1 ? " is" : "s are"} paused` : ""}${this._data.settings?.lived_in?.enabled ? ", lived-in lights are on" : ""}${this._data.settings?.daily_summary?.enabled ? ", and a summary comes each evening" : ""}. It all goes back the day after.</p>
+        <div class="row-actions"><button class="primary" data-act="vacation-end">Back home</button></div>
+      </section>`;
+    }
     return `<details class="card away" ${this._awayOpen ? "open" : ""}>
-      <summary><strong>Going away?</strong> <span class="muted small">${paused.length ? `${paused.length} routine${paused.length === 1 ? " is" : "s are"} paused` : "Pause routines until a date"}</span></summary>
+      <summary><strong>Going away?</strong> <span class="muted small">${paused.length ? `${paused.length} routine${paused.length === 1 ? " is" : "s are"} paused` : "Pause routines until a date, or go on vacation"}</span></summary>
       <p class="muted small">Picked routines don't run on their own through the day you choose, then carry on as usual. Run now still works.</p>
       <label>Skip through<input type="date" data-away-until value="${esc(this._awayUntil || "")}" min="${todayIso()}"></label>
       <div class="checks">${list}</div>
@@ -2126,6 +2269,11 @@ class DailyRoutinePanel extends HTMLElement {
         <button class="primary" data-act="away-pause">Pause the picked routines</button>
         ${paused.length ? `<button class="ghost" data-act="away-resume">Resume all</button>` : ""}
       </div>
+      ${this._me?.is_admin ? `<h4>Or go on vacation</h4>
+      <p class="muted small">All in one tap: the house goes to Vacation mode and the picked routines pause through that day. The day after (or when you press Back home) everything goes back how it was.</p>
+      <label class="check"><input type="checkbox" data-vacation-lived checked> Turn on lived-in lights${(this._data.settings?.lived_in?.lights || []).length ? "" : " (pick the lights under Settings)"}</label>
+      <label class="check"><input type="checkbox" data-vacation-summary checked> Send me a summary of what ran each evening</label>
+      <div class="row-actions"><button class="primary" data-act="vacation-start">Start vacation</button></div>` : ""}
     </details>`;
   }
 
@@ -2133,7 +2281,12 @@ class DailyRoutinePanel extends HTMLElement {
   _historyHtml(status) {
     const runs = (status.history || []).slice(0, 5);
     if (!runs.length) return "";
-    const items = runs.map((run) => `<li>${esc(formatTime(run.at))} · ${esc(this._runText(run))}</li>`).join("");
+    const items = runs.map((run) => {
+      const line = `${esc(formatTime(run.at))} · ${esc(this._runText(run))}`;
+      return (run.steps || []).length
+        ? `<li><details class="replay-run"><summary>${line} <span class="muted">· see each step</span></summary>${replayHtml(run.steps)}</details></li>`
+        : `<li>${line}</li>`;
+    }).join("");
     return `<details class="history"><summary class="muted small">Recent runs</summary><ul class="small">${items}</ul></details>`;
   }
 
@@ -2433,7 +2586,7 @@ class DailyRoutinePanel extends HTMLElement {
     const shown = a.recent.filter((e) => filter === "all" || e.outcome === filter);
     const events = shown.length
       ? `<ul class="plain events">${shown
-          .map((e) => `<li><time class="muted small">${esc(fmtTime(e.at))}</time> <strong>${esc(e.name)}</strong> <span class="pill ${e.outcome === "failed" ? "error" : e.outcome === "skipped" ? "warn" : ""}">${ACTIVITY_OUTCOMES[e.outcome] || esc(e.outcome)}</span>${e.reason ? `<div class="muted small">${esc(activityReason(e.reason))}</div>` : ""}${e.outcome === "ran" && e.detail ? `<div class="muted small">${esc(e.detail)}</div>` : ""}</li>`)
+          .map((e) => `<li><time class="muted small">${esc(fmtTime(e.at))}</time> <strong>${esc(e.name)}</strong> <span class="pill ${e.outcome === "failed" ? "error" : e.outcome === "skipped" ? "warn" : ""}">${ACTIVITY_OUTCOMES[e.outcome] || esc(e.outcome)}</span>${e.reason ? `<div class="muted small">${esc(activityReason(e.reason))}</div>` : ""}${e.outcome === "ran" && e.detail ? `<div class="muted small">${esc(e.detail)}</div>` : ""}${(e.steps || []).length ? `<details class="replay-run"><summary class="small">See each step</summary>${replayHtml(e.steps)}</details>` : ""}</li>`)
           .join("")}</ul>`
       : `<p class="muted small">Nothing in this period matches that filter.</p>`;
 
@@ -2492,6 +2645,7 @@ class DailyRoutinePanel extends HTMLElement {
         <div class="checks">${targets}</div>
       </section>
       ${this._editorCard()}
+      ${this._summaryCard()}
       ${this._livedInCard()}
       ${this._renderAccess()}
       ${this._renderIntegrationOrder()}
@@ -2540,6 +2694,18 @@ class DailyRoutinePanel extends HTMLElement {
           <button class="ghost" data-act="order-move" data-scope="${scope}" data-domain="${esc(domain)}" data-by="1" ${i === order.length - 1 ? "disabled" : ""} aria-label="Move ${esc(item.name)} down">↓</button></li>`;
       })
       .join("")}</ol>`;
+  }
+
+  _summaryCard() {
+    const st = this._data.settings?.daily_summary || { enabled: false, time: "21:00", only_away: false };
+    return `<section class="card">
+      <h3>Daily summary</h3>
+      <p class="muted small">A notification each day of what ran, what failed and what was skipped, and why. It goes where notifications go (above).</p>
+      <label class="check"><input type="checkbox" data-summary="enabled" ${st.enabled ? "checked" : ""}> Send a daily summary</label>
+      <label>At<input type="time" data-summary="time" value="${esc(st.time)}"></label>
+      <label class="check"><input type="checkbox" data-summary="only_away" ${st.only_away ? "checked" : ""}> Only while the house is Away or on Vacation</label>
+      <div class="row-actions"><button class="ghost" data-act="summary-send">Send today's now</button></div>
+    </section>`;
   }
 
   _editorCard() {
@@ -2821,7 +2987,10 @@ class DailyRoutinePanel extends HTMLElement {
     const ideas = this._suggestions().filter((i) => !roomId || i.room === roomId);
     const ideaCards = ideas.length ? `<h2 class="small muted">Ideas for your home</h2><div class="ideas">${ideas.map((t) => `<button class="card template idea" data-act="template" data-tpl="${esc(t.id)}" data-room="${esc(t.room || "")}">
         <h3>${esc(t.title)}</h3><div class="muted small">${esc(t.hint)}</div></button>`).join("")}</div><h2 class="small muted">Or start from</h2>` : "";
-    return `${ideaCards}<p class="muted">Start from a template, or a blank routine. You can change everything afterwards.</p>
+    const importBox = `<details class="card import"><summary><strong>Import a routine</strong> <span class="muted small">from a code someone shared</span></summary>
+      <textarea data-import-code rows="4" placeholder="DR1:…"></textarea>
+      <div class="row-actions"><button class="primary" data-act="import-routine">Import</button></div></details>`;
+    return `${ideaCards}${importBox}<p class="muted">Start from a template, or a blank routine. You can change everything afterwards.</p>
       <div class="grid">${options.map((t) => `<button class="card template" data-act="template" data-tpl="${t.id}" data-room="${esc(roomId || "")}">
         <h3>${esc(t.title)}</h3><div class="muted small">${esc(t.hint)}</div></button>`).join("")}</div>`;
   }
@@ -3023,6 +3192,17 @@ class DailyRoutinePanel extends HTMLElement {
         <label>Or the temperature drops below (optional)<input type="number" step="any" data-f="value_threshold" value="${esc(d.value_threshold ?? "")}"></label>
         <p class="muted small">Runs once when the forecast starts showing it, and again only after it has cleared.</p>`;
     }
+    if (d.trigger === "tag") {
+      const tags = this._tags || [];
+      return `<label>Tag<select data-f="watch_item"><option value="">Choose…</option>${tags.map((t) => `<option value="${esc(t.id)}" ${t.id === d.watch_item ? "selected" : ""}>${esc(t.name || t.id)}</option>`).join("")}</select></label>
+        <p class="muted small">${tags.length ? "Tags are written and named in the Home Assistant app (Settings → Tags). Scanning one with a phone runs the routine." : "No tags yet. Write one with the Home Assistant app on your phone, under Settings → Tags."}</p>`;
+    }
+    if (d.trigger === "button") {
+      const buttons = (this._data.all_entities || []).filter((e) => e.entity_id.startsWith("event."));
+      return `<label>Button<select data-f="watch_entity"><option value="">Choose…</option>${buttons.map((b) => `<option value="${esc(b.entity_id)}" ${b.entity_id === d.watch_entity ? "selected" : ""}>${esc(b.name)}</option>`).join("")}</select></label>
+        <label>Only these presses (optional)<input data-f="watch_states" value="${esc(d.watch_states || "")}" placeholder="for example single, or double_press"></label>
+        <p class="muted small">Any button Home Assistant shows as an event: a Pico, a Zigbee remote, a doorbell, a Button Actions remote. Leave the presses empty for every press.</p>`;
+    }
     if (d.trigger === "cheapest") {
       const sensors = (this._data.sensors || []).slice().sort((a, b) => Number(/kwh/i.test(b.unit || "")) - Number(/kwh/i.test(a.unit || "")));
       return `<label>Electricity price<select data-f="value_entity"><option value="">Choose…</option>${sensors.map((x) => `<option value="${esc(x.entity_id)}" ${x.entity_id === d.value_entity ? "selected" : ""}>${esc(x.name)}${x.unit ? ` (${esc(x.unit)})` : ""}</option>`).join("")}</select></label>
@@ -3082,6 +3262,7 @@ class DailyRoutinePanel extends HTMLElement {
     return `<ol class="steps">${steps}</ol>
         <div class="row-actions"><button class="ghost" data-act="add-step">+ Action</button><button class="ghost" data-act="add-todo">+ To-do</button><button class="ghost" data-act="add-delay">+ Wait</button>
           <button class="ghost" data-act="add-kind" data-kind="wait_until">+ Wait until…</button>
+          <button class="ghost" data-act="add-kind" data-kind="scene">+ Make it look like this</button>
           <button class="ghost" data-act="add-kind" data-kind="routine">+ Run another routine</button>
           <button class="ghost" data-act="add-kind" data-kind="mode">+ Set the house mode</button></div>`;
   }
@@ -3366,7 +3547,13 @@ class DailyRoutinePanel extends HTMLElement {
     if (step.kind === "delay") {
       const sec = Number(step.seconds) || 0;
       text = sec >= 60 ? `Wait ${Math.round(sec / 6) / 10} minutes` : `Wait ${sec} seconds`;
-    } else if (step.kind === "wait_until") text = step.wEntity ? `Wait until ${this._nameFor(step.wEntity)} is ${step.wStates || "…"}` : "Wait until a device changes";
+    } else if (step.kind === "wait_until") {
+      const level = [step.wBelow !== "" && step.wBelow != null ? `below ${step.wBelow}` : "", step.wAbove !== "" && step.wAbove != null ? `above ${step.wAbove}` : ""].filter(Boolean).join(" and ");
+      text = step.wEntity ? `Wait until ${this._nameFor(step.wEntity)} is ${step.wBy === "level" ? level || "…" : step.wStates || "…"}${Number(step.wFor) ? ` for ${step.wFor} min` : ""}` : "Wait until a device changes";
+    } else if (step.kind === "scene") {
+      const count = step.entities.filter((id) => step.saved?.[id]).length;
+      text = count ? `Make ${count} ${count === 1 ? "device" : "devices"} look as saved` : "Make it look like this (nothing saved yet)";
+    }
     else if (step.kind === "routine") text = `Run ${this._data.routines.find((r) => r.id === step.routine)?.name || "another routine"}`;
     else if (step.kind === "mode") text = `Set the house to ${modeName(step.mode || "home")}`;
     else if (step.kind === "todo") {
@@ -3407,8 +3594,24 @@ class DailyRoutinePanel extends HTMLElement {
       <option value="delay" ${step.kind === "delay" ? "selected" : ""}>Wait (seconds)</option>
       <option value="wait_until" ${step.kind === "wait_until" ? "selected" : ""}>Wait until a device changes</option>
       <option value="routine" ${step.kind === "routine" ? "selected" : ""}>Run another routine</option>
-      <option value="mode" ${step.kind === "mode" ? "selected" : ""}>Set the house mode</option></select></label>`;
+      <option value="mode" ${step.kind === "mode" ? "selected" : ""}>Set the house mode</option>
+      <option value="scene" ${step.kind === "scene" ? "selected" : ""}>Make it look like this</option></select></label>`;
     const onlyIf = this._onlyIf(step, i);
+    if (step.kind === "scene") {
+      step.saved ||= {};
+      const domains = ["light", "switch", "fan", "cover", "climate", "media_player", "input_boolean", "lock", "valve"];
+      const room = (this._areas().find((a) => a.id === this._draft.room)?.entities || []).filter((e) => domains.includes(e.domain));
+      const roomIds = new Set(room.map((e) => e.entity_id));
+      const others = (this._data.all_entities || []).filter((e) => domains.includes(e.entity_id.split(".")[0]) && !roomIds.has(e.entity_id));
+      const saved = step.entities.filter((id) => step.saved[id]);
+      return `<div class="step">${head}${kind}
+        <p class="muted small">Pick the devices, set them how you want them (with the Home Assistant app, or by hand), then press <strong>Save how they look now</strong>. The routine puts them back exactly like that: on or off, brightness, color, position, temperature.</p>
+        <div class="checks">${[...room, ...others].map((e) => checkbox("sentity", e.entity_id, e.name + (roomIds.has(e.entity_id) ? " (this room)" : ""), step.entities.includes(e.entity_id), i)).join("")}</div>
+        <div class="row-actions"><button class="primary" data-act="scene-capture" data-i="${i}">Save how they look now</button></div>
+        ${saved.length ? `<ul class="plain small saved-look">${saved.map((id) => `<li><strong>${esc(this._nameFor(id))}</strong>: ${esc(lookText(step.saved[id]))}</li>`).join("")}</ul>` : `<p class="muted small">Nothing saved yet.</p>`}
+        <label>Fade over (minutes, lights only, optional)<input type="number" min="0" max="60" data-si="${i}" data-sf="transition" value="${esc(step.transition ?? "")}"></label>
+        ${onlyIf}</div>`;
+    }
     if (step.kind === "routine") {
       const others = (this._data.routines || []).filter((r) => r.id !== this._draft.id && r.kind !== "todo" && !r.companion_of);
       return `<div class="step">${head}${kind}
@@ -3424,7 +3627,15 @@ class DailyRoutinePanel extends HTMLElement {
     if (step.kind === "wait_until") {
       return `<div class="step">${head}${kind}
         <label>Device<select data-si="${i}" data-sf="wEntity">${this._anyEntityOptions(step.wEntity || "")}</select></label>
-        <label>Until it's<input data-si="${i}" data-sf="wStates" value="${esc(step.wStates || "")}" placeholder="for example closed, or off"></label>
+        <label>Wait for<select data-si="${i}" data-sf="wBy" data-rerender>
+          <option value="state" ${step.wBy !== "level" ? "selected" : ""}>A state (closed, off…)</option>
+          <option value="level" ${step.wBy === "level" ? "selected" : ""}>A level (power, temperature…)</option></select></label>
+        ${step.wBy === "level"
+          ? `<div class="inline"><label>Below<input type="number" step="any" data-si="${i}" data-sf="wBelow" value="${esc(step.wBelow ?? "")}" placeholder="5"></label>
+             <label>Above<input type="number" step="any" data-si="${i}" data-sf="wAbove" value="${esc(step.wAbove ?? "")}"></label></div>
+             <p class="muted small">For example the dishwasher's power below 5 W means it has finished.</p>`
+          : `<label>Until it's<input data-si="${i}" data-sf="wStates" value="${esc(step.wStates || "")}" placeholder="for example closed, or off"></label>`}
+        <label>And it stays so for (minutes, 0: straight away)<input type="number" min="0" max="240" data-si="${i}" data-sf="wFor" value="${esc(step.wFor || 0)}"></label>
         <label>Wait up to (minutes)<input type="number" min="1" max="240" data-si="${i}" data-sf="wMinutes" value="${esc(step.wMinutes || 10)}"></label>
         <label>If it doesn't happen in time<select data-si="${i}" data-sf="wTimeout">
           <option value="continue" ${step.wTimeout !== "stop" ? "selected" : ""}>Go on with the next steps</option>
@@ -3546,6 +3757,38 @@ function personCheckbox(person, checked) {
   return checkbox("people", person.entity_id, person.name + note, checked);
 }
 
+// How a device looks now, for "Make it look like this" (scene.apply).
+const LOOK_ATTRIBUTES = ["brightness", "color_temp_kelvin", "rgb_color", "current_position", "current_tilt_position", "percentage", "temperature", "target_temp_low", "target_temp_high", "preset_mode", "volume_level", "source"];
+function captureLook(state) {
+  const look = { state: state.state };
+  for (const key of LOOK_ATTRIBUTES) if (state.attributes?.[key] != null) look[key] = state.attributes[key];
+  return look;
+}
+function lookText(look) {
+  const parts = [look.state];
+  if (look.brightness != null) parts.push(`${Math.round((look.brightness / 255) * 100)}%`);
+  if (look.color_temp_kelvin != null) parts.push(`${look.color_temp_kelvin} K`);
+  if (look.rgb_color) parts.push(`color ${look.rgb_color.join(", ")}`);
+  if (look.current_position != null) parts.push(`${look.current_position}% open`);
+  if (look.temperature != null) parts.push(`${look.temperature}°`);
+  return parts.join(", ");
+}
+
+// A routine as a code to share: base64 JSON, with its rooms' names.
+function shareCode(routine, areas) {
+  const keep = { ...routine };
+  for (const key of ["id", "device_id", "paused_until", "skip_next", "companion_of", "kind"]) delete keep[key];
+  const used = new Set([routine.room, ...JSON.stringify(routine.actions).match(/"area_id":\[[^\]]*\]/g)?.flatMap((m) => JSON.parse(m.slice(10))) || []].filter(Boolean));
+  const names = Object.fromEntries(areas.filter((a) => used.has(a.id)).map((a) => [a.id, a.name]));
+  return `DR1:${btoa(unescape(encodeURIComponent(JSON.stringify({ v: 1, routine: keep, areas: names }))))}`;
+}
+
+// A run's steps, replayed: what each did, how long it took, how devices ended up.
+const REPLAY_ICONS = { ok: "✓", skipped: "↷", failed: "✗", stopped: "■" };
+function replayHtml(steps) {
+  return `<ol class="replay">${steps.map((st) => `<li class="r-${esc(st.result)}"><span class="r-icon" aria-hidden="true">${REPLAY_ICONS[st.result] || "•"}</span><span><strong>${esc(st.label)}</strong> <span class="muted small">${st.seconds >= 1 ? `${Math.round(st.seconds)} s` : ""}</span>${st.note ? `<div class="small">${esc(st.note)}</div>` : ""}${(st.devices || []).length ? `<div class="muted small">${st.devices.map((d) => `${esc(d.name)}: ${esc(d.state)}`).join(" · ")}</div>` : ""}</span></li>`).join("")}</ol>`;
+}
+
 function checkbox(list, value, label, checked, stepIndex) {
   const attrs = stepIndex !== undefined
     ? `data-sentity="${stepIndex}" data-val="${esc(value)}"`
@@ -3554,6 +3797,16 @@ function checkbox(list, value, label, checked, stepIndex) {
 }
 
 const STYLES = `<style>
+  ol.replay { list-style: none; padding: 0; margin: 6px 0; }
+  ol.replay li { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; border-bottom: 1px solid var(--divider-color, #e0e0e0); }
+  ol.replay .r-icon { width: 1.2em; text-align: center; font-weight: 700; }
+  ol.replay .r-ok .r-icon { color: var(--success-color, #43a047); }
+  ol.replay .r-failed .r-icon { color: var(--error-color, #db4437); }
+  ol.replay .r-skipped .r-icon, ol.replay .r-stopped .r-icon { color: var(--warning-color, #ffa600); }
+  details.replay-run summary { cursor: pointer; }
+  textarea[data-share-code], textarea[data-import-code] { width: 100%; box-sizing: border-box; font-family: monospace; font-size: 12px; }
+  .vacation-on { border-left: 4px solid var(--primary-color, #03a9f4); }
+  .saved-look { margin: 6px 0; }
   :host { display: block; }
   main { font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif); color: var(--primary-text-color, #212121);
          background: var(--primary-background-color, #fafafa); min-height: 100%; padding: 16px; box-sizing: border-box; }

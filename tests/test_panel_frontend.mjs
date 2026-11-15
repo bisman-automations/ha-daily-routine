@@ -1784,3 +1784,118 @@ test("Activity lists devices that gave trouble", () => {
   assert.match(html, /Porch light/);
   assert.match(html, /67%/);
 });
+
+// ----- 1.25.0 -----
+
+test("a run can be replayed step by step on the card and in Activity", () => {
+  const panel = makePanel();
+  const steps = [
+    { step: 1, label: "Turn off Kitchen light", result: "ok", seconds: 1.2, devices: [{ entity_id: "light.kitchen", name: "Kitchen light", state: "off" }] },
+    { step: 2, label: "Close blinds", result: "failed", seconds: 30, note: "Blinds didn't change" },
+    { step: 3, label: "Turn on fan", result: "skipped", seconds: 0, note: "Already done" },
+  ];
+  panel._data.statuses.kitchen_lights = { state: "idle", conditions_ok: true, history: [{ at: "2026-11-15T07:00:00", outcome: "failed", detail: "x", steps }] };
+  panel._view = { name: "room", room: "kitchen" };
+  panel._render();
+  let html = panel.shadowRoot.innerHTML;
+  assert.match(html, /see each step/);
+  assert.match(html, /class="r-failed"/);
+  assert.match(html, /Kitchen light: off/);
+  assert.match(html, /Blinds didn&#39;t change/);
+  panel._view = { name: "activity" };
+  panel._activity = { ...structuredClone(activityFixture), recent: [{ at: "2026-11-15T07:00:00", name: "Kitchen lights off", outcome: "failed", reason: "error:x", steps }] };
+  panel._activityFilter = "all";
+  panel._render();
+  html = panel.shadowRoot.innerHTML;
+  assert.match(html, /See each step/);
+});
+
+test("tag and button triggers round-trip and describe themselves", () => {
+  const panel = makePanel();
+  panel._tags = [{ id: "door-tag", name: "Front door" }];
+  panel._data.all_entities = [{ entity_id: "event.pico_button", name: "Pico" }, { entity_id: "light.kitchen", name: "Kitchen light" }];
+  for (const extra of [
+    { trigger: "tag", watch_item: "door-tag" },
+    { trigger: "button", watch_entity: "event.pico_button", watch_states: ["double"] },
+  ]) {
+    const routine = { ...overview.routines[0], sensors: [], clear_minutes: 0, ...extra };
+    panel._draft = panel._draftFromRoutine(routine);
+    panel._view = { name: "editor", room: "kitchen" };
+    panel._render();
+    const html = panel.shadowRoot.innerHTML;
+    if (extra.trigger === "tag") assert.match(html, /value="door-tag" selected>Front door/);
+    else assert.match(html, /value="event.pico_button" selected>Pico/);
+    const raw = panel._draftToRaw(panel._draft);
+    for (const [key, value] of Object.entries(extra)) assert.deepEqual(raw[key], value);
+  }
+  assert.match(panel._describeTrigger({ ...overview.routines[0], trigger: "tag", watch_item: "door-tag" }), /Front door/);
+  assert.match(panel._describeTrigger({ ...overview.routines[0], trigger: "button", watch_entity: "event.pico_button", watch_states: ["double"] }), /Pico is pressed \(double\)/);
+});
+
+test("make it look like this saves how devices look and round-trips", () => {
+  const panel = makePanel();
+  panel._hass = { states: { "light.kitchen": { entity_id: "light.kitchen", state: "on", attributes: { brightness: 128, color_temp_kelvin: 2700, friendly_name: "Kitchen light" } } }, user: { is_admin: true } };
+  panel._data.all_entities = [{ entity_id: "light.kitchen", name: "Kitchen light" }];
+  const routine = { ...overview.routines[0], actions: [{ service: "scene.apply", data: { entities: { "light.kitchen": { state: "on", brightness: 128 } }, transition: 120 } }] };
+  panel._draft = panel._draftFromRoutine(routine);
+  assert.equal(panel._draft.actions[0].kind, "scene");
+  assert.equal(panel._draft.actions[0].transition, 120);
+  panel._draft.actions[0].transition = 2;
+  panel._view = { name: "editor", room: "kitchen" };
+  openSteps(panel);
+  panel._render();
+  const html = panel.shadowRoot.innerHTML;
+  assert.match(html, /Save how they look now/);
+  assert.match(html, /Kitchen light<\/strong>: on, 50%/);
+  const raw = panel._draftToRaw(panel._draft);
+  assert.deepEqual(raw.actions[0], { service: "scene.apply", data: { entities: { "light.kitchen": { state: "on", brightness: 128 } }, transition: 120 } });
+  panel._draft.actions[0].saved = {};
+  assert.throws(() => panel._draftToRaw(panel._draft), /Save how they look now/);
+});
+
+test("wait until a level, held for a while, round-trips", () => {
+  const panel = makePanel();
+  const wait = { entity_id: "sensor.bathroom_humidity", states: [], minutes: 60, on_timeout: "stop", below: 5, for_minutes: 3 };
+  panel._draft = panel._draftFromRoutine({ ...overview.routines[0], actions: [{ wait_until: wait }] });
+  assert.equal(panel._draft.actions[0].wBy, "level");
+  panel._view = { name: "editor", room: "kitchen" };
+  openSteps(panel);
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /stays so for/);
+  assert.deepEqual(panel._draftToRaw(panel._draft).actions[0], { wait_until: wait });
+  assert.match(panel._stepSummary(panel._draft.actions[0]), /below 5 for 3 min/);
+});
+
+test("a routine can be shared as a code and imported, rooms matched by name", () => {
+  const panel = makePanel();
+  panel._shareFor = "kitchen_lights";
+  panel._view = { name: "room", room: "kitchen" };
+  panel._render();
+  const match = panel.shadowRoot.innerHTML.match(/data-share-code readonly rows="4">([^<]+)</);
+  assert.ok(match && match[1].startsWith("DR1:"));
+  // Another home: the same room name, another id.
+  panel._data.areas = [{ id: "cucina", name: "Kitchen", entities: [] }];
+  panel._data.all_entities = [];
+  const { draft, missing } = panel._importRoutine(match[1]);
+  assert.equal(draft.room, "cucina");
+  assert.equal(draft.isNew, true);
+  assert.deepEqual(missing, []);
+  assert.throws(() => panel._importRoutine("nonsense"), /Daily Routine code/);
+});
+
+test("vacation and the daily summary show in the panel", () => {
+  const panel = makePanel();
+  panel._me = { allowed: true, is_admin: true };
+  panel._view = { name: "all" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /Start vacation/);
+  panel._data.settings.vacation = { until: "2026-11-20", routines: ["kitchen_lights"] };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /On vacation until/);
+  assert.match(panel.shadowRoot.innerHTML, /data-act="vacation-end"/);
+  panel._hass = { user: { is_admin: true } };
+  panel._view = { name: "settings" };
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /Daily summary/);
+  assert.match(panel.shadowRoot.innerHTML, /data-summary="only_away"/);
+});

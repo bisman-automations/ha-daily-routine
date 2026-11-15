@@ -259,6 +259,9 @@ def async_setup_panel_api(hass: HomeAssistant) -> None:
         ws_skip_next,
         ws_try_again,
         ws_pause_until,
+        ws_vacation_start,
+        ws_vacation_end,
+        ws_summary_send,
         ws_save_settings,
         ws_status,
         ws_subscribe,
@@ -664,6 +667,69 @@ async def ws_pause_until(
         connection.send_error(msg["id"], "invalid_routine", str(err))
         return
     connection.send_result(msg["id"], {"until": msg["until"]})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/vacation/start",
+        vol.Required("until"): str,
+        vol.Optional("routine_ids", default=[]): [str],
+        vol.Optional("lived_in", default=True): bool,
+        vol.Optional("summary", default=True): bool,
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_vacation_start(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Going on vacation: Vacation mode, routines paused, lived-in lights, a daily summary."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    try:
+        vacation = await coordinator.away.async_start(
+            msg["until"],
+            msg["routine_ids"],
+            lived_in=msg["lived_in"],
+            summary=msg["summary"],
+        )
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "invalid_routine", str(err))
+        return
+    connection.send_result(msg["id"], {"vacation": vacation})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/vacation/end"})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_vacation_end(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Back home: everything as it was before the vacation."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    await coordinator.away.async_end()
+    connection.send_result(msg["id"], {})
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/summary/send"})
+@websocket_api.require_admin
+@callback
+def ws_summary_send(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Send today's summary now (Settings' Send it now), and return its text."""
+    coordinator = _coordinator(hass)
+    if coordinator is None:
+        connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
+        return
+    now = dt_util.now()
+    coordinator.send_summary(now)
+    connection.send_result(msg["id"], {"text": coordinator.away.summary(now)})
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/today"})

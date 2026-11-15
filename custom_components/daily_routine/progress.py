@@ -86,9 +86,19 @@ def step_label(
         wait = action["wait_until"]
         state = hass.states.get(wait["entity_id"])
         name = state.name if state else wait["entity_id"]
+        if wait.get("below") is not None or wait.get("above") is not None:
+            level = " and ".join(
+                f"{word} {wait[key]:g}"
+                for key, word in (("below", "under"), ("above", "over"))
+                if wait.get(key) is not None
+            )
+            return f"Wait for {name} to be {level}"
         return f"Wait for {name} to be {' or '.join(wait['states'])}"
     if "set_mode" in action:
         return f"Set the house mode to {MODE_NAMES.get(action['set_mode'], action['set_mode'])}"
+    if action.get("service") == "scene.apply":
+        count = len((action.get("data") or {}).get("entities") or {})
+        return f"Set {count} {'device' if count == 1 else 'devices'} as saved"
     domain, _, service = str(action.get("service", "")).partition(".")
     verb = VERBS.get(service) or service.replace("_", " ").capitalize() or domain
     names = _names(hass, action.get("target"))

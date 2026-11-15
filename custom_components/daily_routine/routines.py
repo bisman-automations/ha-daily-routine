@@ -10,6 +10,7 @@ from .const import (
     MAX_ACTIONS,
     MAX_RANDOM_MINUTES,
     TRIGGER_ALARM,
+    TRIGGER_BUTTON,
     TRIGGER_CALENDAR_EVENT,
     TRIGGER_CHEAPEST,
     TRIGGER_EVERYONE_LEAVES,
@@ -20,6 +21,7 @@ from .const import (
     TRIGGER_ROOM_CLEAR,
     TRIGGER_SOMEONE_ARRIVES,
     TRIGGER_STATE_IS,
+    TRIGGER_TAG,
     TRIGGER_TIME,
     TRIGGER_TODO_DONE,
     TRIGGER_VALUE_ABOVE,
@@ -70,8 +72,11 @@ WATCH_TRIGGERS = (*STATE_TRIGGERS, *TODO_DONE_TRIGGERS)
 # Triggers planned ahead from what another entity says (an alarm, a calendar
 # event, electricity prices), like a time trigger.
 PLANNED_TRIGGERS = (TRIGGER_ALARM, TRIGGER_CALENDAR_EVENT, TRIGGER_CHEAPEST)
+# A tag scanned or a button pressed: a moment, run each time.
+PRESS_TRIGGERS = (TRIGGER_TAG, TRIGGER_BUTTON)
 REPEATING_TRIGGERS = (
     TRIGGER_MODE,
+    *PRESS_TRIGGERS,
     TRIGGER_FORECAST,
     *PRESENCE_TRIGGERS,
     TRIGGER_ROOM_CLEAR,
@@ -112,6 +117,8 @@ MORE_TRIGGER_KINDS = (
     TRIGGER_CALENDAR_EVENT,
     TRIGGER_FORECAST,
     TRIGGER_CHEAPEST,
+    TRIGGER_TAG,
+    TRIGGER_BUTTON,
 )
 TRIGGER_FIELDS = (
     "trigger",
@@ -397,8 +404,16 @@ def _normalize_step(raw: dict[str, Any], index: int) -> dict[str, Any]:
         if not ENTITY_ID_RE.fullmatch(entity_id):
             raise vol.Invalid(f"Step {index}: pick the device to wait for.")
         states = _state_list(wait.get("states", wait.get("state")))
-        if not states:
-            raise vol.Invalid(f"Step {index}: set the state to wait for.")
+        # Or a level: until a number (power, temperature) goes below or
+        # above it, such as the dishwasher's power under 5 W.
+        below = wait.get("below")
+        above = wait.get("above")
+        below = None if below in (None, "") else _number(below, f"Step {index}: below")
+        above = None if above in (None, "") else _number(above, f"Step {index}: above")
+        if not states and below is None and above is None:
+            raise vol.Invalid(f"Step {index}: set the state to wait for, or a level.")
+        # And stays so for this long (the dishwasher really finished).
+        hold = _int(wait.get("for_minutes") or 0, 0, 240, f"Step {index}: for")
         on_timeout = str(wait.get("on_timeout") or "continue")
         if on_timeout not in WAIT_TIMEOUT:
             raise vol.Invalid(f"Step {index}: if it doesn't happen, go on or stop.")
@@ -413,6 +428,9 @@ def _normalize_step(raw: dict[str, Any], index: int) -> dict[str, Any]:
                     f"Step {index}: wait up to",
                 ),
                 "on_timeout": on_timeout,
+                **({"below": below} if below is not None else {}),
+                **({"above": above} if above is not None else {}),
+                **({"for_minutes": hold} if hold else {}),
             }
         }
 
@@ -749,6 +767,12 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
                 "Pick the kinds of weather, or a temperature it drops below."
             )
         forecast_hours = _int(raw.get("forecast_hours") or 3, 1, 48, "Within")
+    if trigger == TRIGGER_TAG and not str(raw.get("watch_item") or "").strip():
+        raise vol.Invalid("Pick the tag.")
+    if trigger == TRIGGER_BUTTON:
+        entity = str(raw.get("watch_entity") or "").strip()
+        if not entity.startswith("event.") or not ENTITY_ID_RE.fullmatch(entity):
+            raise vol.Invalid("Pick the button (its event entity).")
     if trigger == TRIGGER_CHEAPEST:
         entity = str(raw.get("value_entity") or "").strip()
         if not entity.startswith("sensor.") or not ENTITY_ID_RE.fullmatch(entity):
@@ -775,6 +799,13 @@ def normalize_routine(raw: Any) -> dict[str, Any]:
         watch_entity = str(raw.get("watch_entity") or "").strip()
     if trigger == TRIGGER_CALENDAR_EVENT:
         watch_item = _item_name(raw.get("watch_item"))
+    if trigger == TRIGGER_TAG:
+        watch_item = str(raw.get("watch_item") or "").strip()[:200]
+    if trigger == TRIGGER_BUTTON:
+        watch_entity = str(raw.get("watch_entity") or "").strip()
+        # Which presses count (the event types, such as "single" or
+        # "double"); none: every press.
+        watch_states = _state_list(raw.get("watch_states"))
     if trigger == TRIGGER_FORECAST:
         watch_states = [
             w for w in WEATHER_STATES if w in _as_list(raw.get("watch_states"))

@@ -45,6 +45,7 @@ from homeassistant.helpers.sun import get_astral_event_next
 from homeassistant.util import dt as dt_util, slugify
 
 from .access import async_get_access
+from .away import AwayHelper, clean_summary, summary_or_default, vacation_or_none
 from .const import (
     DOMAIN,
     EVENT_ROUTINE_FINISHED,
@@ -57,6 +58,7 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
     TRIGGER_ALARM,
+    TRIGGER_BUTTON,
     TRIGGER_CALENDAR_EVENT,
     TRIGGER_CHEAPEST,
     TRIGGER_EVERYONE_LEAVES,
@@ -90,6 +92,7 @@ from .routines import (
     PER_PERSON_TRIGGERS,
     PLANNED_TRIGGERS,
     PRESENCE_TRIGGERS,
+    PRESS_TRIGGERS,
     STATE_TRIGGERS,
     TODO_DONE_TRIGGERS,
     VALUE_TRIGGERS,
@@ -145,6 +148,18 @@ class _Failure:
     service: str
     target: dict[str, Any] | None
     text: str
+
+
+def _trace_mark(rt: dict[str, Any], result: str, note: str) -> None:
+    """Say how the open step of the run's replay went (it was skipped)."""
+    trace = rt.get("trace")
+    if trace:
+        trace[-1].update(result=result, note=note)
+
+
+def _public(step: dict[str, Any]) -> dict[str, Any]:
+    """A replay line without its working parts."""
+    return {k: v for k, v in step.items() if not k.startswith("_")}
 
 
 @dataclass
@@ -261,6 +276,24 @@ H_STATE = "state_trigger"
 H_DONE = "todo_done"
 H_PLANNED = "planned_source"
 H_FORECAST = "forecast"
+H_PRESS = "press"
+# Reasons runs fail or are skipped, in words (for the daily summary).
+REASON_WORDS = {
+    "conditions_not_met": "its conditions weren't met",
+    "paused": "routines are paused",
+    "paused_until": "paused",
+    "cooldown": "it ran a moment ago",
+    "skipped_once": "skipped once",
+    "trigger_ended": "what started it was over",
+    "asked_skip": "you said not to",
+    "no_answer_skip": "nobody answered",
+    "conditions_failed_mid_run": "its conditions stopped holding",
+    "missing_service": "an action is missing",
+    "unavailable_too_long": "a list or device was unavailable",
+    "error": "a device didn't change",
+}
+# Devices listed for each step of a run's replay.
+TRACE_DEVICES = 8
 # How far ahead calendars are read for "before an event" triggers.
 EVENTS_AHEAD = timedelta(days=3)
 # How often the weather forecast is read for forecast triggers.
@@ -469,6 +502,7 @@ class HomeRoutinesCoordinator:
             **{key: default for key, (default, *_rest) in TIMING_SETTINGS.items()},
         }
         self.lived_in = LivedIn(self)
+        self.away = AwayHelper(self)
         self.voice = Voice(self)
         self._runtime: dict[str, dict[str, Any]] = {}
         # A routine's other triggers, each watched like a routine of its own
@@ -667,9 +701,20 @@ class HomeRoutinesCoordinator:
 
     def _record(self, routine_id: str, outcome: str, detail: str = "") -> None:
         runs = self._history.setdefault(routine_id, deque(maxlen=HISTORY_LENGTH))
-        runs.append(
-            {"at": dt_util.now().isoformat(), "outcome": outcome, "detail": detail}
+        # A run that went through its steps: each step, for replaying it.
+        steps = (
+            self._runtime.get(routine_id, {}).pop("trace", None)
+            if outcome in ("ran", "failed")
+            else None
         )
+        entry: dict[str, Any] = {
+            "at": dt_util.now().isoformat(),
+            "outcome": outcome,
+            "detail": detail,
+        }
+        if steps:
+            entry["steps"] = steps
+        runs.append(entry)
         if outcome == "held":
             return  # shown on the card only; the run is logged when it runs or is dropped
         routine = self._find(routine_id)
@@ -677,10 +722,10 @@ class HomeRoutinesCoordinator:
         if outcome == "skipped":
             self.run_log.record(routine_id, name, "skipped", reason=detail)
         elif outcome == "ran":
-            self.run_log.record(routine_id, name, "ran", detail=detail)
+            self.run_log.record(routine_id, name, "ran", detail=detail, steps=steps)
         else:
             self.run_log.record(
-                routine_id, name, "failed", reason=detail, detail=detail
+                routine_id, name, "failed", reason=detail, detail=detail, steps=steps
             )
 
     def get_history(self, routine_id: str) -> list[dict[str, str]]:
@@ -766,6 +811,8 @@ class HomeRoutinesCoordinator:
             ],
             "lived_in": _lived_in_or_default(saved.get("lived_in")),
             "editor": "full" if saved.get("editor") == "full" else "simple",
+            "daily_summary": summary_or_default(saved.get("daily_summary")),
+            "vacation": vacation_or_none(saved.get("vacation")),
             **{key: _timing_value(saved.get(key), key) for key in TIMING_SETTINGS},
         }
         for raw in data.get("routines", []):
@@ -785,6 +832,7 @@ class HomeRoutinesCoordinator:
         self._started_at = dt_util.utcnow()
         self._schedule_health_interval()
         self.lived_in.start()
+        self.away.start()
         self._forecast_unsub = async_track_time_interval(
             self.hass, self._check_forecasts, FORECAST_EVERY
         )
@@ -870,6 +918,7 @@ class HomeRoutinesCoordinator:
             self._calendar_unsub = None
         self._drop_all_handles()
         self.lived_in.stop()
+        self.away.stop()
         self.voice.stop()
         if self._forecast_unsub is not None:
             self._forecast_unsub()
@@ -1169,19 +1218,40 @@ class HomeRoutinesCoordinator:
         editor = raw.get("editor", self.settings.get("editor", "simple"))
         if editor not in ("simple", "full"):
             raise vol.Invalid("The editor is simple or full.")
+        summary = clean_summary(
+            raw.get("daily_summary", self.settings.get("daily_summary"))
+        )
         self.settings = {
             "hidden_people": sorted(set(hidden)),
             "notify_services": sorted(set(services)),
             "integration_order": list(dict.fromkeys(order)),
             "lived_in": lived_in,
             "editor": editor,
+            "daily_summary": summary,
+            # Set by going on vacation, not by the Settings tab.
+            "vacation": self.settings.get("vacation"),
             **timing,
         }
+        self.away.start()
         self.spawn(self.lived_in.async_step(dt_util.now()))
         self._schedule_health_interval()
         await self._async_save()
         self._notify_listeners()
         return self.settings
+
+    async def async_settings_changed(self) -> None:
+        """Settings changed by vacation mode: apply, save and tell the panel."""
+        self.spawn(self.lived_in.async_step(dt_util.now()))
+        await self._async_save()
+        self._notify_listeners()
+
+    def send_summary(self, now: datetime) -> None:
+        """Send the daily summary now."""
+        self._send_notification(self.away.summary(now), f"{DOMAIN}_daily_summary")
+
+    def reason_text(self, reason: str) -> str:
+        """A run's reason in plain words, for the daily summary."""
+        return REASON_WORDS.get(reason.split(":", 1)[0], reason.replace("_", " "))
 
     async def async_set_mode(self, mode: str) -> None:
         """Switch the house mode, and run what starts when it changes to that mode."""
@@ -2157,6 +2227,43 @@ class HomeRoutinesCoordinator:
         unsub = async_track_state_change_event(self.hass, [entity], _changed)
         self._set_handle(rid, H_STATE, unsub)
 
+    def _watch_press(self, routine: dict[str, Any]) -> None:
+        """Run when its NFC tag is scanned, or its button pressed."""
+        rid = routine["id"]
+        self._drop_handle(rid, H_PRESS)
+        trigger = routine["trigger"]
+        if trigger not in PRESS_TRIGGERS or not routine["enabled"]:
+            return
+        if trigger == TRIGGER_BUTTON:
+            wanted = routine["watch_states"]
+
+            @callback
+            def _pressed(event: Event[EventStateChangedData]) -> None:
+                new, old = event.data.get("new_state"), event.data.get("old_state")
+                # An event entity's state is the time of its last press; one
+                # coming back after a restart (or from unavailable) isn't a press.
+                if new is None or old is None or new.state in UNKNOWN_STATES:
+                    return
+                if old.state in UNKNOWN_STATES or new.state == old.state:
+                    return
+                if wanted and new.attributes.get("event_type") not in wanted:
+                    return
+                self._run_state_routine(routine)
+
+            unsub = async_track_state_change_event(
+                self.hass, [routine["watch_entity"]], _pressed
+            )
+        else:
+            tag = routine["watch_item"]
+
+            @callback
+            def _scanned(event: Event) -> None:
+                if event.data.get("tag_id") == tag:
+                    self._run_state_routine(routine)
+
+            unsub = self.hass.bus.async_listen("tag_scanned", _scanned)
+        self._set_handle(rid, H_PRESS, unsub)
+
     def _start_state_run(self, routine: dict[str, Any]) -> None:
         rid = routine["id"]
         if routine["hold_minutes"] <= 0:
@@ -2389,6 +2496,7 @@ class HomeRoutinesCoordinator:
             self._watch_presence(alias)
             self._watch_value(alias)
             self._watch_state(alias)
+            self._watch_press(alias)
         for routine in self.routines:
             self._rt(routine["id"])
             self._watch_planned(routine)
@@ -2396,6 +2504,7 @@ class HomeRoutinesCoordinator:
             self._watch_presence(routine)
             self._watch_value(routine)
             self._watch_state(routine)
+            self._watch_press(routine)
             self._watch_done(routine)
             self._watch_health(routine)
             self._watch_conditions(routine)
@@ -2736,10 +2845,13 @@ class HomeRoutinesCoordinator:
         scheduled: bool,
     ) -> _Run | None:
         """Run steps in order, showing which one is running on the routine's card."""
+        rt = self._rt(routine["id"])
+        rt["trace"] = []
         try:
             return await self._run_step_list(routine, steps, now, scheduled=scheduled)
         finally:
-            self._rt(routine["id"])["progress"] = None
+            rt["progress"] = None
+            rt["trace"] = [_public(step) for step in rt.get("trace") or []]
 
     async def _run_step_list(
         self,
@@ -2760,6 +2872,7 @@ class HomeRoutinesCoordinator:
         started = dt_util.now().isoformat()
         for position, (index, action, only) in enumerate(steps):
             if track:
+                self._trace_open(rt, run, index, action)
                 rt["progress"] = {
                     "step": position + 1,
                     "total": len(steps),
@@ -2787,6 +2900,8 @@ class HomeRoutinesCoordinator:
                 cond, dt_util.now()
             ):
                 run.details.append(f"Step {index + 1} {ONLY_IF_SKIPPED}")
+                if track:
+                    _trace_mark(rt, "skipped", "Its Only if didn't hold")
                 continue
 
             if "delay" in action:
@@ -2826,7 +2941,12 @@ class HomeRoutinesCoordinator:
                 ).isoformat()
                 self._notify_listeners()
                 if await self._wait_until_state(
-                    wait["entity_id"], wait["states"], seconds
+                    wait["entity_id"],
+                    wait["states"],
+                    seconds,
+                    below=wait.get("below"),
+                    above=wait.get("above"),
+                    hold=wait.get("for_minutes", 0) * SECONDS_PER_MINUTE,
                 ):
                     continue
                 text = (
@@ -2901,6 +3021,8 @@ class HomeRoutinesCoordinator:
                     routine["name"],
                     action["service"],
                 )
+                if track:
+                    _trace_mark(rt, "skipped", "Already done")
                 continue
 
             domain, service = action["service"].split(".", 1)
@@ -2925,7 +3047,62 @@ class HomeRoutinesCoordinator:
 
         if run.failures and run.result == "success":
             run.result = f"error:{run.failures[0].service}"
+        if track:
+            self._trace_close(rt, run)
         return run
+
+    def _trace_open(
+        self, rt: dict[str, Any], run: _Run, index: int, action: dict[str, Any]
+    ) -> None:
+        """Start a step's line in the run's replay (closing the one before)."""
+        self._trace_close(rt, run)
+        rt.setdefault("trace", []).append(
+            {
+                "step": index + 1,
+                "label": step_label(self.hass, action, self._routine_names()),
+                "at": dt_util.now().isoformat(),
+                "_started": dt_util.now(),
+                "_failures": len(run.failures),
+                "_action": action,
+            }
+        )
+
+    def _trace_close(self, rt: dict[str, Any], run: _Run) -> None:
+        """Finish the open step: how long it took, how it went, and how the
+        devices it reached ended up."""
+        trace = rt.get("trace")
+        if not trace or "_started" not in trace[-1]:
+            return
+        step = trace[-1]
+        action = step.pop("_action")
+        failures = run.failures[step.pop("_failures") :]
+        step["seconds"] = round(
+            (dt_util.now() - step.pop("_started")).total_seconds(), 1
+        )
+        if failures:
+            step["result"] = "failed"
+            step["note"] = "; ".join(f.text for f in failures if f.text)[:300]
+        elif run.stopped_at == step["step"] - 1 or (
+            run.result.startswith("conditions_failed") and "result" not in step
+        ):
+            step["result"] = "stopped"
+            step["note"] = "Its conditions stopped holding"
+        step.setdefault("result", "ok")
+        devices: dict[str, str] = {}
+        for each in action.get("together") or [action]:
+            if not each.get("service"):
+                continue
+            domain = each["service"].split(".", 1)[0]
+            targets = self._resolve_targets(each.get("target") or {}, domain)
+            targets += list((each.get("data") or {}).get("entities") or {})
+            for entity_id in targets[:TRACE_DEVICES]:
+                state = self.hass.states.get(entity_id)
+                devices[entity_id] = state.state if state else "unavailable"
+        if devices:
+            step["devices"] = [
+                {"entity_id": e, "name": self._entity_name(e), "state": st}
+                for e, st in list(devices.items())[:TRACE_DEVICES]
+            ]
 
     async def _run_service_step(
         self,
@@ -3215,31 +3392,68 @@ class HomeRoutinesCoordinator:
             await asyncio.sleep(VERIFY_POLL_SECONDS)
 
     async def _wait_until_state(
-        self, entity_id: str, states: list[str], seconds: float
+        self,
+        entity_id: str,
+        states: list[str],
+        seconds: float,
+        *,
+        below: float | None = None,
+        above: float | None = None,
+        hold: float = 0,
     ) -> bool:
-        """Wait up to that long for a device to show one of the states."""
+        """Wait up to that long for a device to show one of the states, or a
+        level below or above a number, held for ``hold`` seconds."""
         reached = asyncio.Event()
+        held: Callable[[], None] | None = None
 
         def _now_in() -> bool:
             state = self.hass.states.get(entity_id)
-            return state is not None and state.state in states
-
-        if _now_in():
-            return True
+            if state is None:
+                return False
+            if below is not None or above is not None:
+                value = _as_float(state)
+                if value is None:
+                    return False
+                return (below is None or value < below) and (
+                    above is None or value > above
+                )
+            return state.state in states
 
         @callback
-        def _changed(_event: Event[EventStateChangedData]) -> None:
+        def _settled(_now: datetime) -> None:
+            nonlocal held
+            held = None
             if _now_in():
                 reached.set()
 
+        @callback
+        def _check() -> None:
+            nonlocal held
+            if not _now_in():
+                if held is not None:
+                    held()  # it changed back: the hold starts again next time
+                    held = None
+                return
+            if hold <= 0:
+                reached.set()
+            elif held is None:
+                held = async_call_later(self.hass, hold, _settled)
+
+        @callback
+        def _changed(_event: Event[EventStateChangedData]) -> None:
+            _check()
+
         unsub = async_track_state_change_event(self.hass, [entity_id], _changed)
+        _check()
         try:
             async with asyncio.timeout(seconds):
                 await reached.wait()
         except TimeoutError:
-            return _now_in()
+            return False
         finally:
             unsub()
+            if held is not None:
+                held()
         return True
 
     async def _run_other(
@@ -3278,6 +3492,8 @@ class HomeRoutinesCoordinator:
             if "service" in action:
                 domain = action["service"].split(".", 1)[0]
                 entities.extend(self._resolve_targets(action.get("target"), domain))
+                # "Make it look like this": the devices in its picture.
+                entities.extend((action.get("data") or {}).get("entities") or {})
         saved = snapshot(self.hass, entities)
         if saved:
             self._undo[routine["id"]] = {"at": now.isoformat(), "states": saved}

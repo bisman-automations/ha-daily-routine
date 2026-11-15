@@ -21,6 +21,7 @@ MAX_EVENTS = 5000
 KEEP_DAYS = 30
 SAVE_DELAY_SECONDS = 15
 RECENT_LIMIT = 100
+MAX_STEPS = 30
 REPEAT_THRESHOLD = 3
 
 WINDOWS = ("today", "7d", "30d")
@@ -52,18 +53,21 @@ class RunLog:
         outcome: str,
         reason: str = "",
         detail: str = "",
+        steps: list[dict[str, Any]] | None = None,
     ) -> None:
         now = dt_util.now()
-        self._events.append(
-            {
-                "at": now.isoformat(),
-                "routine_id": routine_id,
-                "name": name,
-                "outcome": outcome,
-                "reason": reason,
-                "detail": detail,
-            }
-        )
+        event: dict[str, Any] = {
+            "at": now.isoformat(),
+            "routine_id": routine_id,
+            "name": name,
+            "outcome": outcome,
+            "reason": reason,
+            "detail": detail,
+        }
+        if steps:
+            # Each step of the run, for replaying it (the first ones).
+            event["steps"] = steps[:MAX_STEPS]
+        self._events.append(event)
         self.count += 1
         self._prune(now)
         self._store.async_delay_save(self._payload, SAVE_DELAY_SECONDS)

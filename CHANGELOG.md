@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.25.0] - 2026-11-15
+
+### Added
+
+- **See each step of a run.** Under **Recent runs** on a routine's card, and on the Activity tab, **See each step** replays a run: each step, how long it took, whether it worked, was skipped or failed and why, and how its devices ended up. "Why didn't the lights go off?" is answered there.
+- **An NFC tag or a button starts it.** New triggers: **When an NFC tag is scanned** (Home Assistant's tags, written with the phone app) and **When a button is pressed** (any button Home Assistant shows as an event: a Pico, a Zigbee remote, a doorbell), optionally only some presses, such as a double press.
+- **Vacation in one tap.** Under **Going away?**, **Start vacation** switches the house to Vacation mode, pauses the routines you pick through the last day, turns on lived-in lights and sends a summary each evening. The day after (or with **Back home**) it all goes back how it was.
+- **A daily summary.** Under **Settings**, a notification each day at the time you pick, saying what ran, what failed and what was skipped, and why. It can be sent only while the house is Away or on Vacation.
+- **Make it look like this.** A step that saves how devices look (on or off, brightness, color, position, temperature) and puts them back exactly so. **Undo** puts them back how they were before.
+- **Wait for a level.** **Wait until…** can wait for a number to go below or above a level, such as the dishwasher's power under 5 W, and for it (or a state) to stay so for some minutes before going on.
+- **Share a routine.** **Share** on a routine's card gives a code; **Import a routine** under **+ New routine** turns it into a new routine, with rooms matched by name and devices the home doesn't have pointed out.
+
 ## [1.24.0] - 2026-11-15
 
 ### Added
@@ -424,6 +436,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.25.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.24.0...v1.25.0
 [1.24.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.23.0...v1.24.0
 [1.23.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.22.0...v1.23.0
 [1.22.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.21.1...v1.22.0
