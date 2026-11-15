@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Run now starts at once.** The page no longer waits for the whole routine to finish before saying anything: the card shows Running straight away, and a routine that can't run says why ("didn't run: the house isn't in the right mode"). Pressing it again while it's running doesn't start a second run.
+- **A cleaner logo.** The icon is redrawn sharp, with a clock for the time of day, and no longer shows holes on a dark background (such as GitHub's dark theme).
 - **The page updates live.** Cards, Today and Activity update as routines start and finish, instead of every 15 seconds.
 
 ## [1.21.1] - 2026-11-14
