@@ -1,0 +1,87 @@
+<!doctype html><html><head><meta name="viewport" content="width=device-width">
+<style>body{margin:0;font-family:Roboto,sans-serif;background:#fafafa;min-height:100vh}html.dark body{background:#111}
+html.dark{--primary-background-color:#111;--card-background-color:#1c1c1c;--primary-text-color:#e1e1e1;--secondary-text-color:#9b9b9b;--divider-color:#333;--secondary-background-color:#2a2a2a}</style>
+</head><body>
+<script type="module">
+import "../../custom_components/daily_routine/frontend/daily-routine-panel.js";
+const q = new URLSearchParams(location.search);
+if (q.get("theme") === "dark") document.documentElement.classList.add("dark");
+const now = new Date();
+const iso = (h, m) => { const d = new Date(now); d.setHours(h, m, 0, 0); return d.toISOString(); };
+const routines = [
+  { id: "bedtime", name: "Bedtime", enabled: true, room: null, trigger: "time", time: "22:30:00", offset_minutes: 0, days: ["mon","tue","wed","thu","fri","sat","sun"], people: [], sensors: [], clear_minutes: 0, conditions: [{kind:"mode",modes:["home","guests"]}], conditions_match: "all", repeat: false, skip_noop: true, catch_up_minutes: 0, retries: 0, notify_on_run: false, notify_on_skip: false, notify_on_error: true,
+    more_triggers: [{ trigger: "everyone_leaves", time:"07:00:00", offset_minutes:0, people: ["person.alex"], zone: "zone.home", modes: [], value_entity:null, value_threshold:null, watch_entity:null, watch_states:[], hold_minutes:0 }],
+    actions: [{ set_mode: "night" }, { run_routine: "curtains" }, { wait_until: { entity_id: "cover.garage", states: ["closed"], minutes: 10, on_timeout: "continue" } }, { together: [{ service: "light.turn_off", target: { area_id: ["kitchen"] }, data: {} }, { service: "cover.close_cover", target: { area_id: ["bedroom"] }, data: {} }] }, { service: "light.turn_on", target: { entity_id: ["light.lamp_1"] }, data: { brightness_pct: 40, rgb_color: [255, 140, 0] }, only_if: { kind: "weather", entity_id: "weather.home", test: "is_not", conditions: ["rainy","pouring"] } }] },
+  { id: "curtains", name: "Close curtains", enabled: true, room: "bedroom", trigger: "sunset", time: "07:00:00", offset_minutes: 0, days: ["mon","tue","wed","thu","fri","sat","sun"], people: [], sensors: [], clear_minutes: 0, conditions: [], conditions_match: "all", repeat: false, skip_noop: true, actions: [{ service: "cover.close_cover", target: { area_id: ["bedroom"] }, data: {} }] },
+  { id: "morning", name: "Morning lights", enabled: true, room: "kitchen", trigger: "time", time: "07:00:00", offset_minutes: 0, days: ["mon","tue","wed","thu","fri"], people: [], sensors: [], clear_minutes: 0, conditions: [{kind:"workday",entity_id:"binary_sensor.workday_sensor",when:"workday"}], conditions_match: "all", repeat: false, skip_noop: true, actions: [{ service: "light.turn_on", target: { area_id: ["kitchen"] }, data: {} }] },
+];
+const data = {
+  paused: false, revision: 1, mode: "home",
+  areas: [{ id: "kitchen", name: "Kitchen", icon: null, entities: [{ entity_id: "cover.kitchen_blind", name: "Kitchen blind", domain: "cover" }, { entity_id: "light.kitchen", name: "Kitchen light", domain: "light" }, ...Array.from({length: 12}, (_, i) => ({ entity_id: `light.lamp_${i}`, name: `Lamp ${i + 1}`, domain: "light" }))] }, { id: "bedroom", name: "Bedroom", icon: "mdi:bed", entities: [{ entity_id: "cover.bedroom", name: "Bedroom curtains", domain: "cover" }] }],
+  devices: [], people: [{ entity_id: "person.alex", name: "Alex", state: "home", tracked: true }],
+  settings: { hidden_people: [], notify_services: [], integration_order: [], lived_in: { enabled: true, lights: ["light.kitchen","light.porch"], start: "sunset", end: "23:00", modes: ["away","vacation"] } },
+  notify_targets: [], zones: [{ entity_id: "zone.home", name: "Home" }], sensors: [], binary_sensors: [],
+  routines, health: {}, todo_lists: [],
+  all_entities: [...Array.from({length: 14}, (_, i) => ({ entity_id: `light.lamp_${i}`, name: `Lamp ${i + 1}` })), { entity_id: "light.kitchen", name: "Kitchen light" }, { entity_id: "light.porch", name: "Porch light" }, { entity_id: "cover.garage", name: "Garage door" }, { entity_id: "weather.home", name: "Home" }],
+  alarm_sensors: [{ entity_id: "sensor.phone_next_alarm", name: "Phone Next alarm" }],
+  workday_sensors: [{ entity_id: "binary_sensor.workday_sensor", name: "Workday" }], weathers: [{ entity_id: "weather.home", name: "Home" }],
+  lived_in: { active: false, on: [] },
+  statuses: {
+    bedtime: { state: "running", conditions_ok: true, next_run: iso(22, 30), can_undo: false, progress: { step: 3, total: 4, label: "Wait for Garage door to be closed", started: iso(now.getHours(), now.getMinutes()), step_started: new Date(Date.now() - 3 * 60000).toISOString(), until: new Date(Date.now() + 5 * 60000).toISOString() } },
+    curtains: { state: "idle", conditions_ok: true, next_run: iso(17, 1), can_undo: true },
+    morning: { state: "asking", conditions_ok: true, next_run: iso(7, 0), ask_until: new Date(Date.now()+600000).toISOString() },
+  },
+};
+const today = {
+  mode: "home", paused: false,
+  planned: [{ at: iso(17, 1), routine_id: "curtains", name: "Close curtains", room: "bedroom", skip_next: false, paused_until: null }, { at: iso(22, 30), routine_id: "bedtime", name: "Bedtime", room: null, skip_next: true, paused_until: null }],
+  done: [{ at: iso(7, 0), routine_id: "morning", name: "Morning lights", outcome: "ran", reason: "", detail: "" }, { at: iso(8, 15), routine_id: "bedtime", name: "Bedtime", outcome: "skipped", reason: "wrong_mode", detail: "" }],
+  watching: [{ routine_id: "bedtime", name: "Bedtime", room: null }],
+};
+// A week of runs, shaped like daily_routine/activity's answer.
+const activity = () => {
+  const day = (back) => { const d = new Date(now); d.setDate(d.getDate() - back); return d.toISOString().slice(0, 10); };
+  const at = (back, h, m) => { const d = new Date(now); d.setDate(d.getDate() - back); d.setHours(h, m, 0, 0); return d.toISOString(); };
+  const by_day = Array.from({ length: 7 }, (_, i) => ({ day: day(6 - i), ran: [5, 6, 4, 6, 5, 6, 3][i], failed: [0, 0, 1, 0, 0, 0, 0][i], skipped: [1, 0, 1, 2, 0, 1, 1][i] }));
+  const sum = (k) => by_day.reduce((t, d) => t + d[k], 0);
+  const ran = sum("ran"), failed = sum("failed"), skipped = sum("skipped");
+  return {
+    window: "7d",
+    totals: { triggered: ran + failed + skipped, ran, failed, skipped, success_rate: Math.round((ran / (ran + failed)) * 100) },
+    by_day,
+    by_routine: [
+      { id: "morning", name: "Morning lights", enabled: true, ran: 5, failed: 0, skipped: 0, last_at: at(0, 7, 0), last_outcome: "ran", last_failure: null, failing_in_a_row: 0 },
+      { id: "curtains", name: "Close curtains", enabled: true, ran: 6, failed: 1, skipped: 0, last_at: at(1, 17, 3), last_outcome: "ran", last_failure: { at: at(4, 17, 2), reason: "error:cover.close_cover" }, failing_in_a_row: 0 },
+      { id: "bedtime", name: "Bedtime", enabled: true, ran: 24, failed: 0, skipped: 6, last_at: at(0, 8, 15), last_outcome: "skipped", last_failure: null, failing_in_a_row: 0 },
+    ],
+    failure_reasons: [{ reason: "error:cover.close_cover", count: 1 }],
+    skip_reasons: [{ reason: "wrong_mode", count: 4 }, { reason: "skipped_once", count: 2 }],
+    recent: [
+      { at: at(0, 8, 15), routine_id: "bedtime", name: "Bedtime", outcome: "skipped", reason: "wrong_mode", detail: "" },
+      { at: at(0, 7, 0), routine_id: "morning", name: "Morning lights", outcome: "ran", reason: "", detail: "Ran 1 step" },
+      { at: at(1, 22, 30), routine_id: "bedtime", name: "Bedtime", outcome: "ran", reason: "", detail: "Ran 6 steps" },
+      { at: at(1, 17, 3), routine_id: "curtains", name: "Close curtains", outcome: "ran", reason: "", detail: "Ran 1 step" },
+    ],
+    quiet_routines: [],
+    repeated_failures: [],
+    health: [],
+    devices: [{ entity_id: "light.lamp_3", name: "Lamp 4", failed: 3, retried: 2, ok: 20, success_rate: 88, last_problem: { at: at(2, 22, 31), reason: "didn't change" } }],
+  };
+};
+const hass = {
+  user: { is_admin: true }, language: "en",
+  services: { media_player: { play_media: { name: "Play media", fields: { media: { name: "Media", required: true, selector: { text: {} } }, enqueue: { name: "Enqueue", selector: { select: { options: ["play", "next", "add"] } } } } } } },
+  callWS: async (m) => {
+    if (m.type.endsWith("access/me")) return { allowed: true, is_admin: true };
+    if (m.type.endsWith("overview")) return data;
+    if (m.type.endsWith("today")) return today;
+    if (m.type.endsWith("activity")) return activity();
+    return {};
+  },
+  connection: { subscribeMessage: async () => () => {} },
+};
+const el = document.createElement("daily-routine-panel");
+document.body.appendChild(el);
+el.hass = hass;
+window.__panel = el;
+</script></body></html>

@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.31.3] - 2026-11-15
+
+### Changed
+
+- **Screenshots in the README.** The README now shows the Rooms, Routines, Today, Activity and Settings tabs, the simple editor, the dashboard card, a phone and the dark theme.
+
 ## [1.31.2] - 2026-11-15
 
 ### Changed
@@ -534,6 +540,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.31.3]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.31.2...v1.31.3
 [1.31.2]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.31.1...v1.31.2
 [1.31.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.31.0...v1.31.1
 [1.31.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.30.0...v1.31.0

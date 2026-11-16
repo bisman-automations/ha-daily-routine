@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta name="viewport" content="width=device-width"><style>body{margin:0;padding:16px;font-family:Roboto,sans-serif;background:#f4f4f4}</style></head><body>
+<script type="module">
+import "../../custom_components/daily_routine/frontend/daily-routine-card.js";
+const now = new Date();
+const iso = (h, m) => { const d = new Date(now); d.setHours(h, m, 0, 0); return d.toISOString(); };
+let cb;
+const hass = {
+  callWS: async (m) => m.type.endsWith("today") ? { planned: [{ at: iso(17, 1), routine_id: "curtains", name: "Close curtains", room: "bedroom", skip_next: false }, { at: iso(22, 30), routine_id: "bedtime", name: "Bedtime", room: null, skip_next: true }], done: [], watching: [] } : {},
+  connection: { subscribeMessage: async (f) => { cb = f; setTimeout(() => f({ log_count: 1, statuses: {
+    bedtime: { name: "Bedtime", room: null, state: "running", progress: { step: 2, total: 4, label: "Close Bedroom curtains", step_started: new Date().toISOString(), until: null } },
+    morning: { name: "Morning lights", room: "kitchen", state: "asking" } } }), 50); return () => {}; } },
+};
+const el = document.createElement("daily-routine-card");
+el.setConfig({ title: "Today" });
+document.body.appendChild(el);
+el.hass = hass;
+</script></body></html>

@@ -101,11 +101,19 @@ Then open **Daily Routine** in the sidebar. Rooms come from your Home Assistant 
 
 ## Using the sidebar
 
+![Rooms: what's running now and a card for each room](docs/images/rooms.png)
+
+![Routines: each routine with when it runs next, what it's doing now, and its buttons](docs/images/routines.png)
+
+<img src="docs/images/rooms-phone.png" alt="The Rooms tab on a phone" width="300"> <img src="docs/images/routines-dark.png" alt="The Routines tab in the dark theme" width="520">
+
 1. **Whole house** or a **room card** → **+ New routine**.
 2. Pick one of the **Ideas for your home** (routines your home's devices could use and none does yet), one **From what you do by hand** (see below), a routine from the **Library** (ready-made routines with several steps, by topic, such as *Gentle wake-up* or *Leaving home*), a template (for example *Open curtains* or *Lights off when vacant*), or start blank.
 3. Fill in the sentence: what it's called, **When**, **In** which room, and what to **Do**. Add anything else with the buttons under it (**Or also when**, **Only if**, **Ask me first** and so on). Use **Test (dry run)** to check it, then **Save**.
 
 That's the simple editor. **Switch to the full editor** shows every option at once; both change the same routine. Under **Settings**, **Routine editor** picks which one opens, for everyone and, if you like, differently on this device.
+
+![The simple editor: called, when, in which room, and the steps to do](docs/images/editor.png)
 
 Steps fold to one line saying what they do. Tap one to change it, drag them to reorder, and tick **At the same time as the step before** to start steps together instead of one after another.
 
@@ -131,6 +139,8 @@ Wherever you pick devices, each one shows the integration it comes from, such as
 Each routine card has **Run now**, **Undo** (for two hours after it ran), **Why not?** (what would stop it running on its own right now, in plain words, what it's waiting for, and why it was last skipped), **History** (the last 30 days as bars: ran, skipped and failed each day), **Edit**, **Duplicate**, **Copy to rooms**, **Share**, **Enable/Disable**, and **Delete**. **Copy to rooms** makes a copy for each room you tick: steps for the routine's room are for the new room instead, and steps for specific devices stay as they are. **Share** gives a code someone else with Daily Routine pastes under **+ New routine** → **Import a routine**; rooms are matched by name, and devices their home doesn't have are pointed out. Under the routine's details, **Recent runs** lists its last five runs, including skips and failures and why they happened. **See each step** replays a run: each step, how long it took, whether it worked, was skipped or failed (and why), and how its devices ended up. The Activity tab has the same for every run. The card also says how often its devices answered over the last 30 days (a retry counts half), naming the ones with the most trouble. **Undo the last hour** on the Today tab puts back what every routine changed in the last hour. When a routine's devices have power sensors (on the same device), the card shows the power they used before and a minute after its last run, such as *640 W → 85 W*, and what it saves or adds on average. A yellow warning appears on the card when something the routine needs is missing or unavailable, such as a device or to-do list. Duplicate opens a copy you can change before saving. In the editor, **Linked device** picks the device the routine belongs to. Each device is shown with the integration it comes from, such as *Office Curtains (SwitchBot Cloud)*, so devices with the same name can be told apart. Only real devices are offered, not services such as a Music Assistant player or another integration's service; a routine already linked to one keeps it until you change it.
 
 ## Dashboard card
+
+<img src="docs/images/card.png" alt="The dashboard card: what's running, a routine asking whether to run, and what's still to come today" width="480">
 
 Add the **Daily Routine** card to any dashboard (**Edit dashboard** → **Add card**, or in YAML):
 
@@ -214,6 +224,8 @@ On **Settings → Devices & services → Daily Routine**, choose *Download diagn
 
 ## Activity
 
+![Activity: totals, runs per day, and why runs failed or were skipped](docs/images/activity.png)
+
 The **Activity** tab shows how routines have been doing, for **Today**, the **7 days** or the **30 days**:
 
 - **Totals:** how many runs were triggered, how many succeeded, failed or were skipped, and the success rate.
@@ -227,6 +239,8 @@ The **Activity** tab shows how routines have been doing, for **Today**, the **7 
 The history is saved with Home Assistant, keeps the last 30 days, and is removed for a routine when that routine is deleted.
 
 ## Settings
+
+![Settings: people in routines, backup, notifications and the routine editor](docs/images/settings.png)
 
 - **People in routines.** Turn off the profiles that aren't people, such as a shared display, so they don't appear when you build a routine. A routine that already uses someone keeps them.
 - **Notifications.** Routine runs, skips and failures always appear in Home Assistant's notifications. Tick any phones or devices, shown by name, to send them there too. Any number can be selected.
@@ -400,6 +414,12 @@ pytest
 ```
 
 The frontend tests run with `node --test tests/*.mjs`.
+
+To look at the sidebar without Home Assistant, serve the repo root over HTTP and
+open `scripts/panel-preview/index.html` (add `?theme=dark` for the dark theme)
+or `card.html` for the dashboard card. `python scripts/panel-preview/shoot.py
+--mdi <folder with npm install @mdi/js>` retakes the README screenshots in
+`docs/images` from them (Playwright with Chromium).
 
 To test against the oldest supported Home Assistant (2026.9), use Python 3.14 and
 `pip install -r requirements_test_min.txt` instead.

@@ -17,6 +17,7 @@ Home Assistant custom integration (`daily_routine`) for scheduled household rout
   - `progress.py` (step labels), `undo.py`, `lived_in.py`, `timeline.py` (Today), `voice.py` (Assist): 1.22.0, see Conventions.
   - `frontend/daily-routine-panel.js`: the whole sidebar UI, one file, no build step.
 - `tests/`: pytest (Python backend) and `test_panel_frontend.mjs` (Node tests of the panel with a stubbed `HTMLElement`).
+- `scripts/panel-preview/`: `index.html` (the sidebar with a sample home; `window.__panel`) and `card.html` (the dashboard card) fake Home Assistant; their fake answers must match the real ones (same keys, reason codes the panel knows). `shoot.py [out] --mdi DIR` retakes the README's `docs/images/*.png` (`SHOTS`); rerun it when a pictured view's look changes.
 - `README.md` is user documentation. `CHANGELOG.md` is the release history.
 
 ## Checks
