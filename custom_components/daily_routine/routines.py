@@ -6,6 +6,8 @@ from datetime import date
 import re
 from typing import Any
 
+from homeassistant.util import dt as dt_util
+
 from .battery import DEFAULT_BELOW
 from .checklist import CHECKABLE, MAX_CHECKED
 from .const import (
@@ -911,7 +913,9 @@ MAX_TICKS = 12
 
 def _skip_dates(raw: Any) -> list[str]:
     """Days a routine doesn't run on its own: ISO dates, sorted, today on."""
-    today = date.today().isoformat()
+    # Home Assistant's day, not the computer's: Home Assistant OS runs on
+    # UTC, so the computer's clock is tomorrow during a US evening.
+    today = dt_util.now().date().isoformat()
     days = []
     for value in _as_list(raw):
         try:

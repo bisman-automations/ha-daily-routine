@@ -149,3 +149,12 @@ async def test_coming_home_summary(hass: HomeAssistant):
     assert (
         away_text([], since, []) == "Welcome home. No routines ran while you were away."
     )
+
+
+async def test_skip_dates_use_home_assistants_day(hass: HomeAssistant, freezer):
+    """1.31.2: late evening in Chicago is already tomorrow in UTC (the
+    computer's clock on Home Assistant OS); today still counts."""
+    await hass.config.async_set_time_zone("America/Chicago")
+    freezer.move_to("2026-11-16T04:30:00+00:00")  # 22:30 on the 15th there
+    routine = make_routine(skip_dates=["2026-11-15", "2026-11-16"])
+    assert routine["skip_dates"] == ["2026-11-15", "2026-11-16"]

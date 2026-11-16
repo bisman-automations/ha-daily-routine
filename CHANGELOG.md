@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Status sensors do less.** Each routine's status sensor now works out only what it shows (not the run history, device reliability, power and holds the sidebar uses), and writes its state only when that changed. With 40 routines, a stream of sensor changes takes about half the time it did.
 - **Routines found faster.** Looking a routine up by its id (done for every sensor on every update) no longer reads through the whole list each time.
 
+### Fixed
+
+- **Skip days in the evening.** A routine's skip days were checked against the computer's clock instead of Home Assistant's time zone. On Home Assistant OS (which runs on UTC) that dropped today from **Skip these days** during the evening in the Americas, so the routine still ran. Today now counts until midnight where you are.
+
 ## [1.31.1] - 2026-11-15
 
 ### Changed
