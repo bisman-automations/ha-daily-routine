@@ -622,6 +622,10 @@ class HomeRoutinesCoordinator:
         # How things were just before each routine's last run, for Undo (in memory).
         self._undo: dict[str, dict[str, Any]] = {}
         self._listeners: list[Callable[[], None]] = []
+        # _find's index of routine positions, and which list it was built for.
+        self._index: dict[str, int] = {}
+        self._index_of: list[dict[str, Any]] | None = None
+        self._index_len = -1
         # Told straight away (the pause switch, House mode): an automation that
         # changes one and reads it back sees the new state.
         self._now_listeners: list[Callable[[], None]] = []
@@ -659,7 +663,29 @@ class HomeRoutinesCoordinator:
         return self._runtime.setdefault(routine_id, _blank_runtime())
 
     def _find(self, routine_id: str) -> dict[str, Any] | None:
-        return next((r for r in self.routines if r["id"] == routine_id), None)
+        """The routine with this id. Asked very often (every sensor, every
+        update), so through an index of positions, built again whenever the
+        list is another one or another length, or a position no longer holds
+        that routine."""
+        routines = self.routines
+        if self._index_of is not routines or self._index_len != len(routines):
+            self._build_index()
+        position = self._index.get(routine_id)
+        if position is not None and position < len(routines):
+            routine = routines[position]
+            if routine["id"] == routine_id:
+                return routine
+            self._build_index()
+            position = self._index.get(routine_id)
+            return routines[position] if position is not None else None
+        # Not in the index: look through the list itself (a routine put in
+        # place of another keeps the list's length).
+        return next((r for r in routines if r["id"] == routine_id), None)
+
+    def _build_index(self) -> None:
+        self._index = {r["id"]: i for i, r in enumerate(self.routines)}
+        self._index_of = self.routines
+        self._index_len = len(self.routines)
 
     def _set_handle(
         self, routine_id: str, kind: str, unsub: Callable[[], None]
@@ -876,6 +902,34 @@ class HomeRoutinesCoordinator:
         known = [dt_util.parse_datetime(t) for t in times if t]
         found = [t for t in known if t is not None]
         return min(found).isoformat() if found else None
+
+    def sensor_status(self, routine_id: str) -> dict[str, Any] | None:
+        """The part of ``get_status`` a routine's status sensor shows. Every
+        sensor asks after every update, so the run history, device
+        reliability, power, holds and undo (the dashboard's) are left out."""
+        routine = self._find(routine_id)
+        if routine is None:
+            return None
+        rt = self._rt(routine_id)
+        ok, reason = self._check(routine, dt_util.now())
+        return {
+            "name": routine["name"],
+            "enabled": routine["enabled"],
+            "room": routine["room"],
+            "paused": self.paused,
+            "state": rt["state"],
+            "last_run": rt["last_run"],
+            "last_result": rt["last_result"],
+            "next_run": self._next_run_of(routine_id),
+            "clear_since": rt["clear_since"].isoformat() if rt["clear_since"] else None,
+            "conditions_ok": ok,
+            "block_reason": reason,
+            "waiting": rt["pending_date"] is not None,
+            "trigger": routine["trigger"],
+            "days": routine["days"],
+            "time": routine["time"],
+            "repeat": routine["repeat"],
+        }
 
     def get_status(self, routine_id: str) -> dict[str, Any] | None:
         routine = self._find(routine_id)

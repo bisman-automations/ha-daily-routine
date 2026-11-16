@@ -160,3 +160,28 @@ async def test_live_push_is_shared_and_skips_repeats(
         assert built == [1, 1]
     finally:
         panel._status = real  # noqa: SLF001
+
+
+async def test_find_and_sensor_status(hass: HomeAssistant, enable_custom_integrations):
+    """1.31.2: routines are found through an index that follows every change
+    to the list, and status sensors get only what they show and write only
+    when it changed."""
+    coord = await _setup(hass)
+    step = {"service": "light.turn_off", "target": {"entity_id": ["light.x"]}}
+    base = {"trigger": "manual", "actions": [step]}
+    await coord.async_save_routine({"id": "a", "name": "A", **base})
+    await coord.async_save_routine({"id": "b", "name": "B", **base})
+    assert coord._find("b")["name"] == "B"  # noqa: SLF001
+    # Replaced in place (same length), removed, and a new list.
+    index = next(i for i, r in enumerate(coord.routines) if r["id"] == "b")
+    coord.routines[index] = {**coord.routines[index], "id": "c", "name": "C"}
+    assert coord._find("c")["name"] == "C"  # noqa: SLF001
+    assert coord._find("b") is None  # noqa: SLF001
+    coord.routines = [r for r in coord.routines if r["id"] != "c"]
+    assert coord._find("c") is None and coord._find("a")["name"] == "A"  # noqa: SLF001
+    status = coord.sensor_status("a")
+    full = coord.get_status("a")
+    assert status is not None and full is not None
+    assert all(status[key] == full[key] for key in status)
+    assert "history" not in status and "reliability" not in status
+    assert coord.sensor_status("missing") is None

@@ -71,6 +71,7 @@ class RoutineStatusSensor(SensorEntity):
         self._attr_unique_id = f"{DOMAIN}_{routine_id}_status"
         self._attrs: dict[str, Any] = {}
         self._state = "idle"
+        self._written: tuple[str, dict[str, Any]] | None = None
 
     @property
     def name(self) -> str:
@@ -112,7 +113,7 @@ class RoutineStatusSensor(SensorEntity):
 
     @callback
     def _handle_update(self) -> None:
-        status = self.coordinator.get_status(self.routine_id)
+        status = self.coordinator.sensor_status(self.routine_id)
         if not status:
             return
         self._state = status["state"]
@@ -134,6 +135,11 @@ class RoutineStatusSensor(SensorEntity):
             "time": status["time"],
             "days": status["days"],
         }
+        # Nothing it shows changed: no state to write.
+        written = (self._state, self._attrs)
+        if written == self._written:
+            return
+        self._written = written
         if self.hass is not None:
             self.async_write_ha_state()
 
