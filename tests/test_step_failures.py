@@ -107,7 +107,9 @@ async def test_the_devices_that_answer_still_change(hass: HomeAssistant, caplog)
     assert not switch
     last = coord.get_history("routine_one")[0]
     assert last["outcome"] == "failed"
-    assert last["detail"] == "Hall light couldn't be reached"
+    assert last["detail"] == (
+        "Hall light couldn't be reached: Failed to connect after 4 attempt(s)"
+    )
     # One short line, no traceback.
     lines = [r for r in caplog.records if "Hall light" in r.getMessage()]
     assert len(lines) == 1 and lines[0].exc_info is None
@@ -211,7 +213,7 @@ async def test_a_stuck_device_has_a_time_limit(hass: HomeAssistant):
     assert await asyncio.wait_for(coord.async_run("routine_one"), 5) is False
     assert (
         coord.get_history("routine_one")[0]["detail"]
-        == "Hall light couldn't be reached"
+        == "Hall light timed out: no answer within 1 seconds"
     )
 
 
@@ -234,7 +236,10 @@ async def test_checks_that_it_worked(hass: HomeAssistant):
     assert await coord.async_run("routine_one") is False
     # Sent once more to the one that didn't change.
     assert calls[-1] == ["light.porch"]
-    assert coord.get_history("routine_one")[0]["detail"] == "Porch light didn't change"
+    assert (
+        coord.get_history("routine_one")[0]["detail"]
+        == "Porch light stayed on after 1 s (wanted off)"
+    )
 
 
 async def test_try_again_button(hass: HomeAssistant):
@@ -263,7 +268,8 @@ async def test_try_again_button(hass: HomeAssistant):
     await hass.async_block_till_done()
     message = sent[-1].data
     assert message["message"] == (
-        "Routine 'Routine one' failed: Hall light couldn't be reached."
+        "Routine 'Routine one' failed: Hall light couldn't be reached: "
+        "Failed to connect after 4 attempt(s)."
     )
     action = message["data"]["actions"][0]
     assert action == {"action": f"{TRY_AGAIN_ACTION}routine_one", "title": "Try again"}

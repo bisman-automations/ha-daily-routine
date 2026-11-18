@@ -418,6 +418,7 @@ def _group_from_cluster(
     covering_domains = {
         name for name, count in counts.items() if count == 1 and max_count > 1
     }
+    covering_domains = _real_pairs(cluster, covering_domains, by_domain, entity_device)
     covering_device_ids = {
         entity_device[ids[0]]
         for name, ids in by_domain.items()
@@ -526,6 +527,48 @@ def _group_from_cluster(
     return LinkedGroup(levels=tuple(levels), members=tuple(slim_members))
 
 
+def _real_pairs(
+    cluster: list[Any],
+    candidates: set[str],
+    by_domain: dict[str, list[str]],
+    entity_device: dict[str, str],
+) -> set[str]:
+    """Keep only the integrations whose single entity really covers both sides.
+
+    One entity of an integration among two of another looks like a pair (the
+    Matter pair beside left and right SwitchBot). It is only one when its
+    device links to more than one side; a right curtain that is the only one
+    in SwitchBot Cloud (the left was never added) is just the right curtain.
+    When the sides can't be told apart (one shared address on every device),
+    the candidates stay as they are.
+    """
+    if not candidates:
+        return candidates
+    candidate_devices = {
+        name: entity_device[by_domain[name][0]]
+        for name in candidates
+        if by_domain[name][0] in entity_device
+    }
+    with_entities = set(entity_device.values())
+    sides = [
+        side
+        for side in _subclusters(cluster, set(candidate_devices.values()))
+        if any(device.id in with_entities for device in side)
+    ]
+    if len(sides) < 2:
+        return candidates
+    side_keys = [
+        set().union(*(_device_keys(device) for device in side)) for side in sides
+    ]
+    by_id = {device.id: device for device in cluster}
+    kept: set[str] = set()
+    for name, device_id in candidate_devices.items():
+        keys = _device_keys(by_id[device_id])
+        if sum(1 for each in side_keys if keys & each) >= 2:
+            kept.add(name)
+    return kept
+
+
 def _members_of_cluster(
     cluster: list[Any],
     covering_device_ids: set[str],
@@ -597,3 +640,89 @@ def _linked_integrations(hass: HomeAssistant) -> list[str]:
         if len(cluster_domains) > 1:
             domains |= cluster_domains
     return sorted(domains, key=lambda d: sort_key(hass, [], d))
+
+
+# ----- 1.34.0: the routine's linked device first -----
+#
+# A routine can be linked to a device ("Linked device" under More options),
+# usually the Matter one. When a step reaches that device, or the devices it
+# is linked to, the linked device is tried first, on its own, and the other
+# integrations follow in the integration order only if it doesn't do it. Its
+# linked siblings are never sent the command at the same time.
+
+
+def lead_entities(hass: HomeAssistant, device_id: str | None, domain: str) -> list[str]:
+    """The linked device's entities that this action is for (its covers, for example)."""
+    if not device_id or dr.async_get(hass).async_get(device_id) is None:
+        return []
+    return [
+        entry.entity_id
+        for entry in _domain_entities(er.async_get(hass), device_id, domain)
+    ]
+
+
+def lead_first(
+    groups: list[LinkedGroup], lead: list[str]
+) -> tuple[list[LinkedGroup], int | None]:
+    """Put the linked device's level first in the group it is in.
+
+    Returns the groups (that one with its levels reordered, the others as they
+    were) and which group it is, or None when no group with more than one way
+    has it (then nothing changes here; see ``area_fallbacks``). The other levels keep their order (the integration order).
+    """
+    wanted = set(lead)
+    for index, group in enumerate(groups):
+        if not group.has_fallback:
+            continue  # a device on its own: nothing to put it ahead of
+        first = [lvl for lvl in group.levels if wanted & set(lvl.entity_ids)]
+        if not first:
+            continue
+        rest = [lvl for lvl in group.levels if lvl not in first]
+        led = LinkedGroup(levels=(*first, *rest), members=group.members)
+        return [*groups[:index], led, *groups[index + 1 :]], index
+    return groups, None
+
+
+def _device_class(hass: HomeAssistant, entity_id: str) -> str | None:
+    state = hass.states.get(entity_id)
+    if state is not None and state.attributes.get("device_class"):
+        return str(state.attributes["device_class"])
+    entry = er.async_get(hass).async_get(entity_id)
+    if entry is None:
+        return None
+    return entry.device_class or entry.original_device_class
+
+
+def area_fallbacks(
+    hass: HomeAssistant,
+    lead: list[str],
+    entities: list[str],
+    area_entities: list[str],
+    order: list[str],
+) -> list[tuple[str, ...]]:
+    """Without Device Linker: the step's other devices in the linked device's
+    room, of the same kind, as fallbacks, one level per integration in order.
+
+    Only used when the step reaches the linked device itself. "Same kind" is
+    the same domain (the step's entities already are) and, when the linked
+    device says, the same device class: curtains fall back to curtains, not
+    to the room's blind or garage door.
+    """
+    if not lead or not set(lead) & set(entities):
+        return []
+    in_room = set(area_entities)
+    kind = _device_class(hass, lead[0])
+    ent_reg = er.async_get(hass)
+    by_platform: dict[str, list[str]] = {}
+    for entity_id in entities:
+        if entity_id in lead or entity_id not in in_room:
+            continue
+        if kind and _device_class(hass, entity_id) not in (kind, None):
+            continue
+        entry = ent_reg.async_get(entity_id)
+        platform = entry.platform if entry else entity_id.split(".", 1)[0]
+        by_platform.setdefault(platform, []).append(entity_id)
+    return [
+        tuple(by_platform[name])
+        for name in sorted(by_platform, key=lambda name: sort_key(hass, order, name))
+    ]

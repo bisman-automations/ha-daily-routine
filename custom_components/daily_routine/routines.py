@@ -683,7 +683,8 @@ def _normalize_condition(raw: Any, index: int) -> dict[str, Any]:
         sensors = _entity_list(raw.get("sensors"), f"Condition {index}")
         if not sensors:
             raise vol.Invalid(
-                "Pick the motion or occupancy sensors for this condition."
+                f"Condition {index} (Sensors) has no sensors picked: pick the "
+                "motion or occupancy sensors, or remove it."
             )
         mode = str(raw.get("mode") or "quiet")
         if mode not in SENSOR_MODES:

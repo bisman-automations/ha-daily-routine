@@ -18,7 +18,8 @@ const clock = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", m
 function percent(progress) {
   if (!progress) return 5;
   const { step, total, step_started: from, until } = progress;
-  let part = 0;
+  // A step with no end time is shown half done (1.34.0), not as a 3% dot.
+  let part = until ? 0 : 0.5;
   if (from && until) {
     const span = new Date(until) - new Date(from);
     part = span > 0 ? Math.max(0, Math.min(1, (Date.now() - new Date(from)) / span)) : 1;
@@ -216,8 +217,9 @@ class DailyRoutineCard extends HTMLElement {
       button.ghost { background: transparent; color: var(--primary-text-color); }
       button:disabled { opacity: .5; }
       .pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: var(--warning-color, #ffa600); color: #000; margin-left: 6px; }
-      .progress { height: 6px; border-radius: 3px; background: var(--secondary-background-color, #eee); overflow: hidden; margin: 6px 0 2px; }
-      .bar { height: 100%; background: var(--primary-color, #03a9f4); transition: width .4s ease; }
+      .progress { height: 6px; border-radius: 3px; overflow: hidden; margin: 6px 0 4px;
+        background: color-mix(in srgb, var(--primary-color, #03a9f4) 22%, var(--secondary-background-color, #eee)); }
+      .bar { height: 100%; border-radius: 3px; background: var(--primary-color, #03a9f4); transition: width .4s ease; }
       .note { color: var(--error-color); font-size: 13px; }
       .presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; margin-bottom: 10px; }
       .presets button { font-size: 15px; padding: 12px; }

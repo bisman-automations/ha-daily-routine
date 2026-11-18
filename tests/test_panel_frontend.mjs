@@ -709,7 +709,8 @@ test("a routine card lists its recent runs, closed, in plain words", () => {
   assert.match(html, /<details class="history"><summary[^>]*>Recent runs<\/summary>/);
   assert.match(html, /· ran</);
   assert.match(html, /skipped: an extra condition is not met/);
-  assert.match(html, /failed: error:light\.turn_off/);
+  // 1.34.0: a result code is put in words, never the raw service.
+  assert.match(html, /failed: A step failed \(turn off\)/);
   assert.doesNotMatch(html, /extra_condition_not_met</, "no raw reason codes in the labels");
   assert.equal(panel._historyHtml({ history: [] }), "");
   assert.ok(panel._routineCard(routine, {}) !== undefined);
@@ -959,7 +960,7 @@ test("a checked-off trigger is summarised by its item and list", () => {
 test("the checked-off trigger offers a to-do list and an optional item name, and saves them", () => {
   const panel = makePanel();
   panel._data.todo_lists = [{ entity_id: "todo.groceries", name: "Groceries", state: "2" }];
-  panel._draft = panel._applyTemplate({ title: "Blank", draft: { trigger: "todo_done", actions: [{ service: "light.turn_on", targetMode: "area" }] } }, null);
+  panel._draft = panel._applyTemplate({ title: "Blank", draft: { trigger: "todo_done", actions: [{ service: "light.turn_on", targetMode: "all_areas" }] } }, null);
   panel._draft.watch_entity = "todo.groceries";
   panel._draft.watch_item = "  Milk ";
   panel._view = { name: "editor", room: null };
@@ -976,7 +977,7 @@ test("the checked-off trigger offers a to-do list and an optional item name, and
 test("the notify-on-health choice is shown under Options and saved with the routine", () => {
   const panel = makePanel();
   panel._draft = panel._newDraft(null);
-  panel._draft.actions = [{ kind: "service", service: "light.turn_on", targetMode: "none", area: "", entities: [], data: "" }];
+  panel._draft.actions = [{ kind: "service", service: "light.turn_on", targetMode: "entities", area: "", entities: ["light.kitchen"], data: "" }];
   panel._view = { name: "editor", room: null };
   panel._render();
   assert.match(panel.shadowRoot.innerHTML, /data-f="notify_on_health"/);
@@ -990,7 +991,7 @@ test("the wait-for-list option is off for a new routine, shown, and saved", () =
   const panel = makePanel();
   panel._draft = panel._newDraft(null);
   assert.equal(panel._draft.wait_when_unavailable, false);
-  panel._draft.actions = [{ kind: "service", service: "light.turn_on", targetMode: "none", area: "", entities: [], data: "" }];
+  panel._draft.actions = [{ kind: "service", service: "light.turn_on", targetMode: "entities", area: "", entities: ["light.kitchen"], data: "" }];
   panel._view = { name: "editor", room: null };
   panel._render();
   assert.match(panel.shadowRoot.innerHTML, /data-f="wait_when_unavailable"/);
@@ -1476,7 +1477,8 @@ test("a running routine shows its step and a progress bar, and Run now is held",
   const html = panel.shadowRoot.innerHTML;
   assert.match(html, /Step 2 of 4 · Close Bedroom curtains/);
   assert.match(html, /role="progressbar"[^>]*aria-valuenow="1"/);
-  assert.match(html, /width:25%/);
+  // 1.34.0: a step with no end time is shown half way through it, moving.
+  assert.match(html, /class="bar working" style="width:38%"/);
   assert.match(html, /disabled>Running…/);
   panel._view = { name: "rooms" };
   panel._render();
@@ -1547,6 +1549,7 @@ test("house mode, workday and weather conditions are offered and saved", () => {
   panel._data.weathers = [{ entity_id: "weather.home", name: "Home" }];
   panel._draft = panel._applyTemplate({ title: "Blank routine", draft: {} }, null);
   panel._draft.conditions.push({ kind: "mode", modes: ["home"] }, { kind: "workday", entity_id: "binary_sensor.workday_sensor", when: "day_off" }, { kind: "weather", entity_id: "weather.home", test: "above", value: "25" });
+  Object.assign(panel._draft.actions[0], { service: panel._draft.actions[0].service || "light.turn_on", targetMode: "entities", entities: ["light.kitchen"] });
   panel._view = { name: "editor", room: null };
   panel._render();
   const html = panel.shadowRoot.innerHTML;

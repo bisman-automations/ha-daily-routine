@@ -50,6 +50,8 @@ const WEATHER_NAMES = {
 // What a step's "only if" can check.
 const ONLY_IF_KINDS = [["", "Always"], ["state", "A device's state"], ["mode", "The house mode"], ["workday", "Workday or day off"], ["day_type", "The kind of day"], ["weather", "The weather"], ["forecast", "The forecast"]];
 const NORMAL_DAY = "Normal day";
+// Actions on these need a device or a room (the server's DEVICE_DOMAINS).
+const DEVICE_DOMAINS = ["cover", "light", "switch", "fan", "lock", "climate", "media_player", "valve", "vacuum", "humidifier", "water_heater", "siren", "input_boolean"];
 const ROOM_FILTERS = [["", "Every room picked"], ["occupied", "Only rooms someone is in"], ["empty", "Only empty rooms"]];
 
 // A device's name with the integration it comes from: the same light can be
@@ -138,9 +140,29 @@ function activityReason(code) {
   if (code.startsWith("missing_service:")) return `Action not found: ${code.slice("missing_service:".length)}`;
   if (code === "error:todo_list_unavailable") return "To-do list was not available";
   if (code.startsWith("error:todo_")) return "A to-do step failed";
-  if (code.startsWith("error:")) return `Action failed: ${code.slice("error:".length)}`;
+  if (code.startsWith("error:")) {
+    // A code only (no step said more): the action in words, never the raw service.
+    const [domain, service] = code.slice("error:".length).split(".");
+    return `A step failed (${(service || domain || "").replaceAll("_", " ")})`;
+  }
   if (code.startsWith("conditions_failed_mid_run:")) return `Conditions stopped the run partway: ${code.slice("conditions_failed_mid_run:".length)}`;
   return code;
+}
+
+// The card's "last:" words: why the last run failed, from the run itself when
+// it said (which device, which integration, what Home Assistant answered).
+const LAST_WHY_LENGTH = 140;
+function lastWhy(status) {
+  const code = status?.last_result;
+  if (!code || code === "success") return "";
+  if (code.startsWith("error:") && status.last_reason) return status.last_reason;
+  return activityReason(code);
+}
+function lastWhyHtml(status) {
+  const full = lastWhy(status);
+  if (!full) return "";
+  const short = full.length > LAST_WHY_LENGTH ? `${full.slice(0, LAST_WHY_LENGTH - 1)}…` : full;
+  return ` · last: <span class="last-why" title="${esc(full)}">${esc(short)}</span>`;
 }
 
 function fmtTime(iso) {
@@ -742,6 +764,48 @@ function isDevicePicker(el) {
   return el.querySelectorAll("label").length >= 8;
 }
 
+// Editor lists of devices to tick: what's ticked is shown first, under
+// "Selected", with a count and a switch to show only those.
+const ENTITY_ID_RE = /^[a-z0-9_]+\.[a-z0-9_]+$/;
+const SELECTED_MIN = 4;
+function pickLabels(el) {
+  return [...el.children].filter((c) => c.tagName === "LABEL" && c.querySelector("input")?.type === "checkbox");
+}
+function isEntityChecklist(el) {
+  const labels = pickLabels(el);
+  if (labels.length < SELECTED_MIN) return false;
+  const entities = labels.filter((l) => Object.values(l.querySelector("input").dataset).some((v) => ENTITY_ID_RE.test(v)));
+  return entities.length >= labels.length / 2;
+}
+function arrangeSelected(el, key, only) {
+  const labels = pickLabels(el);
+  if (!el.dataset.selKey) {
+    labels.forEach((label, i) => { label.dataset.selOrder = String(i); });
+    const bar = document.createElement("div");
+    bar.className = "sel-bar";
+    bar.innerHTML = `<span class="pill sel-count"></span><label class="sel-only"><input type="checkbox" data-sel-only="${esc(key)}" ${only ? "checked" : ""}> Show only selected</label>`;
+    const head = document.createElement("div");
+    head.className = "sel-head sel-picked";
+    head.textContent = "Selected";
+    const rest = document.createElement("div");
+    rest.className = "sel-head sel-rest";
+    rest.textContent = "Everything else";
+    el.prepend(bar, head);
+    el.append(rest);
+    el.dataset.selKey = key;
+  }
+  const order = (l) => Number(l.dataset.selOrder);
+  const picked = labels.filter((l) => l.querySelector("input").checked).sort((a, b) => order(a) - order(b));
+  const others = labels.filter((l) => !l.querySelector("input").checked).sort((a, b) => order(a) - order(b));
+  for (const label of labels) label.classList.toggle("sel-on", picked.includes(label));
+  const [bar, head] = [...el.children].filter((c) => c.className?.startsWith?.("sel-"));
+  const rest = [...el.children].find((c) => c.className === "sel-head sel-rest");
+  el.append(bar, head, ...picked, rest, ...others);
+  bar.querySelector(".sel-count").textContent = `${picked.length} selected`;
+  el.classList.toggle("only-selected", Boolean(only));
+  el.classList.toggle("none-selected", !picked.length);
+}
+
 function filterPicker(el, text) {
   const q = text.trim().toLowerCase();
   if (el.tagName === "SELECT") {
@@ -755,6 +819,7 @@ function filterPicker(el, text) {
     return;
   }
   for (const label of el.querySelectorAll("label")) {
+    if (label.classList.contains("sel-only")) continue;
     label.style.display = !q || label.textContent.toLowerCase().includes(q) ? "" : "none";
   }
 }
@@ -782,7 +847,7 @@ function attentionHtml(rows) {
   if (!rows?.length) return "";
   return `<section class="card attention"><h3>Not working well</h3>
     <p class="muted small">These worked on fewer than half of their tries in the last two weeks. <strong>Why not?</strong> and <strong>History</strong> on their cards say more.</p>
-    <ul class="plain">${rows.map((r) => `<li><strong>${esc(r.name)}</strong> <span class="muted small">ran ${r.ran} of ${r.tries} times${r.failed ? ` · failed ${r.failed}` : ""}${r.skipped ? ` · skipped ${r.skipped}` : ""}</span>
+    <ul class="plain">${rows.map((r) => `<li><strong>${esc(r.name)}</strong> <span class="muted small">ran ${r.ran} of ${r.tries} times${r.failed ? ` · failed ${r.failed}` : ""}${r.skipped ? ` · skipped ${r.skipped}` : ""}</span>${r.last_problem ? `<div class="muted small">Last failure: ${esc(activityReason(r.last_problem))}</div>` : ""}
       <button class="ghost" data-act="why" data-id="${esc(r.routine_id)}">Why not?</button></li>`).join("")}</ul></section>`;
 }
 
@@ -869,23 +934,28 @@ function stepPart(from, to) {
   return Math.max(0, Math.min(1, (Date.now() - new Date(from)) / span));
 }
 
+// How far into a step with no end time the bar shows it (half way).
+const UNTIMED_PART = 0.5;
 function barPercent(step, total, part) {
   return Math.max(3, Math.min(100, Math.round(((step - 1 + part) / Math.max(1, total)) * 100)));
 }
 
 // How far a running routine has got: a bar and "Step 2 of 5 · Close Bedroom curtains".
+// 1.34.0: in its own block, so the step line never sits over the bar, and a
+// step with no end time (opening curtains) is shown half done and moving,
+// not as a 3% sliver: on "Step 1 of 1" that sliver was only a blue dot.
 function progressHtml(progress) {
   if (!progress) {
-    return `<div class="progress indeterminate" role="progressbar" aria-label="Starting"><div class="bar"></div></div>
-      <div class="small progress-text">Starting…</div>`;
+    return `<div class="run-progress"><div class="progress indeterminate" role="progressbar" aria-label="Starting"><div class="bar"></div></div>
+      <div class="small progress-text">Starting…</div></div>`;
   }
   const { step, total, label, until, step_started: stepStarted } = progress;
-  const part = stepPart(stepStarted, until);
+  const part = until ? stepPart(stepStarted, until) : UNTIMED_PART;
   const pct = barPercent(step, total, part);
   const left = until ? Math.max(0, Math.round((new Date(until) - Date.now()) / 1000)) : 0;
   const timed = until && stepStarted ? ` data-from="${esc(stepStarted)}" data-to="${esc(until)}" data-step="${step}" data-total="${total}"` : "";
-  return `<div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${step - 1}" aria-label="Step ${step} of ${total}"><div class="bar"${timed} style="width:${pct}%"></div></div>
-    <div class="small progress-text">Step ${step} of ${total} · ${esc(label)}${until ? `<span data-until="${esc(until)}">${left ? ` · ${clockText(left)} left` : ""}</span>` : ""}</div>`;
+  return `<div class="run-progress"><div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${step - 1}" aria-label="Step ${step} of ${total}"><div class="bar${until ? "" : " working"}"${timed} style="width:${pct}%"></div></div>
+    <div class="small progress-text">Step ${step} of ${total} · ${esc(label)}${until ? `<span data-until="${esc(until)}">${left ? ` · ${clockText(left)} left` : ""}</span>` : ""}</div></div>`;
 }
 
 function hhmm(time) {
@@ -1065,6 +1135,7 @@ class DailyRoutinePanel extends HTMLElement {
     this._wired = true;
     this.shadowRoot.addEventListener("click", (e) => this._onClick(e));
     this.shadowRoot.addEventListener("change", (e) => this._onField(e));
+    this.shadowRoot.addEventListener("change", (e) => this._afterPick(e));
     this.shadowRoot.addEventListener("input", (e) => this._onField(e, true));
     // Drag a folded step to move it.
     this.shadowRoot.addEventListener("dragstart", (e) => {
@@ -1566,6 +1637,13 @@ class DailyRoutinePanel extends HTMLElement {
 
   _draftToRaw(draft) {
     const areaIds = this._areas().map((a) => a.id);
+    // An "Only if" sensor condition with nothing ticked would mean nothing:
+    // say so here instead of saving it (the server refuses it too).
+    draft.conditions.forEach((c, i) => {
+      if (c.kind === "sensors" && !(c.sensors || []).length) {
+        throw new Error(`Only if, condition ${i + 1} (Sensors): no sensors are picked. Pick the motion or occupancy sensors, or remove it.`);
+      }
+    });
     const actions = draft.actions.map((step, index) => {
       if (step.kind === "delay") return { delay: Number(step.seconds) || 0 };
       if (step.kind === "routine") {
@@ -1635,6 +1713,12 @@ class DailyRoutinePanel extends HTMLElement {
       } else if (step.targetMode === "area" && step.area) target = { area_id: [step.area] };
       else if (step.targetMode === "all_areas") target = { area_id: areaIds };
       else if (step.targetMode === "entities" && step.entities.length) target = { entity_id: [...step.entities] };
+      // A device action with nowhere to go fails every run ("has no devices to
+      // send it to"): ask for the devices now.
+      const stepDomain = step.service.trim().split(".")[0];
+      if (!spec?.untargeted && !Object.keys(target).length && DEVICE_DOMAINS.includes(stepDomain)) {
+        throw new Error(`Step ${index + 1}: pick the devices or a room it is for.`);
+      }
       let data = {};
       if (step.data && step.data.trim()) {
         try {
@@ -2306,6 +2390,7 @@ class DailyRoutinePanel extends HTMLElement {
   _onField(event, live = false) {
     const el = event.target;
     if (!el.dataset) return;
+    if (el.dataset.selOnly !== undefined) return; // the list's own "Show only selected"
     if (el.dataset.pickerSearch !== undefined) {
       this._searchText[el.dataset.pickerSearch] = el.value;
       const target = this._pickers?.get(el);
@@ -2514,9 +2599,12 @@ class DailyRoutinePanel extends HTMLElement {
         return;
       }
       if (el.dataset.csensor !== undefined) {
+        const had = cond.sensors.length;
         const i = cond.sensors.indexOf(el.dataset.csensor);
         if (el.checked && i < 0) cond.sensors.push(el.dataset.csensor);
         if (!el.checked && i >= 0) cond.sensors.splice(i, 1);
+        // The "no sensors picked" warning comes and goes with the first one.
+        if (!had !== !cond.sensors.length && !live) this._render();
         return;
       }
       if (el.dataset.cmode !== undefined) {
@@ -2622,7 +2710,36 @@ class DailyRoutinePanel extends HTMLElement {
     const running = this._data && ["rooms", "activity", "todos"].includes(this._view.name) ? this._runningStrip() : "";
     this.shadowRoot.innerHTML = `${STYLES}<main>${this._renderHeader()}${banner}${notice}${running}${body}</main>`;
     this._labelIntegrations();
+    this._addSelected();
     this._addSearches();
+  }
+
+  // Every list of devices to tick in the editor: the ticked ones on top.
+  _addSelected() {
+    const root = this.shadowRoot;
+    if (!root?.querySelectorAll || typeof document === "undefined" || this._view.name !== "editor") return;
+    this._onlySelected = this._onlySelected || new Set();
+    let n = 0;
+    for (const el of root.querySelectorAll(".checks")) {
+      if (!isEntityChecklist(el)) continue;
+      const key = `sel:${n++}`;
+      arrangeSelected(el, key, this._onlySelected.has(key));
+    }
+  }
+
+  // After a tick in such a list: move it to (or out of) "Selected".
+  _afterPick(event) {
+    const el = event.target;
+    if (!el || el.type !== "checkbox") return;
+    if (el.dataset.selOnly !== undefined) {
+      this._onlySelected = this._onlySelected || new Set();
+      if (el.checked) this._onlySelected.add(el.dataset.selOnly);
+      else this._onlySelected.delete(el.dataset.selOnly);
+    }
+    const box = el.closest?.(".checks");
+    if (box?.dataset?.selKey && box.isConnected !== false) {
+      arrangeSelected(box, box.dataset.selKey, this._onlySelected?.has(box.dataset.selKey));
+    }
   }
 
   // Every device list shows which integration each device comes from.
@@ -2793,7 +2910,7 @@ class DailyRoutinePanel extends HTMLElement {
     const status = this._data.statuses[routine.id] || {};
     const state = status.waiting ? "waiting" : status.state || "idle";
     const reason = !status.conditions_ok && status.block_reason ? ` · ${REASON_LABELS[status.block_reason] || status.block_reason}` : "";
-    const detail = status.last_result && status.last_result !== "success" && state !== "waiting" ? ` · last: ${esc(status.last_result)}` : "";
+    const detail = state !== "waiting" ? lastWhyHtml(status) : "";
     const waitLine = status.waiting
       ? `<div class="small skip-line"><span class="pill warn">Runs as soon as its conditions are met${status.wait_ends ? `, until ${esc(new Date(status.wait_ends).getHours() === 0 && new Date(status.wait_ends).getMinutes() === 0 ? "midnight" : new Date(status.wait_ends).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }))}` : ""}</span></div>`
       : "";
@@ -2846,7 +2963,15 @@ class DailyRoutinePanel extends HTMLElement {
     const missing = (why.unavailable || []).length ? `<p class="small">Waiting for: ${esc(why.unavailable.join(", "))}.</p>` : "";
     const last = why.last_skip
       ? `<p class="muted small">Last skipped ${esc(fmtTime(why.last_skip.at))}: ${esc(words(why.last_skip.reason || "conditions_not_met"))}.</p>` : "";
-    return `<div class="copy-panel why">${now}${missing}${last}
+    const notes = (why.notes || []).length
+      ? `<div class="why-notes"><p class="small"><strong>Check its setup:</strong></p><ul class="small">${why.notes.map((n) => `<li>⚠️ ${esc(n)}</li>`).join("")}</ul></div>` : "";
+    const fail = why.last_failure;
+    const failed = fail
+      ? `<p class="small">Last failed ${esc(fmtTime(fail.at))}: ${esc(activityReason(fail.reason) || fail.reason)}.</p>${(fail.steps || []).filter((st) => st.result === "failed").map((st) => `<div class="small">Step ${esc(st.step)} · ${esc(st.label)}${whyLines(st)}</div>`).join("")}` : "";
+    const plan = (why.plan || []).filter((p) => (p.ways || []).some((w) => w.includes("→")));
+    const order = plan.length
+      ? `<details class="small"><summary>The order devices are tried in</summary><ul>${plan.map((p) => p.ways.filter((w) => w.includes("→")).map((w) => `<li>Step ${esc(p.step)}: ${esc(w)}</li>`).join("")).join("")}</ul></details>` : "";
+    return `<div class="copy-panel why">${now}${missing}${notes}${failed}${last}${order}
       <div class="row-actions"><button class="ghost" data-act="why" data-id="${esc(routine.id)}">Close</button></div></div>`;
   }
 
@@ -2974,7 +3099,7 @@ class DailyRoutinePanel extends HTMLElement {
   _runText(run) {
     if (run.outcome === "ran") return run.detail || "ran";
     if (run.outcome === "skipped") return `skipped: ${REASON_LABELS[run.detail] || humanize(run.detail) || "not run"}`;
-    return `failed: ${run.detail}`;
+    return `failed: ${activityReason(run.detail) || "it didn't finish"}`;
   }
 
   _hiddenFromDom() {
@@ -3974,6 +4099,7 @@ class DailyRoutinePanel extends HTMLElement {
         <datalist id="dr-groups">${this._groups().map((g) => `<option value="${esc(g)}"></option>`).join("")}</datalist>
         <label>Linked device<select data-f="device_id">${this._deviceOptions(d.device_id, roomId)}</select></label>
         <p class="muted small">Each routine is a service under Daily Routine, linked to this device in Home Assistant.</p>
+        ${d.device_id ? `<p class="muted small linked-first">Steps for the room this device is in, or for the devices it is linked to, try this device first, on its own. Only if that does not work are the others tried, in the integration order.</p>` : ""}
         <label class="check"><input type="checkbox" data-f="enabled" ${d.enabled ? "checked" : ""}> Enabled</label>
         <p class="muted small">${roomId ? `Room: ${esc(this._area(roomId)?.name || roomId)}` : "Whole house"}</p>
       </section>
@@ -4211,6 +4337,7 @@ class DailyRoutinePanel extends HTMLElement {
   _optionsBody(d) {
     const roomId = d.room || null;
     return `${this._editorMode() === "simple" ? `<label>Linked device<select data-f="device_id">${this._deviceOptions(d.device_id, roomId)}</select></label>
+        ${d.device_id ? `<p class="muted small linked-first">Steps for the room this device is in, or for the devices it is linked to, try this device first, on its own. Only if that does not work are the others tried, in the integration order.</p>` : ""}
         ${["time", "sunrise", "sunset"].includes(d.trigger) && !Number(d.random_minutes) ? `<label>Vary the time by up to (minutes, earlier or later)<input type="number" min="0" max="120" data-f="random_minutes" value="0"></label>` : ""}` : ""}
         <label class="check"><input type="checkbox" data-f="repeat" ${d.repeat ? "checked" : ""}> Run every time (not just once a day)</label>
         <label class="check"><input type="checkbox" data-f="skip_noop" ${d.skip_noop ? "checked" : ""}> Skip steps that are already done</label>
@@ -4480,6 +4607,7 @@ class DailyRoutinePanel extends HTMLElement {
         <input type="number" min="0" max="1440" data-ci="${i}" data-cf="minutes" value="${esc(cond.minutes)}" aria-label="minutes">
       </div>
       <p class="muted small">${cond.mode === "active" ? "True when any of these has seen motion within those minutes." : "True when none of these has seen motion for those minutes."}</p>
+      ${cond.sensors.length ? "" : `<p class="small warn-text empty-cond" role="alert">⚠️ No sensors picked: this condition does nothing, and the routine can't be saved like this. Pick the sensors, or remove it.</p>`}
       <div class="checks">${sensors || `<p class="muted small">No binary sensors found.</p>`}</div>
     </div>`;
   }
@@ -4858,8 +4986,13 @@ function shareCode(routine, areas) {
 
 // A run's steps, replayed: what each did, how long it took, how devices ended up.
 const REPLAY_ICONS = { ok: "✓", skipped: "↷", failed: "✗", stopped: "■" };
+// Every device and every way a failed step tried, under its one-line note.
+function whyLines(st) {
+  const lines = (st.why || []).filter((w) => w && w !== st.note);
+  return lines.length ? `<ul class="why-lines small">${lines.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : "";
+}
 function replayHtml(steps) {
-  return `<ol class="replay">${steps.map((st) => `<li class="r-${esc(st.result)}"><span class="r-icon" aria-hidden="true">${REPLAY_ICONS[st.result] || "•"}</span><span><strong>${esc(st.label)}</strong> <span class="muted small">${st.seconds >= 1 ? `${Math.round(st.seconds)} s` : ""}</span>${st.note ? `<div class="small">${esc(st.note)}</div>` : ""}${(st.devices || []).length ? `<div class="muted small">${st.devices.map((d) => `${esc(d.name)}: ${esc(d.state)}`).join(" · ")}</div>` : ""}</span></li>`).join("")}</ol>`;
+  return `<ol class="replay">${steps.map((st) => `<li class="r-${esc(st.result)}"><span class="r-icon" aria-hidden="true">${REPLAY_ICONS[st.result] || "•"}</span><span><strong>${esc(st.label)}</strong> <span class="muted small">${st.seconds >= 1 ? `${Math.round(st.seconds)} s` : ""}</span>${st.note ? `<div class="small">${esc(st.note)}</div>` : ""}${whyLines(st)}${(st.devices || []).length ? `<div class="muted small">${st.devices.map((d) => `${esc(d.name)}: ${esc(d.state)}`).join(" · ")}</div>` : ""}</span></li>`).join("")}</ol>`;
 }
 
 function checkbox(list, value, label, checked, stepIndex) {
@@ -4917,6 +5050,7 @@ const STYLES = `<style>
   .room-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 13px; }
   .list { display: grid; gap: 4px; }
   .routine-head { display: flex; justify-content: space-between; gap: 8px; align-items: flex-start; }
+  .routine-head > div:first-child { flex: 1; min-width: 0; }
   .routine.disabled { opacity: .6; }
   .row-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
   .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
@@ -4924,11 +5058,15 @@ const STYLES = `<style>
   .pill.warn { background: var(--warning-color, #ffa600); color: #000; }
   .pill.error { background: var(--error-color, #db4437); color: #fff; }
   .pill.run { background: var(--primary-color, #03a9f4); color: var(--text-primary-color, #fff); }
-  .progress { height: 6px; border-radius: 3px; background: var(--secondary-background-color, #eee); overflow: hidden; margin: 8px 0 4px; }
-  .progress .bar { height: 100%; background: var(--primary-color, #03a9f4); transition: width .4s ease; }
+  .run-progress { display: block; position: relative; margin: 8px 0 6px; }
+  .progress { position: relative; height: 6px; border-radius: 3px; overflow: hidden; margin: 0 0 4px;
+    background: color-mix(in srgb, var(--primary-color, #03a9f4) 22%, var(--secondary-background-color, #eee)); }
+  .progress .bar { height: 100%; border-radius: 3px; background: var(--primary-color, #03a9f4); transition: width .4s ease; }
+  .progress .bar.working { background-image: linear-gradient(90deg, transparent 0%, rgba(255,255,255,.45) 50%, transparent 100%);
+    background-size: 200% 100%; animation: dr-progress 1.6s linear infinite; }
   .progress.indeterminate .bar { width: 35%; animation: dr-slide 1.2s ease-in-out infinite; }
   @keyframes dr-slide { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
-  .progress-text { color: var(--primary-text-color); }
+  .progress-text { display: block; line-height: 1.4; color: var(--primary-text-color); }
   .running-strip { display: grid; gap: 8px; margin-bottom: 12px; }
   .timeline { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
   .tl { display: grid; grid-template-columns: 76px 1fr; gap: 10px; align-items: start; padding-left: 10px; border-left: 3px solid var(--divider-color, #ddd); }
@@ -4987,6 +5125,13 @@ const STYLES = `<style>
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
   .chip { display: inline-flex; align-items: center; gap: 4px; background: var(--secondary-background-color, #eee); border-radius: 999px; padding: 4px 10px; margin: 0; }
   .checks { display: grid; gap: 2px; max-height: 220px; overflow: auto; padding: 4px 0; }
+  .checks .sel-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; position: sticky; top: 0; z-index: 1;
+    background: var(--card-background-color, #fff); padding: 2px 0 4px; border-bottom: 1px solid var(--divider-color, #e0e0e0); }
+  .checks .sel-only { font-size: 13px; display: flex; align-items: center; gap: 6px; }
+  .checks .sel-head { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--secondary-text-color); margin-top: 6px; }
+  .checks.none-selected .sel-head { display: none; }
+  .checks.only-selected > label:not(.sel-on):not(.sel-only), .checks.only-selected .sel-rest { display: none; }
+  .checks > label.sel-on { font-weight: 500; }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; margin: 12px 0; }
   .tile { display: grid; gap: 4px; padding: 12px; border-radius: 12px; background: var(--card-background-color, #fff); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
@@ -5051,6 +5196,7 @@ const STYLES = `<style>
   @media (prefers-reduced-motion: reduce) {
     :host(.busy)::before, .skeleton-card, .progress.indeterminate .bar { animation: none; }
     .progress .bar { transition: none; }
+    .progress .bar.working { animation: none; }
   }
 </style>`;
 

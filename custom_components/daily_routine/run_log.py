@@ -360,12 +360,16 @@ def needs_attention(
     """
     since = now - timedelta(days=ATTENTION_DAYS)
     counts: dict[str, dict[str, int]] = {}
+    # The newest failure's reason, so the list says why and not only how often.
+    last_problem: dict[str, str] = {}
     recent, _times = _window(events, times, since, ordered)
     for event in recent:
         row = counts.setdefault(
             event["routine_id"], {"ran": 0, "failed": 0, "skipped": 0}
         )
         row[event["outcome"]] += 1
+        if event["outcome"] == "failed" and event.get("reason"):
+            last_problem[event["routine_id"]] = event["reason"]
     found = []
     for routine in routines:
         if not routine.get("enabled", True):
@@ -384,6 +388,7 @@ def needs_attention(
                     "tries": tries,
                     **row,
                     "score": round(100 * row["ran"] / tries),
+                    "last_problem": last_problem.get(routine["id"]),
                 }
             )
     return sorted(found, key=lambda r: r["score"])

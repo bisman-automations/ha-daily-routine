@@ -94,7 +94,15 @@ from .energy import (
 from .guests import clean_guest_wifi, guest_wifi_or_none
 from .habits import Habits
 from .holds import active_hold, clean_holds
-from .linked import IntegrationLevel, LinkedGroup, linked_groups
+from .linked import (
+    IntegrationLevel,
+    LinkedGroup,
+    area_fallbacks,
+    integration_name,
+    lead_entities,
+    lead_first,
+    linked_groups,
+)
 from .lived_in import LivedIn, clean_settings as clean_lived_in
 from .planned import (
     alarm_time,
@@ -172,6 +180,8 @@ class _Failure:
     service: str
     target: dict[str, Any] | None
     text: str
+    # Every device and every way tried, one line each (the run's "see each step").
+    details: list[str] = field(default_factory=list)
 
 
 def _trace_mark(rt: dict[str, Any], result: str, note: str) -> None:
@@ -211,6 +221,66 @@ def _join(names: list[str]) -> str:
     if len(names) < 3:
         return " and ".join(names)
     return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+# Services of these domains act on devices: a step for them needs a device or room.
+DEVICE_DOMAINS = frozenset(
+    {
+        "cover",
+        "light",
+        "switch",
+        "fan",
+        "lock",
+        "climate",
+        "media_player",
+        "valve",
+        "vacuum",
+        "humidifier",
+        "water_heater",
+        "siren",
+        "input_boolean",
+    }
+)
+# Words in an integration's error that mean the device couldn't be talked to.
+UNREACHABLE_WORDS = (
+    "connect",
+    "unreachable",
+    "not reachable",
+    "timed out",
+    "timeout",
+    "no response",
+    "offline",
+    "bluetooth",
+    "ble",
+)
+# HA's own words when a service call has no entity, device or area to act on.
+NO_TARGET_ERROR = "at least one of"
+# How many devices a failure summary names before "and N more".
+SUMMARY_NAMES = 2
+
+
+def _summary(lines: list[str]) -> str:
+    """A step's failure in one line: the first devices, then how many more."""
+    if len(lines) <= SUMMARY_NAMES:
+        return "; ".join(lines)
+    more = len(lines) - SUMMARY_NAMES
+    return "; ".join(lines[:SUMMARY_NAMES]) + f"; and {more} more (see each step)"
+
+
+def result_words(result: str | None) -> str:
+    """A run result code in words, for when no step said more (never a raw service)."""
+    if not result or result == "success":
+        return ""
+    if result.startswith("error:todo_"):
+        return "A to-do step failed"
+    if result.startswith("error:"):
+        what = result.split(":", 1)[1]
+        domain, _, service = what.partition(".")
+        verb = service.replace("_", " ") if service else domain.replace("_", " ")
+        return f"A step failed ({verb})"
+    if result.startswith("missing_service:"):
+        return f"An action isn't in Home Assistant ({result.split(':', 1)[1]})"
+    return result.replace("_", " ")
 
 
 UNKNOWN_STATES = ("unknown", "unavailable")
@@ -446,6 +516,7 @@ PERSISTED_KEYS = (
     "last_run_date",
     "last_run",
     "last_result",
+    "last_reason",
     "seen_state",
     "seen_done",
     "pending_date",
@@ -594,6 +665,7 @@ def _blank_runtime() -> dict[str, Any]:
         "state": "idle",
         "last_run": None,
         "last_result": None,
+        "last_reason": None,
         "last_run_date": None,
         "next_run": None,
         "clear_since": None,  # in memory: when all sensors last became clear
@@ -969,6 +1041,7 @@ class HomeRoutinesCoordinator:
             "state": rt["state"],
             "last_run": rt["last_run"],
             "last_result": rt["last_result"],
+            "last_reason": rt.get("last_reason"),
             "next_run": self._next_run_of(routine_id),
             "clear_since": rt["clear_since"].isoformat() if rt["clear_since"] else None,
             "conditions_ok": ok,
@@ -994,6 +1067,7 @@ class HomeRoutinesCoordinator:
             "state": rt["state"],
             "last_run": rt["last_run"],
             "last_result": rt["last_result"],
+            "last_reason": rt.get("last_reason"),
             "history": self.get_history(routine_id),
             "next_run": self._next_run_of(routine_id),
             "clear_since": rt["clear_since"].isoformat() if rt["clear_since"] else None,
@@ -1954,7 +2028,14 @@ class HomeRoutinesCoordinator:
         return any(inside) if cond["where"] == "in" else not all(inside)
 
     def _sensors_ok(self, cond: dict[str, Any], now: datetime) -> bool:
-        """Quiet: all off for N minutes. Active: any on, or one went off within N minutes."""
+        """Quiet: all off for N minutes. Active: any on, or one went off within N minutes.
+
+        A sensor condition with no sensors picked can't be saved; one that
+        arrives anyway (an old import) is treated as not set up and ignored,
+        and Why not? says so.
+        """
+        if not cond.get("sensors"):
+            return True
         states: list[State] = []
         for eid in cond["sensors"]:
             state = self.hass.states.get(eid)
@@ -3373,7 +3454,12 @@ class HomeRoutinesCoordinator:
             # again and run the rest then (steps already done are skipped).
             rt["last_run_date"] = ran_before
             rt["last_result"] = result
-            self._record(rid, "failed", f"{result} – waiting to finish")
+            why = result.split(":", 1)[1].replace("_", " ") or "a condition"
+            self._record(
+                rid,
+                "failed",
+                f"Its conditions stopped holding partway ({why}) – waiting to finish",
+            )
             self._arm_pending(routine, dt_util.now())
             self._fire_event(EVENT_ROUTINE_FINISHED, routine, result)
             self._save_soon()
@@ -3395,7 +3481,15 @@ class HomeRoutinesCoordinator:
         result = run.result
         rt["last_result"] = result
         summary = "; ".join(run.details)
-        problems = "; ".join(f.text for f in run.failures)
+        problems = "; ".join(
+            f"Step {f.index + 1}: {f.text}" if len(run.failures) > 1 else f.text
+            for f in run.failures
+            if f.text
+        )
+        # The card's "last:" line: why, in words, not the result code.
+        rt["last_reason"] = (
+            None if result == "success" else (problems or result_words(result))
+        )
         later = (
             bool(run.failures)
             and routine["retry_later_minutes"] > 0
@@ -3423,13 +3517,18 @@ class HomeRoutinesCoordinator:
                 self._send_notification(f"Routine '{routine['name']}' completed{note}.")
         else:
             rt["state"] = "error"
+            # The code stays when no step said more: Activity groups by it and
+            # shows it in words.
             detail = problems or result
             if later:
                 detail += f" – trying again in {routine['retry_later_minutes']} min"
             self._record(rid, "failed", detail)
             self._fire_event(EVENT_ROUTINE_FINISHED, routine, result)
             if routine["notify_on_error"]:
-                message = f"Routine '{routine['name']}' failed: {problems or result}."
+                message = (
+                    f"Routine '{routine['name']}' failed: "
+                    f"{problems or result_words(result)}."
+                )
                 if later:
                     minutes = routine["retry_later_minutes"]
                     message += f" It tries again in {minutes} minutes."
@@ -3850,6 +3949,9 @@ class HomeRoutinesCoordinator:
         if failures:
             step["result"] = "failed"
             step["note"] = "; ".join(f.text for f in failures if f.text)[:300]
+            lines = [line for f in failures for line in (f.details or [f.text]) if line]
+            if lines:
+                step["why"] = lines[:12]
         elif run.stopped_at == step["step"] - 1 or (
             run.result.startswith("conditions_failed") and "result" not in step
         ):
@@ -3893,22 +3995,30 @@ class HomeRoutinesCoordinator:
             if error is None:
                 return None
             self._log_step_error(routine, action, error)
-            return _Failure(
-                index, action["service"], None, f"{action['service']} didn't work"
-            )
+            text = self._no_device_failure(action, target, error)
+            return _Failure(index, action["service"], None, text, [text])
 
         # A device in more than one integration is reached one integration
         # at a time, falling back only when that level failed or didn't change.
-        groups = linked_groups(self.hass, entities, self._integration_order(routine))
+        # The routine's linked device (usually the Matter one) goes first when
+        # the step reaches it or its linked siblings (_lead_plan).
+        groups, led_at, area_levels = self._lead_plan(routine, domain, entities)
         linked = [g for g in groups if g.has_fallback]
         retry_target: dict[str, list[str]] = {}
-        if not linked:
+        tried_before: dict[str, list[tuple[str, str]]] = {}
+        led_keys: set[str] = set()
+        if not linked and not area_levels:
             failed = await self._run_on_devices(routine, action, data, target, entities)
         else:
+            in_area_levels = {e for level in area_levels for e in level}
             singles: list[str] = []
             for group in groups:
                 if not group.has_fallback:
-                    singles.extend(group.entity_ids)
+                    # The linked device's room siblings wait for it, not run
+                    # at the same time as it.
+                    singles.extend(
+                        e for e in group.entity_ids if e not in in_area_levels
+                    )
             failed = (
                 await self._run_on_devices(
                     routine, action, data, {"entity_id": singles}, singles
@@ -3916,47 +4026,180 @@ class HomeRoutinesCoordinator:
                 if singles
                 else {}
             )
+            trails: list[list[tuple[str, str]]] = [[] for _ in linked]
+            area_trail: list[tuple[str, str]] = []
             outcomes = await asyncio.gather(
-                *(self._run_linked(routine, action, data, g) for g in linked)
+                *(
+                    self._run_linked(routine, action, data, g, trail)
+                    for g, trail in zip(linked, trails, strict=True)
+                ),
+                self._run_levels(routine, action, data, area_levels, area_trail),
             )
-            for group, last_failed in zip(linked, outcomes, strict=True):
+            led_group = groups[led_at] if led_at is not None else None
+            runs: list[
+                tuple[list[str], dict[str, str] | None, list[tuple[str, str]], bool]
+            ] = [
+                (g.entity_ids, out, trail, g is led_group)
+                for g, out, trail in zip(linked, outcomes[:-1], trails, strict=True)
+            ]
+            runs.append(
+                (
+                    [e for level in area_levels for e in level],
+                    outcomes[-1],
+                    area_trail,
+                    True,
+                )
+            )
+            for ids, last_failed, trail, led in runs:
                 if last_failed:
                     failed.update(last_failed)
+                    key = next(iter(last_failed))
                     # Retry later starts again at the first integration.
-                    retry_target[next(iter(last_failed))] = group.entity_ids
+                    retry_target[key] = ids
+                    if trail:
+                        tried_before[key] = trail
+                    if led:
+                        led_keys.add(key)
 
         if not failed:
             return None
-        names = [self._entity_name(e) for e in failed]
+        wanted = DESIRED_STATE.get(action["service"])
+        verify = self._verify_seconds(data)
+        lines: list[str] = []
+        details: list[str] = []
         for entity_id, why in failed.items():
+            line = self._device_failure(entity_id, why, wanted, verify)
             _LOGGER.warning(
-                "Routine '%s': %s %s (%s).",
-                routine["name"],
-                self._entity_name(entity_id),
-                "didn't change" if why == "didn't change" else "couldn't be reached",
-                f"{action['service']}"
-                if why == "didn't change"
-                else f"{action['service']}: {why}",
+                "Routine '%s': %s (%s).", routine["name"], line, action["service"]
             )
-        reached = [
-            n
-            for e, n in zip(failed, names, strict=True)
-            if failed[e] != "didn't change"
-        ]
-        unchanged = [
-            n
-            for e, n in zip(failed, names, strict=True)
-            if failed[e] == "didn't change"
-        ]
-        parts = []
-        if reached:
-            parts.append(f"{_join(reached)} couldn't be reached")
-        if unchanged:
-            parts.append(f"{_join(unchanged)} didn't change")
+            lines.append(line)
+            details.append(line)
+        # A linked device: say which ways were tried before the last one.
+        summary_lines = list(lines)
+        for key, trail in tried_before.items():
+            if key not in failed:
+                continue
+            at = list(failed).index(key)
+            ways = list(dict.fromkeys(way for way, _why in trail if way))
+            if ways:
+                first = "the linked device, " if key in led_keys else ""
+                summary_lines[at] += f" (tried {first}{_join(ways)} first)"
+            words = [f"Tried first: {why}" for _way, why in trail]
+            if key in led_keys and words:
+                words[0] = words[0].replace(
+                    "Tried first:", "Tried first (linked device):", 1
+                )
+            details[at:at] = words
         again = [e for key in failed for e in retry_target.get(key, [key])]
         return _Failure(
-            index, action["service"], {"entity_id": again}, "; ".join(parts)
+            index,
+            action["service"],
+            {"entity_id": again},
+            _summary(summary_lines),
+            details,
         )
+
+    def _lead_plan(
+        self, routine: dict[str, Any], domain: str, entities: list[str]
+    ) -> tuple[list[LinkedGroup], int | None, list[tuple[str, ...]]]:
+        """The step's devices as groups, with the routine's linked device first.
+
+        With a "Linked device" on the routine (usually the Matter one):
+
+        - If it is in one of the step's linked groups (Device Linker), its
+          level moves to the front of that group, ahead of the integration
+          order; the other levels follow in that order. Returns that group's
+          index.
+        - If no group has it but the step reaches it anyway (a step for the
+          room it is in), the step's other devices of the same kind in that
+          room become its fallbacks, one integration at a time in the
+          integration order (``area_levels``, the linked device first).
+        - Otherwise (the linked device isn't part of the step) nothing changes.
+        """
+        order = self._integration_order(routine)
+        groups = linked_groups(self.hass, entities, order)
+        lead = lead_entities(self.hass, routine.get("device_id"), domain)
+        if not lead:
+            return groups, None, []
+        groups, led_at = lead_first(groups, lead)
+        if led_at is not None:
+            return groups, led_at, []
+        area_id = self._lead_area(routine.get("device_id"))
+        if area_id is None:
+            return groups, None, []
+        fallbacks = area_fallbacks(
+            self.hass, lead, entities, self._area_entities(area_id), order
+        )
+        own = tuple(e for e in lead if e in entities)
+        if not own or not fallbacks:
+            return groups, None, []
+        return groups, None, [own, *fallbacks]
+
+    def _lead_area(self, device_id: str | None) -> str | None:
+        device = dr.async_get(self.hass).async_get(device_id) if device_id else None
+        return device.area_id if device is not None else None
+
+    async def _run_levels(
+        self,
+        routine: dict[str, Any],
+        action: dict[str, Any],
+        data: dict[str, Any],
+        levels: list[tuple[str, ...]],
+        trail: list[tuple[str, str]],
+    ) -> dict[str, str] | None:
+        """The linked device, then its room fallbacks, one way at a time.
+
+        Each way is sent on its own and checked (the call, then the wanted
+        state within the check time). The next way is only used when this one
+        failed, so the linked device and its fallbacks are never sent the
+        command together. Returns why the last way didn't do it, or None.
+        """
+        if not levels:
+            return None
+        domain, service = action["service"].split(".", 1)
+        wanted = DESIRED_STATE.get(action["service"])
+        verify = self._verify_seconds(data)
+        ent_reg = er.async_get(self.hass)
+        last_failed: dict[str, str] = {}
+        level_before: IntegrationLevel | None = None
+        for ids in levels:
+            entry = ent_reg.async_get(ids[0])
+            level = IntegrationLevel(
+                domain=entry.platform if entry else domain, entity_ids=ids
+            )
+            call_failed: dict[str, str] = {}
+            error = await self._call_service(
+                domain, service, data, {"entity_id": list(ids)}
+            )
+            if error is not None:
+                if len(ids) == 1:
+                    call_failed[ids[0]] = _short_error(error)
+                else:
+                    for entity_id in ids:
+                        one = await self._call_with_retries(
+                            routine, domain, service, data, {"entity_id": [entity_id]}
+                        )
+                        if one is not None:
+                            call_failed[entity_id] = _short_error(one)
+            if wanted and verify:
+                check = [e for e in ids if e not in call_failed]
+                for entity_id in await self._wait_for_state(check, wanted, verify):
+                    call_failed.setdefault(entity_id, "didn't change")
+            if not call_failed:
+                return None
+            if last_failed:
+                trail.append(
+                    self._level_failure(level_before, last_failed, wanted, verify)
+                )
+            last_failed = call_failed
+            level_before = level
+            _LOGGER.debug(
+                "Routine '%s': %s through %s didn't do it, trying the next way.",
+                routine["name"],
+                action["service"],
+                ", ".join(ids),
+            )
+        return last_failed or None
 
     async def _run_on_devices(
         self,
@@ -4022,6 +4265,7 @@ class HomeRoutinesCoordinator:
         action: dict[str, Any],
         data: dict[str, Any],
         group: LinkedGroup,
+        trail: list[tuple[str, str]] | None = None,
     ) -> dict[str, str] | None:
         """One device or pair, several integrations: try each level in order.
 
@@ -4030,16 +4274,26 @@ class HomeRoutinesCoordinator:
         members that are not yet in the wanted state, and only if this level
         failed or didn't change them. A covering pair is not sent when some
         members already changed (it would move the side that is already
-        done). The returned map names the last level that was tried.
+        done). The returned map names the last level that was tried; each
+        level that failed before it is told in ``trail`` (in words).
         """
         domain, service = action["service"].split(".", 1)
         wanted = DESIRED_STATE.get(action["service"])
         verify = self._verify_seconds(data)
         remaining: set[int] = set(range(len(group.members))) or {0}
         last_failed: dict[str, str] = {}
+        level_before: IntegrationLevel | None = None
 
+        skipped: list[tuple[str, str]] = []
         for level in group.levels:
             if level.covering and remaining != set(range(len(group.members))):
+                skipped.append(
+                    (
+                        "",
+                        f"{self._level_label(level)} wasn't sent: it moves both "
+                        "sides and one side had already changed",
+                    )
+                )
                 continue
             entities = group.level_entities_for(level, remaining)
             if not entities:
@@ -4081,7 +4335,12 @@ class HomeRoutinesCoordinator:
             if not (wanted and verify):
                 if not call_failed:
                     return None
+                if last_failed and trail is not None:
+                    trail.append(
+                        self._level_failure(level_before, last_failed, wanted, verify)
+                    )
                 last_failed = call_failed
+                level_before = level
                 remaining = {
                     index
                     for entity_id, index in (
@@ -4094,9 +4353,23 @@ class HomeRoutinesCoordinator:
             reached = await self._linked_level_reached(
                 group, level, entities, call_failed, wanted, verify
             )
+            if reached is None and not level.covering:
+                # This way finished its own members. A member it doesn't reach
+                # (a left curtain that is only in the Cloud) still gets the next way.
+                pending = self._members_not_in(group, wanted)
+                if pending:
+                    reached = {
+                        group.members[index][0]: "didn't change"
+                        for index in sorted(pending)
+                    }
             if reached is None:
                 return None
+            if last_failed and trail is not None:
+                trail.append(
+                    self._level_failure(level_before, last_failed, wanted, verify)
+                )
             last_failed = reached
+            level_before = level
             remaining = set()
             for entity_id in group.entity_ids:
                 index = group.member_index(entity_id)
@@ -4114,6 +4387,8 @@ class HomeRoutinesCoordinator:
                 ", ".join(entities),
             )
 
+        if last_failed and trail is not None:
+            trail.extend(skipped)
         return last_failed or None
 
     async def _linked_level_reached(
@@ -4146,6 +4421,14 @@ class HomeRoutinesCoordinator:
                 break
             await asyncio.sleep(VERIFY_POLL_SECONDS)
         return self._linked_level_failure(group, level, entities, call_failed, wanted)
+
+    def _members_not_in(self, group: LinkedGroup, wanted: str) -> set[int]:
+        """The members none of whose ways shows the wanted state yet."""
+        return {
+            index
+            for index, member in enumerate(group.members)
+            if not any(self._state_is(entity_id, wanted) for entity_id in member)
+        }
 
     def _linked_level_done(
         self, group: LinkedGroup, level: IntegrationLevel, wanted: str
@@ -4266,6 +4549,99 @@ class HomeRoutinesCoordinator:
         if verify and isinstance(data.get("transition"), (int, float)):
             verify += data["transition"]  # a fade changes the state at its end
         return verify
+
+    def _integration_of(self, entity_id: str) -> str:
+        """The integration an entity comes from, as Home Assistant names it."""
+        entry = er.async_get(self.hass).async_get(entity_id)
+        if entry is None:
+            return ""  # not from an integration's registry: nothing to add
+        platform = entry.platform
+        name = integration_name(self.hass, platform)
+        return name.replace("_", " ").title() if name == platform else name
+
+    def _device_label(self, entity_id: str) -> str:
+        """'Master Bedroom Right Curtain (SwitchBot Bluetooth)'."""
+        name = self._entity_name(entity_id)
+        integration = self._integration_of(entity_id)
+        if not integration or name.endswith(f"({integration})"):
+            return name
+        return f"{name} ({integration})"
+
+    def _level_label(self, level: IntegrationLevel | None) -> str:
+        if level is None:
+            return "an earlier way"
+        names = _join([self._entity_name(e) for e in level.entity_ids])
+        integration = self._integration_of(level.entity_ids[0])
+        return f"{names} ({integration})" if integration else names
+
+    def _device_failure(
+        self, entity_id: str, why: str, wanted: str | None, verify: float
+    ) -> str:
+        """One device that didn't do it, and the concrete reason, in words."""
+        label = self._device_label(entity_id)
+        state = self.hass.states.get(entity_id)
+        now = state.state if state is not None else None
+        if why == "didn't change":
+            if state is None:
+                return f"{label} isn't in Home Assistant"
+            if now == "unavailable":
+                return f"{label} is unavailable"
+            if now == "unknown":
+                return f"{label} didn't change (its state is unknown)"
+            if now in MOVING_STATES:
+                return f"{label} was still {now} when the check ended"
+            wait = f" after {verify:g} s" if verify else ""
+            target = f" (wanted {wanted})" if wanted and wanted != now else ""
+            return f"{label} stayed {now}{wait}{target}"
+        if why.startswith("no answer within"):
+            return f"{label} timed out: {why}"
+        if now == "unavailable":
+            return f"{label} is unavailable (Home Assistant said: {why})"
+        if any(word in why.lower() for word in UNREACHABLE_WORDS):
+            return f"{label} couldn't be reached: {why}"
+        return f"{label} failed: {why}"
+
+    def _level_failure(
+        self,
+        level: IntegrationLevel | None,
+        failed: dict[str, str],
+        wanted: str | None,
+        verify: float,
+    ) -> tuple[str, str]:
+        """How one way of a linked device went, before the next way was tried:
+        (the integration, what happened in words)."""
+        way = self._integration_of(level.entity_ids[0]) if level else ""
+        if not failed:
+            return way, f"{self._level_label(level)} didn't do it"
+        return way, "; ".join(
+            self._device_failure(entity_id, why, wanted, verify)
+            for entity_id, why in failed.items()
+        )
+
+    def _no_device_failure(
+        self,
+        action: dict[str, Any],
+        target: dict[str, Any] | None,
+        error: BaseException,
+    ) -> str:
+        """A step that reached no device of its kind, and what Home Assistant said."""
+        what = step_label(self.hass, action, self._routine_names())
+        text = _short_error(error)
+        domain = action["service"].split(".", 1)[0]
+        if not target or NO_TARGET_ERROR in text:
+            return (
+                f"“{what}” has no devices to send it to: pick the devices or a room "
+                "in the step"
+            )
+        areas = [
+            self._area_name(area_id) for area_id in (target or {}).get("area_id", [])
+        ]
+        where = f" in {_join(areas)}" if areas else ""
+        return f"“{what}” found no {domain} devices{where}. Home Assistant said: {text}"
+
+    def _area_name(self, area_id: str) -> str:
+        area = ar.async_get(self.hass).async_get_area(area_id)
+        return area.name if area else area_id
 
     def _log_step_error(
         self, routine: dict[str, Any], action: dict[str, Any], error: BaseException
@@ -4690,12 +5066,110 @@ class HomeRoutinesCoordinator:
             ),
             None,
         )
+        last_failure = next(
+            (
+                e
+                for e in reversed(self.run_log.view())
+                if e.get("routine_id") == routine_id and e["outcome"] == "failed"
+            ),
+            None,
+        )
         return {
             "reasons": list(dict.fromkeys(reasons)),
             "next_run": self._next_run_of(routine_id),
             "last_skip": last_skip,
+            "last_failure": last_failure,
             "unavailable": self._unavailable_names(routine),
+            "notes": self._setup_notes(routine),
+            "plan": self._device_plan(routine),
         }
+
+    def _setup_notes(self, routine: dict[str, Any]) -> list[str]:
+        """Things in a routine's setup that make it do less than it looks like."""
+        notes: list[str] = []
+        for number, cond in enumerate(routine.get("conditions") or [], 1):
+            if cond.get("kind") == "sensors" and not cond.get("sensors"):
+                notes.append(
+                    f"Only if, condition {number}: no sensors are picked, so it is "
+                    "ignored. Pick the sensors, or remove it."
+                )
+        for number, action in enumerate(routine["actions"], 1):
+            cond = action.get("only_if") or {}
+            if cond.get("kind") == "sensors" and not cond.get("sensors"):
+                notes.append(
+                    f"Step {number}: its Only if has no sensors picked, so it is ignored."
+                )
+            for each in action.get("together") or [action]:
+                service = each.get("service")
+                if not service or service.split(".", 1)[0] not in DEVICE_DOMAINS:
+                    continue
+                label = step_label(self.hass, each, self._routine_names())
+                target = each.get("target") or {}
+                if not target:
+                    notes.append(
+                        f"Step {number} (“{label}”) has no devices or room picked, "
+                        "so it can't do anything."
+                    )
+                elif not self._resolve_targets(target, service.split(".", 1)[0]):
+                    notes.append(
+                        f"Step {number} (“{label}”) finds no "
+                        f"{service.split('.', 1)[0]} devices to send it to."
+                    )
+        return notes
+
+    def _device_plan(self, routine: dict[str, Any]) -> list[dict[str, Any]]:
+        """For each device step: the ways a linked device is tried, in order."""
+        plan: list[dict[str, Any]] = []
+        for number, action in enumerate(routine["actions"], 1):
+            for each in action.get("together") or [action]:
+                service = each.get("service")
+                if not service:
+                    continue
+                entities = self._resolve_targets(
+                    each.get("target"), service.split(".", 1)[0]
+                )
+                if not entities:
+                    continue
+                ways: list[str] = []
+                groups, led_at, area_levels = self._lead_plan(
+                    routine, service.split(".", 1)[0], entities
+                )
+                in_area_levels = {e for level in area_levels for e in level}
+                if area_levels:
+                    ways.append(
+                        "Linked device first: "
+                        + " → then ".join(
+                            self._level_label(
+                                IntegrationLevel(
+                                    domain=service.split(".", 1)[0], entity_ids=ids
+                                )
+                            )
+                            for ids in area_levels
+                        )
+                    )
+                for index, group in enumerate(groups):
+                    if group.has_fallback:
+                        first = "Linked device first: " if index == led_at else ""
+                        ways.append(
+                            first
+                            + " → then ".join(
+                                self._level_label(level) for level in group.levels
+                            )
+                        )
+                    else:
+                        ways.extend(
+                            self._device_label(e)
+                            for e in group.entity_ids
+                            if e not in in_area_levels
+                        )
+                plan.append(
+                    {
+                        "step": number,
+                        "label": step_label(self.hass, each, self._routine_names()),
+                        "ways": ways,
+                    }
+                )
+        return plan
 
     async def _ramp_volume(self, ramp: dict[str, Any], seconds: float) -> str | None:
         """Turn speakers up (or down) bit by bit. Returns what went wrong, or None."""

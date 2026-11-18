@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.34.0] - 2026-11-18
+
+### Changed
+
+- **Failures say which device, which integration and why.** A step that fails now names each device that didn't do it, the integration it was reached through, and the concrete reason: Home Assistant's own error, "is unavailable", "timed out", or "stayed closed after 10 s (wanted open)". For a device in more than one integration it also says which ways were tried first ("tried Matter first"), and each step under **see each step** lists every way and what happened. This is used everywhere a failure shows: the card's "last:" line, recent runs, History, Activity, **Not working well**, **Why not?** and the notification. A raw action name such as `cover.open_cover` is no longer shown as the reason.
+- **The routine's Linked device is tried first.** When a routine has a Linked device (under More options, usually the Matter one) and a step is for that device's room or for the devices it is linked to, the Linked device is sent the command first, on its own, ahead of the integration order. Only if it fails, is unavailable or doesn't change within the check time are the others tried, one integration at a time in the integration order (for curtains: left and right over Bluetooth, then the Cloud). Its linked devices are never sent the command at the same time as it. This also works without Device Linker: in the Linked device's room, the step's other devices of the same kind (curtains for curtains, not the room's blind) are its fallbacks, by integration. A step that doesn't reach the Linked device works as before. Why not? shows "Linked device first" in the order devices are tried, a failure says "tried the linked device, Matter, first", and the editor explains it under Linked device.
+- **A step with no devices says so.** A step with nothing to send its action to used to fail with "cover.open_cover didn't work". It now says "“Open” has no devices to send it to: pick the devices or a room in the step", or Home Assistant's error if there was something else wrong. The editor no longer saves a device step with nothing picked.
+- **Why not? checks the setup.** It lists setup problems (a step with no devices or room, a step that finds no devices of its kind, an "Only if" sensor condition with no sensors), the last failure with each step's reasons, and the order the ways of a linked device are tried in.
+- **An "Only if" sensor condition with no sensors is flagged.** The editor shows a warning on it and won't save it ("pick the sensors, or remove it"). One that arrives some other way is ignored, not treated as quiet or active, and Why not? says so.
+- **Ticked devices are listed first.** Every list of devices to tick in the editor shows the ticked ones in a **Selected** section at the top, with a count and **Show only selected**.
+- **The progress bar on a running routine's card shows properly.** A step with no end time (opening curtains, for example) showed as a 3% sliver, so "Step 1 of 1" was only a small blue dot, on a track that was hard to see. The bar now spans the card, its track shows on any theme, a step with no end time is shown half done and moving, and the step line sits under the bar in its own block. The dashboard card does the same.
+
+### Fixed
+
+- **A device that is only in one integration on one side is no longer taken for a pair.** With a Matter pair of curtains, an integration that has only one of the two sides (for example only the right curtain in SwitchBot Cloud, or only the right one over Bluetooth) was treated like the Matter pair, as if it moved both. The other curtain could then be left as it was while the step counted as done, or a side's last fallback was skipped. Only a device linked to both sides counts as the pair now, and a curtain that only a later integration reaches still gets that integration when the earlier ones are done.
+
 ## [1.33.0] - 2026-11-18
 
 ### Changed
@@ -560,6 +576,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.34.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.33.0...v1.34.0
 [1.33.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.32.0...v1.33.0
 [1.32.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.31.3...v1.32.0
 [1.31.3]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.31.2...v1.31.3

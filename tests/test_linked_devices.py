@@ -282,9 +282,11 @@ async def test_fails_only_when_every_way_failed(hass: HomeAssistant):
     coord = await _coord(hass, entities=list(WAYS.values()))
     assert await coord.async_run("routine_one") is False
     assert calls == list(WAYS.values())
-    assert (
-        coord.get_history("routine_one")[0]["detail"]
-        == "Bedroom curtain couldn't be reached"
+    # 1.34.0: the last way, its integration and HA's error, and the ways
+    # tried before it.
+    assert coord.get_history("routine_one")[0]["detail"] == (
+        "Bedroom curtain (Switchbot Cloud) couldn't be reached: Failed to connect "
+        "(tried Matter and Switchbot first)"
     )
 
 
