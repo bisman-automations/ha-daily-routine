@@ -1448,6 +1448,8 @@ test("integration order: Settings lists linked integrations, and a routine can h
   panel._render();
   const html = panel.shadowRoot.innerHTML;
   assert.match(html, /Devices in more than one integration/);
+  assert.match(html, /pair of curtains that also exist separately/);
+  assert.match(html, /only the left or right leaves the pair alone/);
   // The saved order first, then the rest.
   assert.deepEqual(panel._fullOrder(["switchbot"]), ["switchbot", "matter", "switchbot_cloud"]);
   assert.match(html, /SwitchBot Cloud <span class="muted small">cloud/);

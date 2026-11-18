@@ -3608,7 +3608,7 @@ class DailyRoutinePanel extends HTMLElement {
         : `<p class="muted small">None of your devices is in more than one integration yet. When one is (Home Assistant shows them under Linked devices), it appears here.</p>`;
     return `<section class="card">
         <h3>Devices in more than one integration</h3>
-        <p class="muted small">A device can be in Home Assistant more than once, for example a curtain through Matter, Bluetooth and the cloud. A step then uses one at a time, in this order, and only tries the next if the device didn't change. Routines can have their own order.</p>
+        <p class="muted small">A device can be in Home Assistant more than once, for example a curtain through Matter, Bluetooth and the cloud. A step uses one integration at a time, in this order, and only tries the next if that one didn't change the device. When one Matter device is a pair of curtains that also exist separately, the pair is used first if the step is for both; a step for only the left or right leaves the pair alone. Routines can have their own order.</p>
         ${body}
       </section>`;
   }

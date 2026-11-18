@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.32.0] - 2026-11-17
+
+### Changed
+
+- **Devices in more than one integration are reached by integration, including pairs.** A device that's in Home Assistant more than once, such as a SwitchBot curtain through Matter, Bluetooth and the cloud, is still reached one integration at a time, in the order you set. A Matter device that is a pair of curtains (left and right also present over Bluetooth and the cloud, including when Device Linker puts the pair in two links) is used as one call first, but only when the step is for both curtains or names the pair itself. A step for only the left or right leaves the pair alone and uses that side's integrations in the same order. If the step lists only the Bluetooth or cloud entities, a higher-priority way that covers the same curtains is still used first. The two channels of a two-gang switch are still not grouped. Failure messages name the last integration that was tried.
+
 ## [1.31.3] - 2026-11-15
 
 ### Changed
@@ -540,6 +546,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.32.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.31.3...v1.32.0
 [1.31.3]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.31.2...v1.31.3
 [1.31.2]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.31.1...v1.31.2
 [1.31.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.31.0...v1.31.1

@@ -94,7 +94,7 @@ from .energy import (
 from .guests import clean_guest_wifi, guest_wifi_or_none
 from .habits import Habits
 from .holds import active_hold, clean_holds
-from .linked import linked_groups
+from .linked import IntegrationLevel, LinkedGroup, linked_groups
 from .lived_in import LivedIn, clean_settings as clean_lived_in
 from .planned import (
     alarm_time,
@@ -2932,22 +2932,17 @@ class HomeRoutinesCoordinator:
             return "would_run", None, entities
         wanted = DESIRED_STATE[service]
         remaining: list[str] = []
-        for ways in linked_groups(
+        for group in linked_groups(
             self.hass, entities, self._integration_order(routine)
         ):
             # A device in several integrations: believe the first way that's
-            # reporting (the others can lag behind or be stale).
-            reporting = next(
-                (
-                    e
-                    for e in ways
-                    if (st := self.hass.states.get(e)) is not None
-                    and st.state not in UNKNOWN_STATES
-                ),
-                None,
-            )
-            if reporting is None or not self._state_is(reporting, wanted):
-                remaining.extend(ways)
+            # reporting (the others can lag behind or be stale). A pair is
+            # already done only when the pair entity, or every member, shows
+            # the wanted state. Members already there are left out so a
+            # half-done pair does not fire the pair entity again.
+            for entity_id in self._linked_step_remaining(group, entities, wanted):
+                if entity_id not in remaining:
+                    remaining.append(entity_id)
         remaining.sort(key=entities.index)
         if not remaining:
             return "already_in_state", None, entities
@@ -3654,14 +3649,18 @@ class HomeRoutinesCoordinator:
                 index, action["service"], None, f"{action['service']} didn't work"
             )
 
-        # A device in more than one integration is reached one way at a time.
+        # A device in more than one integration is reached one integration
+        # at a time, falling back only when that level failed or didn't change.
         groups = linked_groups(self.hass, entities, self._integration_order(routine))
-        linked = [g for g in groups if len(g) > 1]
+        linked = [g for g in groups if g.has_fallback]
         retry_target: dict[str, list[str]] = {}
         if not linked:
             failed = await self._run_on_devices(routine, action, data, target, entities)
         else:
-            singles = [g[0] for g in groups if len(g) == 1]
+            singles: list[str] = []
+            for group in groups:
+                if not group.has_fallback:
+                    singles.extend(group.entity_ids)
             failed = (
                 await self._run_on_devices(
                     routine, action, data, {"entity_id": singles}, singles
@@ -3672,10 +3671,11 @@ class HomeRoutinesCoordinator:
             outcomes = await asyncio.gather(
                 *(self._run_linked(routine, action, data, g) for g in linked)
             )
-            for group, why in zip(linked, outcomes, strict=True):
-                if why is not None:
-                    failed[group[0]] = why
-                    retry_target[group[0]] = group
+            for group, last_failed in zip(linked, outcomes, strict=True):
+                if last_failed:
+                    failed.update(last_failed)
+                    # Retry later starts again at the first integration.
+                    retry_target[next(iter(last_failed))] = group.entity_ids
 
         if not failed:
             return None
@@ -3773,40 +3773,239 @@ class HomeRoutinesCoordinator:
         routine: dict[str, Any],
         action: dict[str, Any],
         data: dict[str, Any],
-        ways: list[str],
-    ) -> str | None:
-        """One device, several integrations: try each in order until the device
-        shows the change (or, with nothing to check, until a call works)."""
+        group: LinkedGroup,
+    ) -> dict[str, str] | None:
+        """One device or pair, several integrations: try each level in order.
+
+        A covering pair is one call. A multi-device level (left and right
+        over Bluetooth) must all succeed. The next level is used only for
+        members that are not yet in the wanted state, and only if this level
+        failed or didn't change them. A covering pair is not sent when some
+        members already changed (it would move the side that is already
+        done). The returned map names the last level that was tried.
+        """
         domain, service = action["service"].split(".", 1)
         wanted = DESIRED_STATE.get(action["service"])
         verify = self._verify_seconds(data)
-        why = "couldn't be reached"
-        for entity_id in ways:
-            error = await self._call_service(
-                domain, service, data, {"entity_id": [entity_id]}
-            )
-            if error is not None:
-                _LOGGER.debug(
-                    "Routine '%s': %s through %s failed (%s), trying the next way.",
-                    routine["name"],
-                    action["service"],
-                    entity_id,
-                    _short_error(error),
-                )
+        remaining: set[int] = set(range(len(group.members))) or {0}
+        last_failed: dict[str, str] = {}
+
+        for level in group.levels:
+            if level.covering and remaining != set(range(len(group.members))):
                 continue
+            entities = group.level_entities_for(level, remaining)
+            if not entities:
+                continue
+
+            call_failed: dict[str, str] = {}
+            if len(entities) == 1:
+                error = await self._call_service(
+                    domain, service, data, {"entity_id": entities}
+                )
+                if error is not None:
+                    call_failed[entities[0]] = _short_error(error)
+                    _LOGGER.debug(
+                        "Routine '%s': %s through %s failed (%s), trying the next way.",
+                        routine["name"],
+                        action["service"],
+                        entities[0],
+                        _short_error(error),
+                    )
+            else:
+                error = await self._call_service(
+                    domain, service, data, {"entity_id": entities}
+                )
+                if error is not None:
+                    _LOGGER.debug(
+                        "Routine '%s': %s failed for %s (%s), trying each device.",
+                        routine["name"],
+                        action["service"],
+                        ", ".join(entities),
+                        _short_error(error),
+                    )
+                    for entity_id in entities:
+                        error = await self._call_with_retries(
+                            routine, domain, service, data, {"entity_id": [entity_id]}
+                        )
+                        if error is not None:
+                            call_failed[entity_id] = _short_error(error)
+
             if not (wanted and verify):
+                if not call_failed:
+                    return None
+                last_failed = call_failed
+                remaining = {
+                    index
+                    for entity_id, index in (
+                        (e, group.member_index(e)) for e in call_failed
+                    )
+                    if index is not None
+                } or remaining
+                continue
+
+            reached = await self._linked_level_reached(
+                group, level, entities, call_failed, wanted, verify
+            )
+            if reached is None:
                 return None
-            # Any of its ways showing the change counts: some report it later.
-            if not await self._wait_for_state(ways, wanted, verify, any_of=True):
+            last_failed = reached
+            remaining = set()
+            for entity_id in group.entity_ids:
+                index = group.member_index(entity_id)
+                if index is None:
+                    continue
+                member = group.members[index]
+                if not any(self._state_is(e, wanted) for e in member):
+                    remaining.add(index)
+            if not remaining:
                 return None
-            why = "didn't change"
             _LOGGER.debug(
-                "Routine '%s': %s through %s didn't change it, trying the next way.",
+                "Routine '%s': %s through %s didn't finish it, trying the next way.",
                 routine["name"],
                 action["service"],
-                entity_id,
+                ", ".join(entities),
             )
-        return why
+
+        return last_failed or None
+
+    async def _linked_level_reached(
+        self,
+        group: LinkedGroup,
+        level: IntegrationLevel,
+        entities: list[str],
+        call_failed: dict[str, str],
+        wanted: str,
+        verify: float,
+    ) -> dict[str, str] | None:
+        """Wait for this level to show the change. None means the group is done.
+
+        A covering pair counts as done when the pair entity changes, or when
+        every member shows the change (some report it later). A single curtain
+        counts as done when any of that curtain's ways shows it. A
+        multi-device level needs every remaining member to change.
+        """
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        watch = list(level.entity_ids)
+        for member in group.members:
+            watch.extend(entity_id for entity_id in member if entity_id not in watch)
+        while True:
+            if self._linked_level_done(group, level, wanted):
+                return None
+            moving = any(self._state_is(e, s) for e in watch for s in MOVING_STATES)
+            limit = MOVING_SECONDS if moving else verify
+            if loop.time() - start >= max(verify, limit):
+                break
+            await asyncio.sleep(VERIFY_POLL_SECONDS)
+        return self._linked_level_failure(group, level, entities, call_failed, wanted)
+
+    def _linked_level_done(
+        self, group: LinkedGroup, level: IntegrationLevel, wanted: str
+    ) -> bool:
+        """True when this level has produced the wanted state for its members."""
+        if level.covering:
+            if any(self._state_is(entity_id, wanted) for entity_id in level.entity_ids):
+                return True
+            return bool(group.members) and all(
+                any(self._state_is(entity_id, wanted) for entity_id in member)
+                for member in group.members
+            )
+        indexes: set[int] = set()
+        for entity_id in level.entity_ids:
+            index = group.member_index(entity_id)
+            if index is not None:
+                indexes.add(index)
+        if not indexes:
+            return all(
+                self._state_is(entity_id, wanted) for entity_id in level.entity_ids
+            )
+        return all(
+            any(self._state_is(entity_id, wanted) for entity_id in group.members[index])
+            for index in indexes
+        )
+
+    def _linked_level_failure(
+        self,
+        group: LinkedGroup,
+        level: IntegrationLevel,
+        entities: list[str],
+        call_failed: dict[str, str],
+        wanted: str,
+    ) -> dict[str, str]:
+        """Why the last level didn't finish, named by that level's entities."""
+        failed = dict(call_failed)
+        if level.covering:
+            if not any(
+                self._state_is(entity_id, wanted) for entity_id in level.entity_ids
+            ):
+                for entity_id in level.entity_ids:
+                    failed.setdefault(entity_id, "didn't change")
+            return failed
+        for entity_id in entities:
+            index = group.member_index(entity_id)
+            ways = group.members[index] if index is not None else (entity_id,)
+            if any(self._state_is(way, wanted) for way in ways):
+                continue
+            failed.setdefault(entity_id, "didn't change")
+        return failed
+
+    def _linked_pending_members(self, group: LinkedGroup, wanted: str) -> set[int]:
+        """Members that are not yet in the wanted state, believing the first reporter."""
+        for level in group.levels:
+            if not level.covering:
+                continue
+            entity_id = level.entity_ids[0]
+            state = self.hass.states.get(entity_id)
+            if state is None or state.state in UNKNOWN_STATES:
+                break
+            if self._state_is(entity_id, wanted):
+                return set()
+            return set(range(len(group.members)))
+        pending: set[int] = set()
+        members = group.members or (tuple(group.entity_ids),)
+        for index, member in enumerate(members):
+            # Believe the first reporting way in integration order, not the
+            # step's entity-id order (a stale cloud or Bluetooth reading can
+            # come first alphabetically).
+            ordered: list[str] = []
+            for level in group.levels:
+                for entity_id in level.entity_ids:
+                    if entity_id in member and entity_id not in ordered:
+                        ordered.append(entity_id)
+            for entity_id in member:
+                if entity_id not in ordered:
+                    ordered.append(entity_id)
+            reporting = next(
+                (
+                    entity_id
+                    for entity_id in ordered
+                    if (st := self.hass.states.get(entity_id)) is not None
+                    and st.state not in UNKNOWN_STATES
+                ),
+                None,
+            )
+            if reporting is None or not self._state_is(reporting, wanted):
+                pending.add(index)
+        return pending
+
+    def _linked_step_remaining(
+        self, group: LinkedGroup, entities: list[str], wanted: str
+    ) -> list[str]:
+        """The step's entities in this group that still need the command."""
+        pending = self._linked_pending_members(group, wanted)
+        if not pending:
+            return []
+        remaining: list[str] = []
+        all_members = set(range(len(group.members))) if group.members else {0}
+        for entity_id in entities:
+            if entity_id not in group.entity_ids:
+                continue
+            index = group.member_index(entity_id)
+            if index in pending:
+                remaining.append(entity_id)
+            elif index is None and pending == all_members:
+                remaining.append(entity_id)
+        return remaining
 
     def _integration_order(self, routine: dict[str, Any]) -> list[str]:
         own = routine.get("integration_order")
