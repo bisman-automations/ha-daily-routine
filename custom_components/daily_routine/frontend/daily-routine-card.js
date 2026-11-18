@@ -26,6 +26,18 @@ function percent(progress) {
   return Math.max(3, Math.min(100, Math.round(((step - 1 + part) / Math.max(1, total)) * 100)));
 }
 
+// A pushed status merged into the last full one (1.33.0): after the first
+// message the subscription sends only the routines whose run state changed
+// ("delta", "statuses") and the ones that are gone ("removed"). The same as
+// mergeStatus in daily-routine-panel.js (the card loads on its own).
+function mergeStatus(prev, next) {
+  const { delta, removed, ...rest } = next || {};
+  if (!delta || !prev) return rest;
+  const statuses = { ...(prev.statuses || {}), ...(rest.statuses || {}) };
+  for (const id of removed || []) delete statuses[id];
+  return { ...rest, statuses };
+}
+
 class DailyRoutineCard extends HTMLElement {
   static getStubConfig() {
     return { title: "Today" };
@@ -64,7 +76,11 @@ class DailyRoutineCard extends HTMLElement {
 
   _subscribe() {
     if (!this._hass?.connection) return;
-    this._unsub = this._hass.connection.subscribeMessage((status) => {
+    // Each subscription starts with a whole status, then sends changes only.
+    this._pushed = null;
+    this._unsub = this._hass.connection.subscribeMessage((message) => {
+      const status = mergeStatus(this._pushed, message);
+      this._pushed = status;
       const changed = status.log_count !== this._logCount || JSON.stringify(status.statuses) !== this._statusJson || JSON.stringify(status.guest_wifi || null) !== JSON.stringify(this._status?.guest_wifi || null);
       this._status = status;
       this._statusJson = JSON.stringify(status.statuses);
@@ -72,7 +88,7 @@ class DailyRoutineCard extends HTMLElement {
         this._logCount = status.log_count;
         this._loadToday();
       } else if (changed) this._render();
-    }, { type: `${DOMAIN}/subscribe` });
+    }, { type: `${DOMAIN}/subscribe`, delta: true });
     this._unsub.catch((err) => {
       this._error = err?.code === "unauthorized" ? "You don't have access to Daily Routine." : (err?.message || "Daily Routine isn't running.");
       this._unsub = null;

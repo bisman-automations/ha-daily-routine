@@ -24,17 +24,26 @@ Entities are only grouped when it's safe: a two-channel switch (two of the
 step's entities on one device) is never grouped, so both channels still get
 the command. Service devices (a routine, a Device Linker hub) are not part of
 a cluster.
+
+Speed (1.33.0): the clusters are worked out once, with an index of which
+cluster each device is in, and each step's groups are kept too
+(``registry_cache``); both are dropped when a device, entity or area changes
+or an integration loads. A step only looks at the clusters of its own
+devices, not at every cluster in the house.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.loader import async_get_loaded_integration
+
+from .registry_cache import cached
 
 # How close an integration is to the device, best first, when no order is set.
 IOT_RANK = {
@@ -101,24 +110,33 @@ class LinkedGroup:
     @property
     def entity_ids(self) -> list[str]:
         """Every entity in the group, levels first, without duplicates."""
-        seen: list[str] = []
-        for level in self.levels:
-            for entity_id in level.entity_ids:
-                if entity_id not in seen:
-                    seen.append(entity_id)
-        return seen
+        # A dict keeps the first place of each entity, without a list search.
+        return list(
+            dict.fromkeys(
+                entity_id for level in self.levels for entity_id in level.entity_ids
+            )
+        )
 
     @property
     def has_fallback(self) -> bool:
         """True when a later integration should be tried if this one fails."""
         return len(self.levels) > 1
 
+    @cached_property
+    def _member_of(self) -> dict[str, int]:
+        """Entity id -> its member, built once (the group never changes).
+
+        The first member wins, as the search it replaces did.
+        """
+        found: dict[str, int] = {}
+        for index, member in enumerate(self.members):
+            for entity_id in member:
+                found.setdefault(entity_id, index)
+        return found
+
     def member_index(self, entity_id: str) -> int | None:
         """Which physical member this entity belongs to, if it is not covering."""
-        for index, member in enumerate(self.members):
-            if entity_id in member:
-                return index
-        return None
+        return self._member_of.get(entity_id)
 
     def level_entities_for(
         self, level: IntegrationLevel, remaining: set[int]
@@ -180,6 +198,21 @@ def _hardware_devices(hass: HomeAssistant) -> list[Any]:
     ]
 
 
+def _topology(hass: HomeAssistant) -> tuple[list[list[Any]], dict[str, int]]:
+    """Every linked cluster, and which cluster each device is in (kept)."""
+
+    def build() -> tuple[list[list[Any]], dict[str, int]]:
+        clusters = _clusters(_hardware_devices(hass))
+        index = {
+            device.id: number
+            for number, cluster in enumerate(clusters)
+            for device in cluster
+        }
+        return clusters, index
+
+    return cached(hass, ("linked", "topology"), build)
+
+
 def _entry_id(device: Any) -> str | None:
     """The device's config entry (one per device since Home Assistant 2026.8)."""
     return getattr(device, "config_entry_id", None)
@@ -234,9 +267,20 @@ def linked_groups(
     higher-priority entity that covers the same targets is included even when
     the step didn't name it, except a pair entity is only included when the
     step is for everything it covers (or names the pair itself).
+
+    Kept per (entities, order) until the registries change; the groups are
+    frozen, so the same ones can be handed out again (in a new list).
     """
-    ent_reg = er.async_get(hass)
     entity_ids = list(entity_ids)
+    key = ("linked", "groups", tuple(entity_ids), tuple(order))
+    return list(cached(hass, key, lambda: _linked_groups(hass, entity_ids, order)))
+
+
+def _linked_groups(
+    hass: HomeAssistant, entity_ids: list[str], order: list[str]
+) -> list[LinkedGroup]:
+    """``linked_groups`` itself, worked out from the registries."""
+    ent_reg = er.async_get(hass)
     step = set(entity_ids)
     if not entity_ids:
         return []
@@ -250,17 +294,21 @@ def linked_groups(
         if entry is not None and entry.device_id is not None:
             step_device_ids.add(entry.device_id)
 
-    hardware = _hardware_devices(hass)
     grouped: dict[str, LinkedGroup] = {}
     member_entities: set[str] = set()
+    # Where each of the step's entities is in the step (its first place).
+    position: dict[str, int] = {}
+    for number, entity_id in enumerate(entity_ids):
+        position.setdefault(entity_id, number)
 
-    for cluster in _clusters(hardware):
-        if not any(device.id in step_device_ids for device in cluster):
-            continue
-        if domain is None:
-            continue
+    clusters, device_cluster = _topology(hass) if domain is not None else ([], {})
+    # Only the clusters the step's devices are in, in the same order as when
+    # every cluster was looked at.
+    wanted = sorted({device_cluster[d] for d in step_device_ids if d in device_cluster})
+    for number in wanted:
+        cluster = clusters[number]
         group = _group_from_cluster(
-            hass, cluster, ent_reg, domain, step, entity_ids, order
+            hass, cluster, ent_reg, domain or "", step, entity_ids, order
         )
         if group is None:
             continue
@@ -268,7 +316,7 @@ def linked_groups(
         # Place the group at the first of the step's entities that belongs to it.
         anchor = min(
             (entity_id for entity_id in ids if entity_id in step),
-            key=entity_ids.index,
+            key=position.__getitem__,
             default=ids[0],
         )
         grouped[anchor] = group
@@ -353,9 +401,13 @@ def _group_from_cluster(
     if not by_domain:
         return None
 
+    position: dict[str, int] = {}
+    for number, entity_id in enumerate(entity_order):
+        position.setdefault(entity_id, number)
+
     def _entity_sort(entity_id: str) -> tuple[int, int, str]:
-        if entity_id in entity_order:
-            return (0, entity_order.index(entity_id), entity_id)
+        if entity_id in position:
+            return (0, position[entity_id], entity_id)
         return (1, 0, entity_id)
 
     for domain_ids in by_domain.values():
@@ -522,11 +574,20 @@ def _members_of_cluster(
 
 
 def linked_integrations(hass: HomeAssistant) -> list[str]:
-    """Integrations with a device that's linked to another integration's device."""
-    devices = _hardware_devices(hass)
+    """Integrations with a device that's linked to another integration's device.
+
+    Kept until the registries change, like the clusters it comes from.
+    """
+    return list(
+        cached(hass, ("linked", "integrations"), lambda: _linked_integrations(hass))
+    )
+
+
+def _linked_integrations(hass: HomeAssistant) -> list[str]:
     domains: set[str] = set()
     entries = hass.config_entries
-    for cluster in _clusters(devices):
+    clusters, _index = _topology(hass)
+    for cluster in clusters:
         cluster_domains = set()
         for device in cluster:
             entry_id = _entry_id(device)

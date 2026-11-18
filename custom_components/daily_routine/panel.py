@@ -18,7 +18,11 @@ from homeassistant.helpers import (
     device_registry as dr,
     entity_registry as er,
 )
-from homeassistant.loader import LoaderError, async_get_loaded_integration
+from homeassistant.loader import (
+    LoaderError,
+    async_get_integration,
+    async_get_loaded_integration,
+)
 from homeassistant.util import dt as dt_util
 
 from .access import async_get_access, get_access
@@ -31,6 +35,7 @@ from .coordinator import (
 )
 from .guests import guest_card
 from .linked import integration_name, integration_rank, linked_integrations
+from .registry_cache import cached, get_registry_cache
 from .routines import MODES, normalize_routine
 from .run_log import WINDOWS, daily_counts, summarize
 from .runtime import get_coordinator
@@ -143,9 +148,34 @@ def _zones(hass: HomeAssistant) -> list[dict[str, str]]:
     return zones
 
 
+# The parts of the overview that come from the registries alone: the device
+# list and each entity's integration (the two largest parts on a big system).
+# They are kept until the registries change (registry_cache.py), and a page
+# that already has the current ones (it sends their ``catalog`` version)
+# isn't sent them again (1.33.0).
+CATALOG_KEYS = ("devices", "integrations")
+
+
+def _catalog(hass: HomeAssistant) -> dict[str, Any]:
+    return {
+        "devices": cached(hass, ("panel", "devices"), lambda: _devices(hass)),
+        "integrations": cached(
+            hass, ("panel", "integrations"), lambda: entity_integrations(hass)
+        ),
+    }
+
+
 def _overview(
-    hass: HomeAssistant, coordinator: HomeRoutinesCoordinator
+    hass: HomeAssistant,
+    coordinator: HomeRoutinesCoordinator,
+    catalog: str | None = None,
 ) -> dict[str, Any]:
+    """Everything the panel shows.
+
+    ``catalog``: the catalog version the page already has. When it is still
+    current, ``devices`` and ``integrations`` are left out and
+    ``catalog_kept`` is true, so the page keeps its own.
+    """
     sensors = [
         {
             "entity_id": s.entity_id,
@@ -183,9 +213,16 @@ def _overview(
         key=lambda e: e["name"].lower(),
     )
     todo_lists = [e for e in all_entities if e["entity_id"].startswith("todo.")]
+    cache = get_registry_cache(hass)
+    version = cache.version if cache is not None else None
+    if version is not None and catalog == version:
+        registry_parts: dict[str, Any] = {"catalog_kept": True}
+    else:
+        registry_parts = _catalog(hass)
     return {
+        "catalog": version,
+        **registry_parts,
         "areas": list_areas(hass),
-        "devices": _devices(hass),
         "people": list_people(hass, frozenset(coordinator.settings["hidden_people"])),
         "settings": coordinator.settings,
         "notify_targets": notify_targets(hass),
@@ -204,9 +241,9 @@ def _overview(
         "weathers": [e for e in all_entities if e["entity_id"].startswith("weather.")],
         "alarm_sensors": _alarm_sensors(hass),
         "lived_in": coordinator.lived_in.status(dt_util.now()),
-        # Which integration each entity comes from, shown next to its name in
-        # every device list (one light can be in Hue, Matter and HomeKit).
-        "integrations": entity_integrations(hass),
+        # "integrations" (in the catalog above): which integration each
+        # entity comes from, shown next to its name in every device list (one
+        # light can be in Hue, Matter and HomeKit).
         "habits": coordinator.habits.ideas(dt_util.now()),
         "day_type": coordinator.day_type(dt_util.now()),
         "hold": coordinator.hold(dt_util.now()),
@@ -319,7 +356,13 @@ def async_setup_panel_api(hass: HomeAssistant) -> None:
     hass.data[_API_REGISTERED] = True
 
 
-@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/overview"})
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/overview",
+        # The catalog version this page already has (see _overview).
+        vol.Optional("catalog"): vol.Any(None, str),
+    }
+)
 @require_access
 @websocket_api.async_response
 async def ws_overview(
@@ -329,7 +372,7 @@ async def ws_overview(
     if coordinator is None:
         connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
         return
-    connection.send_result(msg["id"], _overview(hass, coordinator))
+    connection.send_result(msg["id"], _overview(hass, coordinator, msg.get("catalog")))
 
 
 @websocket_api.websocket_command(
@@ -349,8 +392,14 @@ async def ws_activity(
         connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
         return
     now = dt_util.now()
+    log = coordinator.run_log
     summary = summarize(
-        coordinator.run_log.events(), msg["window"], now, coordinator.routines
+        log.view(),
+        msg["window"],
+        now,
+        coordinator.routines,
+        times=log.times(),
+        ordered=log.ordered,
     )
     summary["health"] = [
         {"id": r["id"], "name": r["name"], "problems": problems}
@@ -478,13 +527,49 @@ def _shared_status(coordinator: HomeRoutinesCoordinator) -> dict[str, Any]:
     return payload
 
 
-@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/subscribe"})
+def status_delta(
+    before: dict[str, Any], after: dict[str, Any]
+) -> dict[str, Any] | None:
+    """What changed between two ``_status`` payloads, or None when nothing did.
+
+    Everything but ``statuses`` is small and always sent; of ``statuses``
+    only the routines whose run state changed are, and ``removed`` lists
+    routines that are gone. ``delta`` is true, so the page merges it into
+    what it has (``mergeStatus`` in the panel and the card).
+    """
+    if before == after:
+        return None
+    old = before.get("statuses") or {}
+    new = after.get("statuses") or {}
+    return {
+        **{key: value for key, value in after.items() if key != "statuses"},
+        "delta": True,
+        "statuses": {
+            rid: status for rid, status in new.items() if old.get(rid) != status
+        },
+        "removed": [rid for rid in old if rid not in new],
+    }
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/subscribe",
+        # The page can merge changes (1.33.0): after the first, full message,
+        # send only the routines whose run state changed.
+        vol.Optional("delta", default=False): bool,
+    }
+)
 @require_access
 @callback
 def ws_subscribe(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Run states as they change, so a card shows Running and its progress at once."""
+    """Run states as they change, so a card shows Running and its progress at once.
+
+    With ``delta``, the first message is the whole status and each later one
+    only what changed (``status_delta``): a running routine's progress no
+    longer sends every routine's status again several times a second.
+    """
     coordinator = _coordinator(hass)
     if coordinator is None:
         connection.send_error(msg["id"], "not_loaded", "Daily Routine is not loaded")
@@ -501,8 +586,11 @@ def ws_subscribe(
         # Nothing this screen can show changed: nothing to send.
         if last and last[0] == payload:
             return
+        message = payload
+        if last and msg["delta"]:
+            message = status_delta(last[0], payload) or payload
         last[:] = [payload]
-        connection.send_message(websocket_api.event_message(msg["id"], payload))
+        connection.send_message(websocket_api.event_message(msg["id"], message))
 
     @callback
     def _changed() -> None:
@@ -888,10 +976,11 @@ def ws_history(
         msg["id"],
         {
             "days": daily_counts(
-                coordinator.run_log.events(),
+                coordinator.run_log.view(),
                 dt_util.now(),
                 msg["days"],
                 msg.get("routine_id"),
+                times=coordinator.run_log.times(),
             )
         },
     )
@@ -1043,18 +1132,24 @@ async def async_register_panel(hass: HomeAssistant, *, update: bool = False) -> 
     async_setup_panel_api(hass)
 
     if not hass.data.get(_STATIC_REGISTERED):
+        # Every URL to the scripts carries the version (below), so browsers
+        # may keep them: an update changes the URL (1.33.0).
         await hass.http.async_register_static_paths(
             [
-                StaticPathConfig(STATIC_URL, str(FRONTEND_DIR), cache_headers=False),
+                StaticPathConfig(STATIC_URL, str(FRONTEND_DIR), cache_headers=True),
                 StaticPathConfig(
                     f"{STATIC_URL}/brand", str(BRAND_DIR), cache_headers=True
                 ),
             ]
         )
         hass.data[_STATIC_REGISTERED] = True
+    version = (await async_get_integration(hass, DOMAIN)).version
     if not hass.data.get(_CARD_REGISTERED):
-        # The dashboard card, on every dashboard.
-        frontend.add_extra_js_url(hass, f"{STATIC_URL}/daily-routine-card.js")
+        # The dashboard card, on every dashboard. The version in the URL makes
+        # browsers fetch the new script after an update.
+        frontend.add_extra_js_url(
+            hass, f"{STATIC_URL}/daily-routine-card.js?v={version}"
+        )
         hass.data[_CARD_REGISTERED] = True
 
     require_admin = not await access.async_listed_non_admins()
@@ -1071,7 +1166,7 @@ async def async_register_panel(hass: HomeAssistant, *, update: bool = False) -> 
             frontend_url_path=PANEL_URL_PATH,
             sidebar_title="Daily Routine",
             sidebar_icon="mdi:calendar-clock",
-            module_url=f"{STATIC_URL}/daily-routine-panel.js",
+            module_url=f"{STATIC_URL}/daily-routine-panel.js?v={version}",
             embed_iframe=False,
             require_admin=require_admin,
         )

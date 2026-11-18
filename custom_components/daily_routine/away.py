@@ -14,8 +14,8 @@ and were skipped, naming the ones that failed or were skipped and why.
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import date, datetime
+from collections.abc import Callable, Sequence
+from datetime import date, datetime, timedelta
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -65,7 +65,7 @@ def vacation_or_none(raw: Any) -> dict[str, Any] | None:
 
 
 def summary_text(
-    events: list[dict[str, Any]], day: date, reason_text: Callable[[str], str]
+    events: Sequence[dict[str, Any]], day: date, reason_text: Callable[[str], str]
 ) -> str:
     """Today's runs in a few lines."""
     today = [
@@ -146,7 +146,10 @@ class AwayHelper:
             self.coord.send_weekly(now)
 
     def weekly(self, now: datetime) -> str:
-        return weekly_text(self.coord.run_log.events(), self.coord.routines, now)
+        # Only the last week is looked at, so only that is read (1.33.0).
+        return weekly_text(
+            self.coord.run_log.since(now - timedelta(days=7)), self.coord.routines, now
+        )
 
     @callback
     def _send_summary(self, now: datetime) -> None:
@@ -157,7 +160,7 @@ class AwayHelper:
 
     def summary(self, now: datetime) -> str:
         return summary_text(
-            self.coord.run_log.events(),
+            self.coord.run_log.view(),
             dt_util.as_local(now).date(),
             self.coord.reason_text,
         )

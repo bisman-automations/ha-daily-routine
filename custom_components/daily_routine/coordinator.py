@@ -7,7 +7,7 @@ from collections import deque
 from collections.abc import Callable, Coroutine
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime, time as dt_time, timedelta
+from datetime import date, datetime, time as dt_time, timedelta
 import hashlib
 import logging
 import re
@@ -105,6 +105,7 @@ from .planned import (
 )
 from .progress import step_label
 from .quiet_hours import clean_quiet, in_quiet, is_loud, quiet_or_default
+from .registry_cache import async_track_registries
 from .reliability import DeviceStats
 from .routines import (
     CHARGING_STATES,
@@ -288,6 +289,48 @@ def _watched_entities(routine: dict[str, Any]) -> list[str]:
         elif "entity_id" in cond:
             entities.append(cond["entity_id"])
     return entities
+
+
+def _health_bad(state: State | None) -> bool:
+    """Whether a device a routine needs is missing, unavailable or unknown."""
+    return state is None or state.state in UNKNOWN_STATES
+
+
+def _event_time(value: Any) -> datetime:
+    """A calendar event's start or end: a time, or a date (local midnight).
+
+    Raises ValueError when it is neither.
+    """
+    text = str(value or "")
+    if len(text) == 10:
+        return dt_util.start_of_local_day(date.fromisoformat(text))
+    when = datetime.fromisoformat(text)
+    return when if when.tzinfo else when.replace(tzinfo=dt_util.get_default_time_zone())
+
+
+def _titles_between(
+    events: list[dict[str, Any]] | None, start: datetime, end: datetime
+) -> list[str] | None:
+    """Titles of the events (read for a longer span) that are on between two times.
+
+    What reading the calendar for just that span gives: events that overlap
+    it, in the order they came. None when the calendar couldn't be read.
+    Raises ValueError for an event without a readable start and end, so the
+    caller reads that calendar for the span instead.
+    """
+    if events is None:
+        return None
+    titles = []
+    for event in events:
+        begins = _event_time(event.get("start"))
+        ends = _event_time(event.get("end"))
+        if ends > begins:
+            on = begins < end and ends > start
+        else:  # no length: on if it's at a moment inside the span
+            on = start <= begins < end
+        if on:
+            titles.append(str(event.get("summary") or ""))
+    return titles
 
 
 def _calendars(routine: dict[str, Any]) -> list[str]:
@@ -639,6 +682,12 @@ class HomeRoutinesCoordinator:
         # Remembered states by name (remember_states / put_back_states).
         self.memories: dict[str, dict[str, Any]] = {}
         self._startup_unsubs: list[Callable[[], None]] = []
+        # Keeps linked devices and the panel's device lists until the
+        # registries change (registry_cache.py), from setup to unload.
+        self._registry_unsub: Callable[[], None] | None = None
+        # Set when unloading: work that finishes later (a forecast or calendar
+        # read started at startup) doesn't plan anything any more.
+        self._unloaded = False
         self._health_unsub: Callable[[], None] | None = None
         # Today's event titles for each calendar a condition uses: entity -> (date, titles).
         self._calendar_days: dict[str, tuple[str, list[str]]] = {}
@@ -979,6 +1028,8 @@ class HomeRoutinesCoordinator:
 
     async def async_setup(self) -> None:
         """Load stored routines and settings. Scheduling starts in async_start."""
+        if self._registry_unsub is None:
+            self._registry_unsub = async_track_registries(self.hass)
         await self.run_log.async_load()
         await self.device_stats.async_load()
         data = await self._store.async_load() or {}
@@ -1034,8 +1085,13 @@ class HomeRoutinesCoordinator:
         await self.habits.async_load()
 
     async def async_start(self) -> None:
-        # Calendars first, so a run right after starting can check them.
-        await self._refresh_calendars()
+        # Calendars a condition uses first, so a run right after starting can
+        # check them. They are read at the same time, and a calendar that a
+        # "before an event" trigger or a hold also uses is read once, for the
+        # longer span, and shared with the read below (1.33.0).
+        now = dt_util.now()
+        first, titles = await self._read_calendars_at_once(now, upcoming=False)
+        await self._refresh_calendars(read=first, titles=titles, now=now)
         self._start_all(catch_up=False)
         self._started_at = dt_util.utcnow()
         self._schedule_health_interval()
@@ -1045,8 +1101,11 @@ class HomeRoutinesCoordinator:
         self._forecast_unsub = async_track_time_interval(
             self.hass, self._check_forecasts, FORECAST_EVERY
         )
-        await self._refresh_upcoming()
-        await self._check_forecasts()
+        # The coming days' events and the forecasts are read in the
+        # background, at the same time, so a slow calendar or weather service
+        # doesn't hold up setting up (1.33.0). Routines they plan are planned
+        # when they come in.
+        self._spawn(self._after_start(first, now))
         await self.voice.async_start()
         self._calendar_unsub = async_track_time_interval(
             self.hass, self._on_calendar_interval, CALENDAR_REFRESH
@@ -1066,6 +1125,14 @@ class HomeRoutinesCoordinator:
                     lambda _event: self._schedule_startup_catch_up(),
                 )
             )
+
+    async def _after_start(
+        self, read: dict[str, list[dict[str, Any]] | None], now: datetime
+    ) -> None:
+        """The slower reads after starting: coming events and forecasts, together."""
+        await asyncio.gather(
+            self._refresh_upcoming(read=read, now=now), self._check_forecasts()
+        )
 
     async def _run_missed_from(self, event: Event) -> None:
         access = await async_get_access(self.hass)
@@ -1117,7 +1184,7 @@ class HomeRoutinesCoordinator:
             return
         self._missed = missed_today(
             self.routines,
-            self.run_log.events(),
+            self.run_log.view(),
             now,
             lambda r: self._allowed_day(r, now),
         )
@@ -1156,6 +1223,10 @@ class HomeRoutinesCoordinator:
         )
 
     async def async_unload(self, *, save: bool = True) -> None:
+        self._unloaded = True
+        if self._registry_unsub is not None:
+            self._registry_unsub()
+            self._registry_unsub = None
         for unsub in self._startup_unsubs:
             unsub()
         self._startup_unsubs.clear()
@@ -1201,12 +1272,22 @@ class HomeRoutinesCoordinator:
         (Home Assistant writes it on shutdown if it's still waiting)."""
         self._store.async_delay_save(self._payload, RUN_SAVE_DELAY_SECONDS)
 
-    async def async_reload(self) -> None:
-        """Restart every schedule and watcher from the current routine list."""
-        self._drop_all_handles()
-        # Routines waiting for their conditions keep waiting (_start_all re-arms
-        # them): saving one routine mustn't cancel another's run today.
-        self._start_all(catch_up=False)
+    async def async_reload(self, only: set[str] | None = None) -> None:
+        """Restart schedules and watchers from the current routine list.
+
+        ``only``: just these routines (and their other triggers) were saved
+        or deleted, so only theirs are restarted and every other routine's
+        schedules, watchers and timers (a planned retry, a heads-up) are left
+        as they are (1.33.0). Without it, everything is restarted (the
+        reload action, a restore, an entry deleted in Home Assistant).
+        """
+        if only is None:
+            self._drop_all_handles()
+            # Routines waiting for their conditions keep waiting (_start_all
+            # re-arms them): saving one routine mustn't cancel another's run today.
+            self._start_all(catch_up=False)
+        else:
+            self._start_some(only)
         self.revision += 1
         await self._async_save()
         self._notify_listeners()
@@ -1262,6 +1343,9 @@ class HomeRoutinesCoordinator:
                 )
         companion = normalize_routine(companion_raw) if companion_raw else None
 
+        old_companions = [
+            r["id"] for r in self.routines if r.get("companion_of") == routine["id"]
+        ]
         self._drop_companions(routine["id"])
         index = next(
             (i for i, r in enumerate(self.routines) if r["id"] == routine["id"]), None
@@ -1274,7 +1358,11 @@ class HomeRoutinesCoordinator:
             self.routines[index] = routine
         if companion is not None:
             self.routines.append(companion)
-        await self.async_reload()
+        # Only this routine and its turn-off routines (old and new) start again.
+        await self.async_reload(
+            only={routine["id"], *old_companions}
+            | ({companion["id"]} if companion is not None else set())
+        )
         return routine
 
     def _drop_companions(self, routine_id: str) -> None:
@@ -1286,13 +1374,16 @@ class HomeRoutinesCoordinator:
 
     async def async_delete_routine(self, routine_id: str) -> None:
         async with self._lock:
+            companions = [
+                r["id"] for r in self.routines if r.get("companion_of") == routine_id
+            ]
             self._drop_companions(routine_id)
             self._spawn(self._dismiss_health_notification(routine_id))
             self.routines = [r for r in self.routines if r["id"] != routine_id]
             self._runtime.pop(routine_id, None)
             self._history.pop(routine_id, None)
             self.run_log.forget_routine(routine_id)
-            await self.async_reload()
+            await self.async_reload(only={routine_id, *companions})
             self._sync_subentries_locked()
 
     # ----- backup and restore -----
@@ -1571,9 +1662,8 @@ class HomeRoutinesCoordinator:
         since = self.settings.pop("away_since", None)
         if not since or not self.settings.get("away_summary"):
             return
-        text = away_text(
-            self.run_log.events(), datetime.fromisoformat(since), self.routines
-        )
+        start = datetime.fromisoformat(since)
+        text = away_text(self.run_log.since(start), start, self.routines)
         self._spawn(self._notify(text, f"{DOMAIN}_away_summary"))
 
     async def async_set_paused(self, paused: bool) -> None:
@@ -1702,32 +1792,131 @@ class HomeRoutinesCoordinator:
     # ----- calendars -----
 
     async def _on_calendar_interval(self, _now: datetime) -> None:
-        await self._refresh_calendars()
-        await self._refresh_upcoming()
+        """Every CALENDAR_REFRESH: today's events and the coming days' events.
 
-    async def _refresh_calendars(self) -> None:
-        """Read today's events from every calendar a condition uses."""
-        if self._calendar_refreshing:
-            return
-        wanted = sorted(
+        A calendar both need is read once, for the longer span (yesterday to
+        EVENTS_AHEAD), and today's titles are taken from that (1.33.0). All
+        calendars are read at the same time.
+        """
+        now = dt_util.now()
+        read, titles = await self._read_calendars_at_once(now, upcoming=True)
+        await self._refresh_calendars(read=read, titles=titles, now=now)
+        await self._refresh_upcoming(read=read, now=now)
+
+    async def _read_calendars_at_once(
+        self, now: datetime, *, upcoming: bool
+    ) -> tuple[dict[str, list[dict[str, Any]] | None], dict[str, list[str] | None]]:
+        """Read calendars in one go, each once.
+
+        A calendar a condition uses and a "before an event" trigger (or a
+        hold) uses too is read for the longer span, and today's titles are
+        taken from that. A calendar only a condition uses is read for today.
+        ``upcoming``: every "before an event" calendar is read now as well
+        (else only the shared ones, and _refresh_upcoming reads the rest).
+        Returns (events for the longer span, today's titles).
+        """
+        conditions = [] if self._calendar_refreshing else self._condition_calendars()
+        coming = set(self._upcoming_calendars())
+        longer = sorted(coming if upcoming else coming & set(conditions))
+        today_only = [c for c in conditions if c not in coming]
+        start = dt_util.start_of_local_day(now)
+        end = start + timedelta(days=1)
+        read, found = await asyncio.gather(
+            self._read_events_many(longer, *self._upcoming_span(now)),
+            asyncio.gather(*(self._read_calendar(c, start, end) for c in today_only)),
+        )
+        return read, dict(zip(today_only, found, strict=True))
+
+    def _condition_calendars(self) -> list[str]:
+        """Calendars a condition, a step's only if or a day type uses."""
+        return sorted(
             {c for r in self.routines for c in _calendars(r)}
             | set(day_type_calendars(self.settings.get("day_types") or []))
         )
+
+    def _upcoming_calendars(self) -> list[str]:
+        """Calendars "before an event" triggers and calendar holds use."""
+        return sorted(
+            {
+                r["watch_entity"]
+                for r in [*self.routines, *self._aliases.values()]
+                if r["trigger"] == TRIGGER_CALENDAR_EVENT
+            }
+            | {h["calendar"] for h in self.settings.get("holds") or []}
+        )
+
+    @staticmethod
+    def _upcoming_span(now: datetime) -> tuple[datetime, datetime]:
+        """What _refresh_upcoming reads: from a day ago to EVENTS_AHEAD."""
+        return now - timedelta(days=1), now + EVENTS_AHEAD
+
+    async def _read_events_many(
+        self, entity_ids: list[str], start: datetime, end: datetime
+    ) -> dict[str, list[dict[str, Any]] | None]:
+        """_read_events for several calendars at the same time."""
+        if not entity_ids:
+            return {}
+        found = await asyncio.gather(
+            *(self._read_events(entity_id, start, end) for entity_id in entity_ids)
+        )
+        return dict(zip(entity_ids, found, strict=True))
+
+    async def _refresh_calendars(
+        self,
+        read: dict[str, list[dict[str, Any]] | None] | None = None,
+        now: datetime | None = None,
+        titles: dict[str, list[str] | None] | None = None,
+    ) -> None:
+        """Read today's events from every calendar a condition uses.
+
+        ``read``: calendars already read for a span that covers today (the
+        shared read, _read_calendars_at_once); today's titles are taken from
+        those. ``titles``: calendars already read for today. The others are
+        read now, at the same time.
+        """
+        if self._calendar_refreshing:
+            return
+        wanted = self._condition_calendars()
         if not wanted:
             self._calendar_days.clear()
             return
+        read = read or {}
+        titles = titles or {}
         self._calendar_refreshing = True
         try:
-            now = dt_util.now()
+            now = now or dt_util.now()
             self._calendar_tried = now.date().isoformat()
             start = dt_util.start_of_local_day(now)
             end = start + timedelta(days=1)
+            to_read = [e for e in wanted if e not in read and e not in titles]
+            found = await asyncio.gather(
+                *(self._read_calendar(e, start, end) for e in to_read)
+            )
+            titles_of: dict[str, list[str] | None] = {
+                e: titles[e] for e in wanted if e in titles and e not in read
+            }
+            titles_of.update(zip(to_read, found, strict=True))
+            again: list[str] = []
             for entity_id in wanted:
-                titles = await self._read_calendar(entity_id, start, end)
-                if titles is None:
+                if entity_id in read:
+                    try:
+                        titles_of[entity_id] = _titles_between(
+                            read[entity_id], start, end
+                        )
+                    except ValueError:
+                        again.append(entity_id)
+            # An event without a time we can read: read today's span after all.
+            for entity_id in again:
+                titles_of[entity_id] = await self._read_calendar(entity_id, start, end)
+            for entity_id in wanted:
+                day_titles = titles_of[entity_id]
+                if day_titles is None:
                     self._calendar_days.pop(entity_id, None)
                 else:
-                    self._calendar_days[entity_id] = (now.date().isoformat(), titles)
+                    self._calendar_days[entity_id] = (
+                        now.date().isoformat(),
+                        day_titles,
+                    )
             for gone in set(self._calendar_days) - set(wanted):
                 del self._calendar_days[gone]
         finally:
@@ -1740,31 +1929,14 @@ class HomeRoutinesCoordinator:
     async def _read_calendar(
         self, entity_id: str, start: datetime, end: datetime
     ) -> list[str] | None:
-        if self.hass.states.get(
-            entity_id
-        ) is None or not self.hass.services.has_service("calendar", "get_events"):
+        """The titles of a calendar's events between two times.
+
+        None when it can't be read (an unreadable calendar fails closed).
+        """
+        events = await self._read_events(entity_id, start, end)
+        if events is None:
             return None
-        try:
-            async with asyncio.timeout(CALENDAR_TIMEOUT_SECONDS):
-                response = await self.hass.services.async_call(
-                    "calendar",
-                    "get_events",
-                    {
-                        "entity_id": entity_id,
-                        "start_date_time": start.isoformat(),
-                        "end_date_time": end.isoformat(),
-                    },
-                    blocking=True,
-                    return_response=True,
-                )
-        except Exception as err:  # noqa: BLE001 - an unreadable calendar fails closed
-            _LOGGER.warning("Couldn't read %s: %s", entity_id, err)
-            return None
-        calendar = (response or {}).get(entity_id)
-        events = calendar.get("events") if isinstance(calendar, dict) else None
-        if not isinstance(events, list):
-            return []
-        return [str(e.get("summary") or "") for e in events if isinstance(e, dict)]
+        return [str(e.get("summary") or "") for e in events]
 
     def _presence_ok(self, cond: dict[str, Any]) -> bool:
         """Who is in or away from the place. Unknown or unavailable people fail closed."""
@@ -2227,21 +2399,28 @@ class HomeRoutinesCoordinator:
             async_track_state_change_event(self.hass, [entity], _changed),
         )
 
-    async def _refresh_upcoming(self) -> None:
-        """Read the coming days' events for "before an event" triggers, and plan them."""
-        wanted = sorted(
-            {
-                r["watch_entity"]
-                for r in [*self.routines, *self._aliases.values()]
-                if r["trigger"] == TRIGGER_CALENDAR_EVENT
-            }
-            | {h["calendar"] for h in self.settings.get("holds") or []}
-        )
-        now = dt_util.now()
-        for entity_id in wanted:
-            events = await self._read_events(
-                entity_id, now - timedelta(days=1), now + EVENTS_AHEAD
+    async def _refresh_upcoming(
+        self,
+        read: dict[str, list[dict[str, Any]] | None] | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        """Read the coming days' events for "before an event" triggers, and plan them.
+
+        ``read``: calendars already read for the same span (shared with
+        today's read); the rest are read at the same time.
+        """
+        wanted = self._upcoming_calendars()
+        now = now or dt_util.now()
+        read = dict(read or {})
+        read.update(
+            await self._read_events_many(
+                [e for e in wanted if e not in read], *self._upcoming_span(now)
             )
+        )
+        if self._unloaded:
+            return
+        for entity_id in wanted:
+            events = read.get(entity_id)
             if events is not None:
                 self._upcoming[entity_id] = events
         for gone in set(self._upcoming) - set(wanted):
@@ -2289,10 +2468,19 @@ class HomeRoutinesCoordinator:
             for r in [*self.routines, *self._aliases.values()]
             if r["trigger"] == TRIGGER_FORECAST and r["enabled"]
         ]
-        forecasts: dict[str, list[dict[str, Any]] | None] = {}
         now = dt_util.now()
+        # Every weather is read at the same time (1.33.0), the ones the
+        # conditions use and the ones forecast triggers watch.
+        wanted = sorted(
+            self._forecast_entities() | {r["watch_entity"] for r in routines}
+        )
+        found = await asyncio.gather(*(self._read_forecast(e) for e in wanted))
+        if self._unloaded:
+            return
+        read = dict(zip(wanted, found, strict=True))
+        forecasts: dict[str, list[dict[str, Any]] | None] = {}
         for entity in self._forecast_entities():
-            forecasts[entity] = await self._read_forecast(entity)
+            forecasts[entity] = read[entity]
             if forecasts[entity] is not None:
                 self._forecast_cache[entity] = forecasts[entity] or []
         for gone in set(self._forecast_cache) - set(self._forecast_entities()):
@@ -2313,7 +2501,7 @@ class HomeRoutinesCoordinator:
         for routine in routines:
             entity = routine["watch_entity"]
             if entity not in forecasts:
-                forecasts[entity] = await self._read_forecast(entity)
+                forecasts[entity] = read[entity]
             forecast = forecasts[entity]
             if forecast is None:
                 continue  # unknown: no change either way
@@ -2806,7 +2994,15 @@ class HomeRoutinesCoordinator:
             return
 
         @callback
-        def _changed(_event: Event[EventStateChangedData]) -> None:
+        def _changed(event: Event[EventStateChangedData]) -> None:
+            # Health only looks at whether a device is there and available, so
+            # a light going on or off (most changes) needs no new check
+            # (1.33.0). Only going missing, unavailable or unknown, or coming
+            # back, does.
+            if _health_bad(event.data.get("old_state")) == _health_bad(
+                event.data.get("new_state")
+            ):
+                return
             current = self._find(rid)
             if (
                 current is not None
@@ -2838,9 +3034,21 @@ class HomeRoutinesCoordinator:
             if routine["trigger"] in TODO_DONE_TRIGGERS and routine["enabled"]:
                 self._spawn(self._check_done(routine))
 
-    def _build_aliases(self) -> None:
+    def _build_aliases(self, only: set[str] | None = None) -> None:
+        """Each routine's other triggers as routines of their own.
+
+        ``only``: build just these routines' again and keep the others' as
+        they are (the same dicts, which their watchers hold), in the same
+        order as building them all.
+        """
+        old = self._aliases
         self._aliases = {}
         for routine in self.routines:
+            if only is not None and routine["id"] not in only:
+                for alias_id, alias in old.items():
+                    if alias["alias_of"] == routine["id"]:
+                        self._aliases[alias_id] = alias
+                continue
             for number, more in enumerate(routine.get("more_triggers") or [], start=2):
                 alias_id = f"{routine['id']}~{number}"
                 self._aliases[alias_id] = {
@@ -2884,7 +3092,47 @@ class HomeRoutinesCoordinator:
         for rid in list(self._runtime):
             if rid not in ids:
                 del self._runtime[rid]
-        for alias in self._aliases.values():
+        self._start_routines(
+            list(self._aliases.values()), self.routines, now, catch_up=catch_up
+        )
+
+    def _start_some(self, routine_ids: set[str]) -> None:
+        """Restart only these routines (saved or deleted) and their other triggers.
+
+        Their handles are dropped first (every kind: schedules, watchers, a
+        planned retry, a heads-up, as a full reload would); every other
+        routine's are left running.
+        """
+        now = dt_util.now()
+        old_aliases = {
+            alias_id
+            for alias_id, alias in self._aliases.items()
+            if alias["alias_of"] in routine_ids
+        }
+        mine = routine_ids | old_aliases
+        for key in [key for key in self._handles if key[0] in mine]:
+            self._drop_handle(*key)
+        self._build_aliases(only=routine_ids)
+        ids = {r["id"] for r in self.routines} | set(self._aliases)
+        for rid in mine - ids:
+            self._runtime.pop(rid, None)
+        self._start_routines(
+            [a for a in self._aliases.values() if a["alias_of"] in routine_ids],
+            [r for r in self.routines if r["id"] in routine_ids],
+            now,
+            catch_up=False,
+        )
+
+    def _start_routines(
+        self,
+        aliases: list[dict[str, Any]],
+        routines: list[dict[str, Any]],
+        now: datetime,
+        *,
+        catch_up: bool,
+    ) -> None:
+        """Plan and watch these routines and other triggers (their handles are gone)."""
+        for alias in aliases:
             self._rt(alias["id"])
             self._watch_planned(alias)
             self._schedule_one(alias, now)
@@ -2892,7 +3140,7 @@ class HomeRoutinesCoordinator:
             self._watch_value(alias)
             self._watch_state(alias)
             self._watch_press(alias)
-        for routine in self.routines:
+        for routine in routines:
             self._rt(routine["id"])
             self._watch_planned(routine)
             self._schedule_one(routine, now)
@@ -4386,7 +4634,10 @@ class HomeRoutinesCoordinator:
 
     def attention(self, now: datetime) -> list[dict[str, Any]]:
         """Routines that often fail or are skipped (last 14 days, 3+ tries)."""
-        return needs_attention(self.run_log.events(), now, self.routines)
+        log = self.run_log
+        return needs_attention(
+            log.view(), now, self.routines, times=log.times(), ordered=log.ordered
+        )
 
     def energy_month(self, now: datetime) -> dict[str, Any]:
         names = {r["id"]: r["name"] for r in self.routines}
@@ -4434,7 +4685,7 @@ class HomeRoutinesCoordinator:
         last_skip = next(
             (
                 e
-                for e in reversed(self.run_log.events())
+                for e in reversed(self.run_log.view())
                 if e.get("routine_id") == routine_id and e["outcome"] == "skipped"
             ),
             None,

@@ -5,6 +5,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.33.0] - 2026-11-18
+
+### Changed
+
+- **Steps on linked devices are planned faster.** Which devices are in more than one integration is worked out once, and again only when a device, entity or area changes, instead of reading every device in the house for every step. On a test system with 660 devices, planning a step went from about 0.8 ms to under 0.1 ms.
+- **Saving a routine leaves the others alone.** Saving or deleting a routine restarts only that routine (and its turn-off routine and other triggers). The others keep their schedules and watchers, and a retry or a heads-up already planned for them is no longer dropped.
+- **The Activity tab opens faster.** Its numbers are worked out in one pass over the run history instead of once per routine. With 5,000 runs and 40 routines, the 30-day view takes about 4 ms instead of 24 ms.
+- **Live updates send only what changed.** While a routine runs, the sidebar and the dashboard card get only the routines whose state changed, about 1 KB instead of every routine's status (about 24 KB with 40 routines).
+- **The sidebar doesn't fetch the device list again.** When routines change, the sidebar reloads without the device list and each entity's integration unless they changed, about 140 KB instead of 260 KB on a large system.
+- **Calendars read once and at the same time.** A calendar that both a condition and a "before an event" routine (or a hold) use is read once every 30 minutes instead of twice, and all calendars and weather forecasts are read at the same time instead of one after another.
+- **Starting up doesn't wait for slow calendars or forecasts.** Daily Routine reads the calendars its conditions need and then starts. The coming days' events and the forecasts are read straight after, in the background.
+- **Health checks only when a device goes away or comes back.** A device a routine watches turning on and off no longer plans a new health check every time. Only going missing, unavailable or unknown, or coming back, does.
+- **Browsers keep the sidebar and card scripts until the next update.** Their addresses now include the version, so an update still loads the new ones straight away.
+
 ## [1.32.0] - 2026-11-17
 
 ### Changed
@@ -546,6 +560,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.33.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.32.0...v1.33.0
 [1.32.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.31.3...v1.32.0
 [1.31.3]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.31.2...v1.31.3
 [1.31.2]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.31.1...v1.31.2

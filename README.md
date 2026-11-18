@@ -411,6 +411,7 @@ python3.14 -m venv .venv && . .venv/bin/activate
 pip install -r requirements_test.txt
 ruff check . && ruff format --check .
 pytest
+node --test tests/*.mjs
 ```
 
 The frontend tests run with `node --test tests/*.mjs`.

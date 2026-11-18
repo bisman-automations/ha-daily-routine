@@ -22,7 +22,8 @@ def today(coordinator: HomeRoutinesCoordinator, now: datetime) -> dict[str, Any]
     run when something happens."""
     start = dt_util.start_of_local_day(now)
     done: list[dict[str, Any]] = []
-    for event in coordinator.run_log.events():
+    # Only today's events are read (1.33.0), not a copy of the whole log.
+    for event in coordinator.run_log.since(start):
         at = dt_util.parse_datetime(event["at"])
         if at is None or at < start:
             continue

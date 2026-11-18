@@ -898,6 +898,31 @@ function formatTime(iso) {
   return isNaN(date) ? iso : date.toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
 }
 
+// A pushed status merged into the last full one (1.33.0). The subscription
+// asks for changes only: after the first message, each one has every small
+// field, but only the routines whose run state changed ("statuses") and the
+// ones that are gone ("removed"), marked "delta". A message without "delta" is
+// a whole status and replaces what we had.
+function mergeStatus(prev, next) {
+  const { delta, removed, ...rest } = next || {};
+  if (!delta || !prev) return rest;
+  const statuses = { ...(prev.statuses || {}), ...(rest.statuses || {}) };
+  for (const id of removed || []) delete statuses[id];
+  return { ...rest, statuses };
+}
+
+// The parts of the overview that only change with the devices and entities
+// themselves (1.33.0). Home Assistant leaves them out ("catalog_kept") when
+// this page already has the current ones ("catalog"), and the page keeps them.
+const CATALOG_KEYS = ["devices", "integrations"];
+
+function keepCatalog(data, previous) {
+  if (!data?.catalog_kept) return data;
+  const { catalog_kept: _kept, ...rest } = data;
+  for (const key of CATALOG_KEYS) rest[key] = previous?.[key];
+  return rest;
+}
+
 // Whether the page can't be seen (another tab, or a screen that's switched off).
 function pageHidden() {
   return typeof document !== "undefined" && Boolean(document.hidden);
@@ -951,8 +976,15 @@ class DailyRoutinePanel extends HTMLElement {
   // Run states pushed by Home Assistant as they change: Running, the step it's on, and done.
   _subscribe() {
     if (this._unsub || !this._hass?.connection?.subscribeMessage) return;
+    // Each subscription starts with a whole status, then sends changes only.
+    this._pushed = null;
     this._unsub = this._hass.connection
-      .subscribeMessage((status) => this._onStatus(status), { type: `${DOMAIN}/subscribe` });
+      .subscribeMessage((message) => {
+        this._pushed = mergeStatus(this._pushed, message);
+        // A copy, so a card marked Running straight away (before Home
+        // Assistant says so) doesn't change what later changes merge into.
+        this._onStatus({ ...this._pushed, statuses: { ...(this._pushed.statuses || {}) } });
+      }, { type: `${DOMAIN}/subscribe`, delta: true });
     this._unsub.then(() => { this._live = true; }).catch(() => { this._unsub = null; this._live = false; });
   }
 
@@ -1086,7 +1118,10 @@ class DailyRoutinePanel extends HTMLElement {
       this._call({ type: "tag/list" }).then((tags) => { this._tags = Array.isArray(tags) ? tags : []; }).catch(() => {});
     }
     try {
-      const data = await this._call({ type: `${DOMAIN}/overview` });
+      // The device list only comes again when it changed (keepCatalog).
+      const message = { type: `${DOMAIN}/overview` };
+      if (this._data?.catalog && CATALOG_KEYS.every((key) => this._data[key] !== undefined)) message.catalog = this._data.catalog;
+      const data = keepCatalog(await this._call(message), this._data);
       const json = JSON.stringify(data);
       changed = json !== this._dataJson || !this._data;
       this._data = data;
@@ -5018,5 +5053,9 @@ const STYLES = `<style>
     .progress .bar { transition: none; }
   }
 </style>`;
+
+// For the tests (tests/test_panel_frontend.mjs).
+DailyRoutinePanel.mergeStatus = mergeStatus;
+DailyRoutinePanel.keepCatalog = keepCatalog;
 
 customElements.define("daily-routine-panel", DailyRoutinePanel);

@@ -1,13 +1,22 @@
 """A short, saved log of every routine run, skip and failure, for the Activity tab.
 
 It is kept apart from the routine store so it can grow and be pruned on its own.
+
+Speed (1.33.0): the log keeps each event's time, read once, next to it
+(``times``), and knows whether the events are in time order (they are,
+unless the clock went back). Readers get the log itself (``view``) or only
+the part since a time (``since``, found by bisection) instead of a copy of
+every event, and ``summarize`` goes through the events once instead of once
+per routine.
 """
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections import Counter, deque
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime, timedelta
+from itertools import islice
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -37,6 +46,11 @@ class RunLog:
             hass, RUN_LOG_VERSION, RUN_LOG_KEY
         )
         self._events: deque[dict[str, Any]] = deque(maxlen=MAX_EVENTS)
+        # Each event's time, read once, in the same places as _events.
+        self._times: deque[datetime] = deque(maxlen=MAX_EVENTS)
+        # True while every event is at or after the one before it, so a
+        # window can be found by bisection.
+        self.ordered = True
         # Goes up with every event, so the Activity tab knows when to read again.
         self.count = 0
 
@@ -44,8 +58,18 @@ class RunLog:
         data = await self._store.async_load() or {}
         for event in data.get("events", []):
             if isinstance(event, dict) and event.get("outcome") in OUTCOMES:
-                self._events.append(event)
+                try:
+                    at = _when(event)
+                except TypeError, ValueError, KeyError:
+                    continue  # no readable time: it can't be shown or counted
+                self._append(event, at)
         self._prune(dt_util.now())
+
+    def _append(self, event: dict[str, Any], at: datetime) -> None:
+        if self._times and at < self._times[-1]:
+            self.ordered = False
+        self._events.append(event)
+        self._times.append(at)
 
     def record(
         self,
@@ -68,25 +92,51 @@ class RunLog:
         if steps:
             # Each step of the run, for replaying it (the first ones).
             event["steps"] = steps[:MAX_STEPS]
-        self._events.append(event)
+        self._append(event, now)
         self.count += 1
         self._prune(now)
         self._store.async_delay_save(self._payload, SAVE_DELAY_SECONDS)
 
     def events(self) -> list[dict[str, Any]]:
+        """A copy of every event, oldest first (for callers that keep it)."""
         return list(self._events)
+
+    def view(self) -> Sequence[dict[str, Any]]:
+        """Every event, oldest first, without copying. Read it, don't change it."""
+        return self._events
+
+    def times(self) -> Sequence[datetime]:
+        """Each event's time, in the same places as ``view()``."""
+        return self._times
+
+    def since(self, start: datetime) -> list[dict[str, Any]]:
+        """The events at or after a time, oldest first (only those are copied)."""
+        if self.ordered:
+            first = bisect_left(self._times, start)
+            return list(islice(self._events, first, None))
+        return [
+            e for e, at in zip(self._events, self._times, strict=True) if at >= start
+        ]
 
     def forget_routine(self, routine_id: str) -> None:
         """Drop a deleted routine's events so the Activity tab does not show it."""
-        kept = [e for e in self._events if e.get("routine_id") != routine_id]
+        kept = [
+            (e, at)
+            for e, at in zip(self._events, self._times, strict=True)
+            if e.get("routine_id") != routine_id
+        ]
         self._events.clear()
-        self._events.extend(kept)
+        self._times.clear()
+        self.ordered = True
+        for event, at in kept:
+            self._append(event, at)
         self._store.async_delay_save(self._payload, SAVE_DELAY_SECONDS)
 
     def _prune(self, now: datetime) -> None:
         cutoff = now - timedelta(days=KEEP_DAYS)
-        while self._events and _when(self._events[0]) < cutoff:
+        while self._times and self._times[0] < cutoff:
             self._events.popleft()
+            self._times.popleft()
 
     def _payload(self) -> dict[str, Any]:
         return {"events": list(self._events)}
@@ -115,38 +165,99 @@ def _failure_streak(events: list[dict[str, Any]]) -> int:
     return streak
 
 
+def _window(
+    events: Sequence[dict[str, Any]],
+    times: Sequence[datetime] | None,
+    since: datetime,
+    ordered: bool,
+) -> tuple[list[dict[str, Any]], list[datetime]]:
+    """The events at or after ``since`` and their times, oldest first.
+
+    ``times`` (each event's time, read once) saves reading every time again;
+    with ``ordered`` (the events are in time order) the start is found by
+    bisection instead of looking at every event.
+    """
+    if times is None:
+        times = [_when(e) for e in events]
+        ordered = False
+    if ordered:
+        first = bisect_left(times, since)
+        return list(islice(events, first, None)), list(islice(times, first, None))
+    pairs = [(e, at) for e, at in zip(events, times, strict=True) if at >= since]
+    return [e for e, _at in pairs], [at for _e, at in pairs]
+
+
 def summarize(
-    events: list[dict[str, Any]],
+    events: Sequence[dict[str, Any]],
     window: str,
     now: datetime,
     routines: list[dict[str, Any]],
+    times: Sequence[datetime] | None = None,
+    ordered: bool = False,
 ) -> dict[str, Any]:
-    """Counts and lists for one window. Pure, so it can be tested without Home Assistant."""
+    """Counts and lists for one window. Pure, so it can be tested without Home Assistant.
+
+    One pass over the window (and one over every event, for failures in a
+    row) instead of one per routine; ``times``/``ordered`` as in ``_window``
+    (RunLog.times() and RunLog.ordered).
+    """
     if window not in WINDOWS:
         window = "7d"
     since = window_start(window, now)
-    in_window = [e for e in events if _when(e) >= since]
-    ran = sum(1 for e in in_window if e["outcome"] == "ran")
-    failed = sum(1 for e in in_window if e["outcome"] == "failed")
-    skipped = sum(1 for e in in_window if e["outcome"] == "skipped")
-    attempted = ran + failed
+    in_window, in_times = _window(events, times, since, ordered)
 
+    totals = {"ran": 0, "failed": 0, "skipped": 0}
+    # Per routine id: its counts, newest event and newest failure in the window.
+    rows: dict[Any, dict[str, Any]] = {}
+    failure_reasons: Counter[str] = Counter()
+    skip_reasons: Counter[str] = Counter()
+    days: dict[str, dict[str, int]] = {}
+    for event, at in zip(in_window, in_times, strict=True):
+        outcome = event["outcome"]
+        row = rows.get(event.get("routine_id"))
+        if row is None:
+            row = rows[event.get("routine_id")] = {
+                "ran": 0,
+                "failed": 0,
+                "skipped": 0,
+                "last": None,
+                "last_failure": None,
+            }
+        row["last"] = event
+        if outcome in totals:
+            totals[outcome] += 1
+            row[outcome] += 1
+        if outcome == "failed":
+            row["last_failure"] = event
+            failure_reasons[event["reason"]] += 1
+        elif outcome == "skipped":
+            skip_reasons[event["reason"]] += 1
+        key = dt_util.as_local(at).date().isoformat()
+        bucket = days.setdefault(key, {"ran": 0, "failed": 0, "skipped": 0})
+        if outcome in bucket:
+            bucket[outcome] += 1
+
+    # Failures in a row count every event, not only the window's.
+    streaks: dict[Any, int] = {}
+    for event in events:
+        rid = event.get("routine_id")
+        streaks[rid] = streaks.get(rid, 0) + 1 if event["outcome"] == "failed" else 0
+
+    ran, failed, skipped = totals["ran"], totals["failed"], totals["skipped"]
+    attempted = ran + failed
     by_routine = []
     for routine in routines:
-        mine = [e for e in in_window if e.get("routine_id") == routine["id"]]
-        everything = [e for e in events if e.get("routine_id") == routine["id"]]
-        last_failure = next(
-            (e for e in reversed(mine) if e["outcome"] == "failed"), None
-        )
-        last = mine[-1] if mine else None
+        row = rows.get(routine["id"]) or {}
+        last = row.get("last")
+        last_failure = row.get("last_failure")
         by_routine.append(
             {
                 "id": routine["id"],
                 "name": routine["name"],
                 "enabled": routine["enabled"],
-                "ran": sum(1 for e in mine if e["outcome"] == "ran"),
-                "failed": sum(1 for e in mine if e["outcome"] == "failed"),
-                "skipped": sum(1 for e in mine if e["outcome"] == "skipped"),
+                "ran": row.get("ran", 0),
+                "failed": row.get("failed", 0),
+                "skipped": row.get("skipped", 0),
                 "last_at": last["at"] if last else None,
                 "last_outcome": last["outcome"] if last else None,
                 "last_failure": (
@@ -154,20 +265,9 @@ def summarize(
                     if last_failure
                     else None
                 ),
-                "failing_in_a_row": _failure_streak(everything),
+                "failing_in_a_row": streaks.get(routine["id"], 0),
             }
         )
-
-    failure_reasons = Counter(
-        e["reason"] for e in in_window if e["outcome"] == "failed"
-    )
-    skip_reasons = Counter(e["reason"] for e in in_window if e["outcome"] == "skipped")
-
-    days: dict[str, dict[str, int]] = {}
-    for event in in_window:
-        key = dt_util.as_local(_when(event)).date().isoformat()
-        bucket = days.setdefault(key, {"ran": 0, "failed": 0, "skipped": 0})
-        bucket[event["outcome"]] += 1
 
     recent = [
         {
@@ -211,23 +311,29 @@ def _ranked(counter: Counter[str]) -> list[dict[str, Any]]:
 
 
 def daily_counts(
-    events: list[dict[str, Any]],
+    events: Sequence[dict[str, Any]],
     now: datetime,
     days: int = 30,
     routine_id: str | None = None,
+    times: Sequence[datetime] | None = None,
 ) -> list[dict[str, Any]]:
     """Ran, skipped and failed per day for the last ``days`` days, oldest
-    first, with a row for every day (quiet days are zero). Pure."""
+    first, with a row for every day (quiet days are zero). Pure.
+
+    ``times``: each event's time, already read (RunLog.times()).
+    """
     today = dt_util.as_local(now).date()
     first = today - timedelta(days=days - 1)
     counts = {
         (first + timedelta(days=i)).isoformat(): {"ran": 0, "failed": 0, "skipped": 0}
         for i in range(days)
     }
+    when = iter(times) if times is not None else None
     for event in events:
+        at = next(when) if when is not None else None
         if routine_id is not None and event.get("routine_id") != routine_id:
             continue
-        key = dt_util.as_local(_when(event)).date().isoformat()
+        key = dt_util.as_local(at or _when(event)).date().isoformat()
         if key in counts:
             counts[key][event["outcome"]] += 1
     return [{"day": day, **row} for day, row in counts.items()]
@@ -241,14 +347,21 @@ ATTENTION_SHARE = 0.5
 
 
 def needs_attention(
-    events: list[dict[str, Any]], now: datetime, routines: list[dict[str, Any]]
+    events: Sequence[dict[str, Any]],
+    now: datetime,
+    routines: list[dict[str, Any]],
+    times: Sequence[datetime] | None = None,
+    ordered: bool = False,
 ) -> list[dict[str, Any]]:
-    """Enabled routines that keep failing or being skipped, worst first."""
+    """Enabled routines that keep failing or being skipped, worst first.
+
+    ``times``/``ordered`` as in ``_window``: only the last ATTENTION_DAYS are
+    looked at, found by bisection when the events are in time order.
+    """
     since = now - timedelta(days=ATTENTION_DAYS)
     counts: dict[str, dict[str, int]] = {}
-    for event in events:
-        if _when(event) < since:
-            continue
+    recent, _times = _window(events, times, since, ordered)
+    for event in recent:
         row = counts.setdefault(
             event["routine_id"], {"ran": 0, "failed": 0, "skipped": 0}
         )
@@ -277,7 +390,7 @@ def needs_attention(
 
 
 def away_text(
-    events: list[dict[str, Any]], since: datetime, routines: list[dict[str, Any]]
+    events: Sequence[dict[str, Any]], since: datetime, routines: list[dict[str, Any]]
 ) -> str:
     """What ran while the house was Away or on Vacation, in one line."""
     names = {r["id"]: r["name"] for r in routines}
@@ -303,7 +416,7 @@ def away_text(
 
 def missed_today(
     routines: list[dict[str, Any]],
-    events: list[dict[str, Any]],
+    events: Sequence[dict[str, Any]],
     now: datetime,
     allowed_today: Callable[[dict[str, Any]], bool],
 ) -> list[str]:
