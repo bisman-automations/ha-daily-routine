@@ -1176,9 +1176,19 @@ async def async_register_panel(hass: HomeAssistant, *, update: bool = False) -> 
 
 
 async def async_unregister_panel(hass: HomeAssistant) -> None:
-    if not hass.config_entries.async_entries(DOMAIN):
-        frontend.async_remove_panel(hass, PANEL_URL_PATH)
-        hass.data[_PANEL_REGISTERED] = False
+    """Take the sidebar entry away while Daily Routine isn't running.
+
+    Called when the primary entry unloads (a reload, turning the integration
+    off, removing it) and when its setup fails. Before 1.34.1 this only ran
+    once no Daily Routine entry was left at all, which is never the case while
+    an entry unloads (it is still listed), so the sidebar entry stayed after
+    turning the integration off, opening a page with nothing behind it. The
+    next setup adds it again. The dashboard card's script stays registered:
+    the card says when Daily Routine isn't running.
+    """
+    if hass.data.get(_PANEL_REGISTERED):
+        frontend.async_remove_panel(hass, PANEL_URL_PATH, warn_if_unknown=False)
+    hass.data[_PANEL_REGISTERED] = False
 
 
 # ---- who may see Daily Routine ------------------------------------------------------

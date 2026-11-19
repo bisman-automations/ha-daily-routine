@@ -1,0 +1,67 @@
+{
+  "entity": {
+    "select": {
+      "house_mode": {
+        "default": "mdi:home-switch-outline",
+        "state": {
+          "home": "mdi:home",
+          "away": "mdi:home-export-outline",
+          "night": "mdi:weather-night",
+          "guests": "mdi:account-group",
+          "vacation": "mdi:airplane"
+        }
+      }
+    },
+    "sensor": {
+      "status": {
+        "default": "mdi:calendar-clock",
+        "state": {
+          "running": "mdi:play-circle-outline",
+          "waiting": "mdi:timer-sand",
+          "asking": "mdi:help-circle-outline",
+          "held": "mdi:pause-circle-outline",
+          "skipped": "mdi:skip-next-circle-outline",
+          "error": "mdi:alert-circle-outline"
+        }
+      },
+      "kind_of_day": {
+        "default": "mdi:calendar-star"
+      }
+    },
+    "switch": {
+      "pause_all": {
+        "default": "mdi:pause-circle-outline",
+        "state": {
+          "off": "mdi:play-circle-outline",
+          "on": "mdi:pause-circle"
+        }
+      }
+    }
+  },
+  "services": {
+    "run_routine": {
+      "service": "mdi:play"
+    },
+    "reload_routines": {
+      "service": "mdi:reload"
+    },
+    "skip_next": {
+      "service": "mdi:skip-next"
+    },
+    "pause_routines": {
+      "service": "mdi:pause"
+    },
+    "remember_states": {
+      "service": "mdi:content-save-outline"
+    },
+    "put_back_states": {
+      "service": "mdi:restore"
+    },
+    "set_mode": {
+      "service": "mdi:home-switch-outline"
+    },
+    "undo_routine": {
+      "service": "mdi:undo"
+    }
+  }
+}

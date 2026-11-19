@@ -196,6 +196,15 @@ class Habits:
     def _data(self) -> dict[str, Any]:
         return {"events": self.events, "dismissed": sorted(self.dismissed)}
 
+    async def async_flush(self) -> None:
+        """Write now, if anything changed, what's waiting for a delayed save (unloading).
+
+        The next coordinator (after a reload) reads the file, not this one's
+        memory, so anything not yet written would be lost (1.34.1).
+        """
+        if self._dirty:
+            await self._store.async_save(self._data())
+
     def _by_hand(self, event: Event[EventStateChangedData]) -> bool:
         """A person did it: from a login, or a device's own button (not an
         automation, a script, or one of our routines while it runs)."""

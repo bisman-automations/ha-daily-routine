@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.components.sensor import SensorEntity
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
@@ -19,6 +18,7 @@ from .devices import (
     routine_identifier,
     routine_subentry_ids,
 )
+from .runtime import DailyRoutineConfigEntry
 
 # Coordinator or push updates; nothing polls on its own.
 PARALLEL_UPDATES = 0
@@ -26,14 +26,24 @@ PARALLEL_UPDATES = 0
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: DailyRoutineConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
+    if coordinator is None:
+        # Platforms are only set up for the primary entry, which always has
+        # the coordinator; a leftover 1.0.0 entry has nothing to show.
+        return
     entities: dict[str, RoutineStatusSensor] = {}
 
     @callback
     def _sync() -> None:
+        # The routines' devices first (1.34.1): a new sensor is named after its
+        # routine's device, and its entity ID is made from that name, so the
+        # device has to exist when the sensor is added. Made after, a new
+        # routine's sensor got an ID without the routine's name in it
+        # (sensor.daily_routine_status instead of sensor.morning_status).
+        async_sync_routine_devices(hass, entry, coordinator.routines)
         wanted = {r["id"] for r in coordinator.routines}
         subentries = routine_subentry_ids(entry)
         # A sensor joins its routine's entry, so it waits until that entry exists.
@@ -48,8 +58,7 @@ async def async_setup_entry(
             registry = er.async_get(hass)
             if sensor.entity_id and registry.async_get(sensor.entity_id):
                 registry.async_remove(sensor.entity_id)
-            hass.async_create_task(sensor.async_remove(force_remove=True))
-        async_sync_routine_devices(hass, entry, coordinator.routines)
+            entry.async_create_task(hass, sensor.async_remove(force_remove=True))
 
     async_add_entities([KindOfDaySensor(coordinator)])
     _sync()
@@ -59,11 +68,20 @@ async def async_setup_entry(
 
 
 class RoutineStatusSensor(SensorEntity):
-    """Status of one routine: idle, waiting, running, skipped or error."""
+    """Status of one routine: idle, waiting, asking, held, running, skipped or error.
+
+    Named the Home Assistant way (1.34.1): the routine's own device carries the
+    routine's name, and this entity adds only "Status" (``translation_key``), so
+    the full name is "<routine> Status". Before, the entity named itself
+    "<routine> status" as well, and Home Assistant 2026.9 and newer put the
+    device name in front of that too ("Morning Morning status"). Renaming the
+    routine renames its device, and with it this name. The icon is in
+    icons.json. Entity IDs already in the registry are kept as they are.
+    """
 
     _attr_should_poll = False
-    _attr_has_entity_name = False
-    _attr_icon = "mdi:calendar-clock"
+    _attr_has_entity_name = True
+    _attr_translation_key = "status"
 
     def __init__(self, coordinator: Any, routine_id: str) -> None:
         self.coordinator = coordinator
@@ -72,17 +90,6 @@ class RoutineStatusSensor(SensorEntity):
         self._attrs: dict[str, Any] = {}
         self._state = "idle"
         self._written: tuple[str, dict[str, Any]] | None = None
-
-    @property
-    def name(self) -> str:
-        routine = self.coordinator._find(self.routine_id)  # noqa: SLF001
-        return f"{routine['name']} status" if routine else f"{self.routine_id} status"
-
-    @property
-    def suggested_object_id(self) -> str:
-        routine = self.coordinator._find(self.routine_id)  # noqa: SLF001
-        name = routine["name"] if routine else self.routine_id
-        return f"{name} status"
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -148,12 +155,12 @@ class KindOfDaySensor(SensorEntity):
     """Today's kind of day (Settings → Kinds of day), for automations and
     other integrations: School day, Holiday… or Normal day."""
 
-    _attr_has_entity_name = False
-    _attr_name = "Kind of day"
+    # Named by its translation key, with its icon in icons.json (1.34.1). It
+    # has no device, so the name is just "Kind of day" (sensor.kind_of_day).
+    _attr_has_entity_name = True
     _attr_unique_id = f"{DOMAIN}_kind_of_day"
     _attr_translation_key = "kind_of_day"
     _attr_should_poll = False
-    _attr_icon = "mdi:calendar-star"
 
     def __init__(self, coordinator: Any) -> None:
         self.coordinator = coordinator

@@ -52,7 +52,7 @@
 - **Retries and catch-up.** Retry a failed step, and run a missed time-based routine if Home Assistant restarted a few minutes late.
 - **Extra conditions.** Run only when the conditions hold: every phone you tick is charging, a sensor is below or above a level (such as today's rain), who is home or away, sensors quiet or active for a while, an entity in a given state (for example guest mode is off), a calendar day, the house mode, workdays or days off (with the Workday integration), or the weather (raining, sunny, or the temperature). A single step can have its own **Only if**, so the rest of the routine still runs.
 - **Notifications** on run, skip, or failure (failures are on by default).
-- **Status sensors** per routine (`idle`, `waiting`, `running`, `skipped`, `error`) for dashboards and automations.
+- **Status sensors** per routine (`idle`, `waiting`, `asking`, `held`, `running`, `skipped`, `error`, shown in words in Home Assistant) for dashboards and automations.
 
 ## Installation
 
@@ -220,7 +220,7 @@ On **Settings** in the sidebar (administrators only), **Export routines** saves 
 
 ## Diagnostics
 
-On **Settings → Devices & services → Daily Routine**, choose *Download diagnostics* to get the routines, their status and the settings, for reporting a problem. Phone names and hidden profiles are redacted. Routines still contain entity ids, so check the file before posting it publicly.
+On **Settings → Devices & services → Daily Routine**, choose *Download diagnostics* to get the routines, their status and the settings, for reporting a problem. Phone names, hidden profiles, the guest Wi-Fi name and password, codes, PINs, passwords and tokens in steps, and person, phone and tracker ids are redacted. Routines still contain other entity ids, so check the file before posting it publicly.
 
 ## Activity
 
@@ -347,7 +347,9 @@ data:
 Entities:
 
 - `switch.pause_all_routines`: on = all automatic routines paused. Admins, the people allowed to see Daily Routine, and automations can switch it.
-- Routine status sensors: one per routine, on that routine's service device. The entity id is set by Home Assistant. Routines created on Home Assistant 2026.10 or later include the device name in it (for example `sensor.daily_routine_<routine>_status`). Upgraded routines keep their existing id. The state is `idle`, `waiting`, `running`, `skipped`, or `error`. Attributes include `last_run`, `last_result`, `next_run`, `block_reason`, `waiting`, and `repeat`.
+- Routine status sensors: one per routine, on that routine's service device, named after the routine ("Morning covers Status"; renaming the routine renames it). A new routine's entity id is made from its name, for example `sensor.morning_covers_status`. Existing sensors keep the id they have, including routines created on Home Assistant 2026.10 with Daily Routine 1.34.0 or older, which got ids such as `sensor.daily_routine_morning_covers_status`. The state is `idle`, `waiting` (for its conditions), `asking` (Ask me first), `held` (waiting for a device to come back), `running`, `skipped`, or `error`; Home Assistant shows it in words. Attributes include `last_run`, `last_result`, `next_run`, `block_reason`, `waiting`, and `repeat`.
+- `select.house_mode` and `sensor.kind_of_day`: the House mode and today's kind of day.
+- Reloading Daily Routine or turning it off stops any routine that is running at that moment. Its card and Activity say it stopped part way, and **Try again** runs it in full.
 
 ## Events
 

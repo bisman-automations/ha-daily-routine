@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.34.1] - 2026-11-19
+
+### Changed
+
+- **Status sensors are named after their routine.** Each routine's status sensor is now named the way Home Assistant names entities: the routine's name (its device) followed by **Status**, for example "Morning covers Status". On Home Assistant 2026.9 and newer the routine's name showed twice ("Morning covers Morning covers status"). Renaming a routine renames its sensor too. The status shows in words (Idle, Waiting, Asking first, Held, Running, Skipped, Error) wherever Home Assistant shows it, and the icon changes with it. The pause switch, House mode and Kind of day are named the same way, with an icon for each House mode. Entity IDs you already have don't change.
+- **New routines get a status sensor ID with the routine's name.** A routine created on Home Assistant 2026.10 or newer got an ID such as `sensor.daily_routine_morning_covers_status`. New routines get `sensor.morning_covers_status` again, as before 2026.10. Existing sensors keep their IDs.
+- **Actions have icons** in the automation editor.
+- **Ruff 0.17.6.** Linting uses the current Ruff release.
+
+### Fixed
+
+- **A routine running during a reload stops.** Reloading Daily Routine, turning it off or updating it while a routine was in a delay, a "wait until" or a checklist left that run going: it carried on changing devices from the unloaded copy of Daily Routine, and its last save could put back old routines and settings over the ones just loaded. The run now stops, its card and Activity say "Stopped part way: Daily Routine was reloaded or turned off", and **Try again** or its next time runs it in full.
+- **A reload no longer loses the last few moments of Activity.** Runs, device problems and habits noted in the seconds before a reload were dropped, because they were saved a little later and the reloaded Daily Routine read the file before that. They are now written when Daily Routine unloads.
+- **The sidebar entry goes away when Daily Routine is turned off.** It stayed in the sidebar after turning the integration off, opening a page with nothing behind it. It comes back when Daily Routine starts again. The dashboard card stays and says Daily Routine isn't running.
+- **Diagnostics leave out more.** The download no longer includes the guest Wi-Fi name and password, codes, PINs, passwords and tokens a step sends (an alarm or lock code), or phone and tracker IDs in the settings (the daily summary and weekly report). Person, phone and tracker IDs are redacted wherever they appear.
+
 ## [1.34.0] - 2026-11-18
 
 ### Changed
@@ -576,6 +592,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.34.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.34.0...v1.34.1
 [1.34.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.33.0...v1.34.0
 [1.33.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.32.0...v1.33.0
 [1.32.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.31.3...v1.32.0

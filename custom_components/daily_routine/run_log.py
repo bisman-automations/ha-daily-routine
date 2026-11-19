@@ -141,6 +141,14 @@ class RunLog:
     def _payload(self) -> dict[str, Any]:
         return {"events": list(self._events)}
 
+    async def async_flush(self) -> None:
+        """Write now what's waiting for a delayed save (unloading).
+
+        The next coordinator (after a reload) reads the file, not this one's
+        memory, so anything not yet written would be lost (1.34.1).
+        """
+        await self._store.async_save(self._payload())
+
 
 def _when(event: dict[str, Any]) -> datetime:
     return datetime.fromisoformat(event["at"])

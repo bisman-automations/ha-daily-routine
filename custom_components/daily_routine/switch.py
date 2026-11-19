@@ -5,19 +5,21 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .access import async_ensure_allowed
 from .const import DOMAIN
+from .runtime import DailyRoutineConfigEntry
 
 # Coordinator or push updates; nothing polls on its own.
 PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    entry: DailyRoutineConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     async_add_entities([RoutinesPausedSwitch(entry.runtime_data)])
 
@@ -25,11 +27,13 @@ async def async_setup_entry(
 class RoutinesPausedSwitch(SwitchEntity):
     """On = routines are paused. Manual runs still work."""
 
-    _attr_has_entity_name = False
-    _attr_name = "Pause all routines"
+    # Named by its translation key, with its icons in icons.json (1.34.1). It
+    # has no device, so the name is just "Pause all routines"
+    # (switch.pause_all_routines).
+    _attr_has_entity_name = True
     _attr_unique_id = f"{DOMAIN}_paused"
+    _attr_translation_key = "pause_all"
     _attr_should_poll = False
-    _attr_icon = "mdi:pause-circle-outline"
 
     def __init__(self, coordinator: Any) -> None:
         self.coordinator = coordinator

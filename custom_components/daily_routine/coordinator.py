@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from asyncio import CancelledError, current_task, wait as wait_for_tasks
 from collections import deque
 from collections.abc import Callable, Coroutine
 from contextvars import ContextVar
@@ -512,6 +513,12 @@ STARTUP_SETTLE_SECONDS = 30
 
 # Runtime keys kept in storage. Clear timers and waiting state are not persisted.
 # pending_date is kept so a routine waiting for its conditions still runs after a restart.
+# What a run that was stopped part way by unloading Daily Routine (a reload,
+# turning the integration off, an update) shows on its card and in Activity.
+STOPPED_BY_UNLOAD = "Stopped part way: Daily Routine was reloaded or turned off"
+# How long unloading waits for stopped runs to finish their bookkeeping.
+STOP_RUNS_TIMEOUT_SECONDS = 5
+
 PERSISTED_KEYS = (
     "last_run_date",
     "last_run",
@@ -760,6 +767,12 @@ class HomeRoutinesCoordinator:
         # Set when unloading: work that finishes later (a forecast or calendar
         # read started at startup) doesn't plan anything any more.
         self._unloaded = False
+        # The steps of each run in progress, each in its own task (_run_steps),
+        # so unloading can stop them. Without this a run waiting in a delay,
+        # a "wait until" or a checklist went on after a reload, changing
+        # devices from an unloaded coordinator and saving its old copy of the
+        # routines over the new one's (1.34.1).
+        self._step_tasks: set[asyncio.Task[_Run | None]] = set()
         self._health_unsub: Callable[[], None] | None = None
         # Today's event titles for each calendar a condition uses: entity -> (date, titles).
         self._calendar_days: dict[str, tuple[str, list[str]]] = {}
@@ -1298,6 +1311,9 @@ class HomeRoutinesCoordinator:
 
     async def async_unload(self, *, save: bool = True) -> None:
         self._unloaded = True
+        # Runs in progress stop first, so nothing they do lands after the save
+        # below (or after the next coordinator has loaded).
+        await self._async_stop_runs()
         if self._registry_unsub is not None:
             self._registry_unsub()
             self._registry_unsub = None
@@ -1320,6 +1336,34 @@ class HomeRoutinesCoordinator:
             self._forecast_unsub = None
         if save:
             await self._async_save()
+            # The Activity log, device reliability and habits save a little
+            # later than they change. Written now, or a reload loses what
+            # happened in the last moments before it (1.34.1): the next
+            # coordinator reads the files, not this one's memory.
+            await self.run_log.async_flush()
+            await self.device_stats.async_flush()
+            await self.habits.async_flush()
+
+    async def _async_stop_runs(self) -> None:
+        """Stop every run in progress (unloading).
+
+        Each run's steps are cancelled; ``_owned_steps`` records the run as
+        stopped part way before the task ends, and the code that started the
+        run (a schedule, the panel, the run_routine action) carries on without
+        a result. Waits at most ``STOP_RUNS_TIMEOUT_SECONDS``.
+        """
+        tasks = [task for task in self._step_tasks if not task.done()]
+        if not tasks:
+            return
+        for task in tasks:
+            task.cancel()
+        _done, pending = await wait_for_tasks(tasks, timeout=STOP_RUNS_TIMEOUT_SECONDS)
+        if pending:
+            _LOGGER.warning(
+                "%s routine run(s) didn't stop within %s s of unloading",
+                len(pending),
+                STOP_RUNS_TIMEOUT_SECONDS,
+            )
 
     def _payload(self) -> dict[str, Any]:
         runtime = {
@@ -3603,14 +3647,79 @@ class HomeRoutinesCoordinator:
         *,
         scheduled: bool,
     ) -> _Run | None:
-        """Run steps in order, showing which one is running on the routine's card."""
+        """Run steps in order, showing which one is running on the routine's card.
+
+        The steps run in their own task, kept in ``_step_tasks`` while they
+        run, so unloading can stop them (``_async_stop_runs``). None: held for
+        an unavailable list, or stopped because Daily Routine was unloaded;
+        either way the caller records nothing more.
+        """
+        if self._unloaded:
+            # Started after unloading began (an "Ask me first" answered late, a
+            # timer that fired on the way out): this coordinator is done.
+            return None
         rt = self._rt(routine["id"])
         rt["trace"] = []
+        task = self.hass.loop.create_task(
+            self._owned_steps(routine, steps, now, scheduled=scheduled),
+            name=f"{DOMAIN} run {routine['id']}",
+        )
+        self._step_tasks.add(task)
         try:
-            return await self._run_step_list(routine, steps, now, scheduled=scheduled)
+            return await task
+        except CancelledError:
+            if (me := current_task()) is not None and me.cancelling():
+                # The caller itself is being cancelled (Home Assistant stopping,
+                # a service call given up): let that through.
+                raise
+            # Only the steps were stopped, by unloading: nothing more to record.
+            return None
         finally:
+            self._step_tasks.discard(task)
             rt["progress"] = None
             rt["trace"] = [_public(step) for step in rt.get("trace") or []]
+
+    async def _owned_steps(
+        self,
+        routine: dict[str, Any],
+        steps: list[tuple[int, dict[str, Any], dict[str, Any] | None]],
+        now: datetime,
+        *,
+        scheduled: bool,
+    ) -> _Run | None:
+        """The steps of one run, as a task unloading can cancel.
+
+        When unloading cancels it, the run is recorded as stopped part way
+        (card, Activity, the finished event) here, inside the task, so it's
+        written down before unloading saves.
+        """
+        try:
+            return await self._run_step_list(routine, steps, now, scheduled=scheduled)
+        except CancelledError:
+            if self._unloaded:
+                self._note_stopped_by_unload(routine)
+            raise
+
+    def _note_stopped_by_unload(self, routine: dict[str, Any]) -> None:
+        """Record a run that unloading stopped part way.
+
+        It shows as failed with ``STOPPED_BY_UNLOAD``, so the card doesn't
+        stay on Running and Try again (or the next scheduled time) runs it in
+        full. No notification is sent: the person who reloaded knows.
+        """
+        rid = routine["id"]
+        rt = self._rt(rid)
+        rt["state"] = "error"
+        rt["started_by"] = None
+        rt["last_result"] = "stopped"
+        rt["last_reason"] = STOPPED_BY_UNLOAD
+        rt.pop("power_before", None)
+        self._record(rid, "failed", STOPPED_BY_UNLOAD)
+        self._fire_event(EVENT_ROUTINE_FINISHED, routine, "stopped")
+        _LOGGER.info(
+            "Routine '%s' stopped part way: Daily Routine was unloaded.",
+            routine["name"],
+        )
 
     async def _run_step_list(
         self,

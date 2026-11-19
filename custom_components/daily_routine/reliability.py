@@ -76,6 +76,14 @@ class DeviceStats:
     def _payload(self) -> dict[str, Any]:
         return {"days": self.days, "last_problem": self.last_problem}
 
+    async def async_flush(self) -> None:
+        """Write now what's waiting for a delayed save (unloading).
+
+        The next coordinator (after a reload) reads the file, not this one's
+        memory, so anything not yet written would be lost (1.34.1).
+        """
+        await self._store.async_save(self._payload())
+
     def summary(self, days: int, now: datetime | None = None) -> list[dict[str, Any]]:
         """Devices with a problem in the last days, the most trouble first."""
         now = now or dt_util.now()

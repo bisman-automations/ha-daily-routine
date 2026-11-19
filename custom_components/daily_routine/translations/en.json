@@ -118,8 +118,25 @@
       }
     },
     "sensor": {
+      "status": {
+        "name": "Status",
+        "state": {
+          "idle": "Idle",
+          "waiting": "Waiting",
+          "asking": "Asking first",
+          "held": "Held",
+          "running": "Running",
+          "skipped": "Skipped",
+          "error": "Error"
+        }
+      },
       "kind_of_day": {
         "name": "Kind of day"
+      }
+    },
+    "switch": {
+      "pause_all": {
+        "name": "Pause all routines"
       }
     }
   }
