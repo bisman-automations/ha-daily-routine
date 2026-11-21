@@ -1730,7 +1730,11 @@ class DailyRoutinePanel extends HTMLElement {
       if (spec?.voice) {
         if (!step.voice) throw new Error(`Step ${index + 1}: choose a voice.`);
         target = { entity_id: [step.voice] };
-      } else if (step.targetMode === "area" && step.area) target = { area_id: [step.area] };
+      } else if (step.targetMode === "area" && (step.area || draft.room)) {
+        // "This room" on a step that never had its own room (picked from
+        // Applies to, or saved before with no target) means the routine's.
+        target = { area_id: [step.area || draft.room] };
+      }
       else if (step.targetMode === "all_areas") target = { area_id: areaIds };
       else if (step.targetMode === "entities" && step.entities.length) target = { entity_id: [...step.entities] };
       // A device action with nowhere to go fails every run ("has no devices to
@@ -2598,6 +2602,7 @@ class DailyRoutinePanel extends HTMLElement {
         return;
       }
       step[el.dataset.sf] = el.dataset.sf === "seconds" ? Number(value) || 0 : value;
+      if (el.dataset.sf === "targetMode" && value === "area" && !step.area && d.room) step.area = d.room;
       if (el.dataset.sf === "entities") return;
       if (el.dataset.rerender !== undefined && !live) this._render();
       return;
@@ -4707,7 +4712,8 @@ class DailyRoutinePanel extends HTMLElement {
       const spec = actionSpec(step.service);
       const label = spec?.label || step.service || "Choose an action";
       let where = "";
-      if (step.targetMode === "area" && step.area) where = this._area(step.area)?.name || step.area;
+      const area = step.area || this._draft?.room;
+      if (step.targetMode === "area" && area) where = this._area(area)?.name || area;
       else if (step.targetMode === "all_areas") where = "every room";
       else if (step.targetMode === "entities" && step.entities.length) where = names(step.entities);
       const bits = Object.entries(step.fields || {}).filter(([, v]) => v !== "" && v != null).map(([k, v]) => {

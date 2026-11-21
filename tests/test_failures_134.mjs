@@ -206,6 +206,24 @@ test("a device step with nothing picked can't be saved (it would fail every run)
   assert.deepEqual(panel._draftToRaw(panel._draft).actions[0].target, { entity_id: ["cover.mbr_curtains"] });
 });
 
+test("This room on a step with no room of its own saves the routine's room", () => {
+  const panel = makePanel();
+  panel._draft = panel._draftFromRoutine(overview.routines[0]);
+  panel._draft.room = "bedroom";
+  // Picked from Applies to on a step that had no target: no room of its own.
+  Object.assign(panel._draft.actions[0], { service: "cover.open_cover", targetMode: "area", area: "", entities: [] });
+  assert.deepEqual(panel._draftToRaw(panel._draft).actions[0].target, { area_id: ["bedroom"] });
+  // Choosing This room in the editor fills in the routine's room straight away.
+  Object.assign(panel._draft.actions[0], { targetMode: "none", area: "" });
+  panel._view = { name: "editor", room: "bedroom" };
+  panel._onField({ target: { dataset: { si: "0", sf: "targetMode" }, value: "area" } });
+  assert.equal(panel._draft.actions[0].area, "bedroom");
+  // A routine for the whole house still has to name a room or devices.
+  panel._draft.room = "";
+  Object.assign(panel._draft.actions[0], { targetMode: "area", area: "" });
+  assert.throws(() => panel._draftToRaw(panel._draft), /Step 1: pick the devices or a room it is for\./);
+});
+
 // A small stand-in for the browser's elements: enough for the Selected section.
 class Node {
   constructor(tag, attrs = {}) {

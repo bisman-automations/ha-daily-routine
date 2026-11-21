@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fewer health checks that do nothing.** Every 15 minutes (or the interval you chose), Daily Routine asked Home Assistant to remove the "needs attention" notification of every healthy routine, even when none was showing. It now does that once after starting, and after that only for a routine whose notification was actually shown.
 - **The sidebar page and the dashboard card stop asking over and over when Daily Routine isn't running.** While Daily Routine was turned off, or for someone without access, they asked Home Assistant again every time anything in the home changed. They now try again every 30 seconds, and the sidebar page loads one copy of its data at a time while it opens.
 
+### Fixed
+
+- **Routines with "This room" save again.** A step set to **Applies to: This room** in a routine for a room couldn't be saved ("Step 1: pick the devices or a room it is for") when the step had no room of its own, for example after choosing **This room** from the list or editing a routine first saved without a target. The step now uses the routine's room, which is what **This room** means.
+
 ## [1.34.2] - 2026-11-20
 
 ### Changed
