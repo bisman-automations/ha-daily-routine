@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.34.2] - 2026-11-20
+
+### Changed
+
+- **Less work when only details change.** A routine's conditions are no longer checked again when something they watch reports new details but the same state: a phone's GPS updates on a person who is still home, or a sensor's extra information. Leaving, arriving and every other change of state are checked as before. A weather's temperature and a calendar's events still count, because conditions read them.
+- **Fewer saves.** A routine started by a device changing state, or by an item checked off a to-do list, now saves only when what it remembers actually changed, not every time the device reports something new (a TV's play position, for example).
+- **Pause all routines, House mode and Kind of day write their state only when it changes.** Before, they were written again after every change anywhere in Daily Routine.
+- **The dashboard card rests while nobody's looking.** In a hidden browser tab, on a tablet with its screen off, or with the app in the background, the card keeps up with changes but doesn't draw them, move progress bars or load today's plan until it's seen again. The sidebar page already did this.
+
 ## [1.34.1] - 2026-11-19
 
 ### Changed
@@ -592,6 +601,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.34.2]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.34.1...v1.34.2
 [1.34.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.34.0...v1.34.1
 [1.34.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.33.0...v1.34.0
 [1.33.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.32.0...v1.33.0

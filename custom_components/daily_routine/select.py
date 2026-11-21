@@ -25,6 +25,10 @@ async def async_setup_entry(
     async_add_entities([HouseModeSelect(entry.runtime_data)])
 
 
+# What an entity last wrote, before it has written anything.
+_NOTHING = object()
+
+
 class HouseModeSelect(SelectEntity):
     """Routines can run only in some modes, and start when the mode changes."""
 
@@ -39,6 +43,7 @@ class HouseModeSelect(SelectEntity):
 
     def __init__(self, coordinator: Any) -> None:
         self.coordinator = coordinator
+        self._written: Any = _NOTHING
 
     @property
     def current_option(self) -> str:
@@ -63,4 +68,10 @@ class HouseModeSelect(SelectEntity):
 
     @callback
     def _handle_update(self) -> None:
+        # Told on every change in Daily Routine (1.31.1, at once); written
+        # only when what it shows changed (1.34.2).
+        shown = self.current_option
+        if shown == self._written:
+            return
+        self._written = shown
         self.async_write_ha_state()

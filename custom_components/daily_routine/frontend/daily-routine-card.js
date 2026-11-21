@@ -39,6 +39,10 @@ function mergeStatus(prev, next) {
   return { ...rest, statuses };
 }
 
+function pageHidden() {
+  return typeof document !== "undefined" && Boolean(document.hidden);
+}
+
 class DailyRoutineCard extends HTMLElement {
   static getStubConfig() {
     return { title: "Today" };
@@ -70,6 +74,10 @@ class DailyRoutineCard extends HTMLElement {
 
   disconnectedCallback() {
     clearInterval(this._ticker);
+    if (this._onVisible) {
+      document.removeEventListener("visibilitychange", this._onVisible);
+      this._onVisible = null;
+    }
     const unsub = this._unsub;
     this._unsub = null;
     if (unsub) unsub.then((stop) => stop && stop()).catch(() => {});
@@ -82,19 +90,41 @@ class DailyRoutineCard extends HTMLElement {
     this._unsub = this._hass.connection.subscribeMessage((message) => {
       const status = mergeStatus(this._pushed, message);
       this._pushed = status;
-      const changed = status.log_count !== this._logCount || JSON.stringify(status.statuses) !== this._statusJson || JSON.stringify(status.guest_wifi || null) !== JSON.stringify(this._status?.guest_wifi || null);
-      this._status = status;
-      this._statusJson = JSON.stringify(status.statuses);
-      if (status.log_count !== this._logCount || !this._today) {
-        this._logCount = status.log_count;
-        this._loadToday();
-      } else if (changed) this._render();
+      if (pageHidden()) {
+        // Nobody's looking (a hidden tab, a tablet with its screen off, the
+        // app in the background): keep merging, and draw (and load today's
+        // plan) once when the card is seen again (1.34.2).
+        this._waitUntilSeen();
+        return;
+      }
+      this._onStatus(status);
     }, { type: `${DOMAIN}/subscribe`, delta: true });
     this._unsub.catch((err) => {
       this._error = err?.code === "unauthorized" ? "You don't have access to Daily Routine." : (err?.message || "Daily Routine isn't running.");
       this._unsub = null;
       this._render();
     });
+  }
+
+  _waitUntilSeen() {
+    this._unseen = true;
+    if (this._onVisible || typeof document === "undefined") return;
+    this._onVisible = () => {
+      if (pageHidden() || !this._unseen || !this._pushed) return;
+      this._onStatus(this._pushed);
+    };
+    document.addEventListener("visibilitychange", this._onVisible);
+  }
+
+  _onStatus(status) {
+    this._unseen = false;
+    const changed = status.log_count !== this._logCount || JSON.stringify(status.statuses) !== this._statusJson || JSON.stringify(status.guest_wifi || null) !== JSON.stringify(this._status?.guest_wifi || null);
+    this._status = status;
+    this._statusJson = JSON.stringify(status.statuses);
+    if (status.log_count !== this._logCount || !this._today) {
+      this._logCount = status.log_count;
+      this._loadToday();
+    } else if (changed) this._render();
   }
 
   async _loadToday() {
@@ -108,6 +138,7 @@ class DailyRoutineCard extends HTMLElement {
   }
 
   _tick() {
+    if (pageHidden()) return;
     for (const bar of this.shadowRoot?.querySelectorAll(".bar[data-p]") || []) {
       const progress = JSON.parse(bar.dataset.p);
       bar.style.width = `${percent(progress)}%`;

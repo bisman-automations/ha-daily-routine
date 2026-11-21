@@ -362,6 +362,17 @@ def _watched_entities(routine: dict[str, Any]) -> list[str]:
     return entities
 
 
+# Conditions on these read more than the state: a weather's temperature, a
+# calendar's events. Everything else a condition watches is judged by its state.
+ATTRIBUTE_DOMAINS = ("calendar.", "weather.")
+
+
+def _attributes_only(event: Event[EventStateChangedData]) -> bool:
+    """Whether a state change kept the state and changed only attributes."""
+    old, new = event.data.get("old_state"), event.data.get("new_state")
+    return old is not None and new is not None and old.state == new.state
+
+
 def _health_bad(state: State | None) -> bool:
     """Whether a device a routine needs is missing, unavailable or unknown."""
     return state is None or state.state in UNKNOWN_STATES
@@ -2137,6 +2148,13 @@ class HomeRoutinesCoordinator:
                 self._spawn(self._refresh_calendars())
             elif new is not None and new.state == "on":
                 self._last_on[new.entity_id] = dt_util.now()
+            if _attributes_only(event) and not str(entity_id).startswith(
+                ATTRIBUTE_DOMAINS
+            ):
+                # Only attributes changed (a phone's GPS fix on a person, a
+                # sensor's extra details): these conditions read the state, so
+                # nothing they decide can change (1.34.2).
+                return
             self._on_condition_entity_changed(routine, entity_id)
 
         unsub = async_track_state_change_event(self.hass, sorted(entities), _changed)
@@ -2916,8 +2934,11 @@ class HomeRoutinesCoordinator:
             if before is None:
                 old = event.data.get("old_state")
                 before = old.state if old is not None else None
-            rt["seen_state"] = new.state
-            self._store.async_delay_save(self._payload, SEEN_SAVE_DELAY_SECONDS)
+            if rt.get("seen_state") != new.state:
+                # Saved only when it moves: a device reporting new attributes
+                # (a player's position, a sensor's details) leaves it as it was.
+                rt["seen_state"] = new.state
+                self._store.async_delay_save(self._payload, SEEN_SAVE_DELAY_SECONDS)
             if new.state not in wanted:
                 self._drop_handle(rid, H_HOLD)
                 return
@@ -3046,8 +3067,10 @@ class HomeRoutinesCoordinator:
                 )
             )
             previous = rt.get("seen_done")
-            rt["seen_done"] = done[-SEEN_DONE_LIMIT:]
-            self._store.async_delay_save(self._payload, SEEN_SAVE_DELAY_SECONDS)
+            seen = done[-SEEN_DONE_LIMIT:]
+            if seen != previous:
+                rt["seen_done"] = seen
+                self._store.async_delay_save(self._payload, SEEN_SAVE_DELAY_SECONDS)
             if previous is None:
                 return  # first look: what is already done does not run the routine
             wanted = item_key(routine["watch_item"])

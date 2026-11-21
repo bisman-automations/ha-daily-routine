@@ -24,6 +24,10 @@ async def async_setup_entry(
     async_add_entities([RoutinesPausedSwitch(entry.runtime_data)])
 
 
+# What an entity last wrote, before it has written anything.
+_NOTHING = object()
+
+
 class RoutinesPausedSwitch(SwitchEntity):
     """On = routines are paused. Manual runs still work."""
 
@@ -37,6 +41,7 @@ class RoutinesPausedSwitch(SwitchEntity):
 
     def __init__(self, coordinator: Any) -> None:
         self.coordinator = coordinator
+        self._written: Any = _NOTHING
 
     @property
     def is_on(self) -> bool:
@@ -68,4 +73,10 @@ class RoutinesPausedSwitch(SwitchEntity):
 
     @callback
     def _handle_update(self) -> None:
+        # Told on every change in Daily Routine (1.31.1, at once); written
+        # only when what it shows changed (1.34.2).
+        shown = self.is_on
+        if shown == self._written:
+            return
+        self._written = shown
         self.async_write_ha_state()

@@ -137,3 +137,48 @@ test("the card asks for changes only and merges them", () => {
   assert.deepEqual(card._status.statuses, { a: { state: "running" }, b: { state: "idle" } });
   assert.equal(todayLoads, 1);
 });
+
+test("a hidden card keeps merging and draws once when seen again (1.34.2)", () => {
+  const card = new Card();
+  card.attachShadow();
+  let renders = 0;
+  card._render = () => { renders += 1; };
+  let todayLoads = 0;
+  card._loadToday = () => { todayLoads += 1; card._today = {}; };
+  const listeners = {};
+  globalThis.document = {
+    hidden: false,
+    addEventListener: (name, fn) => { listeners[name] = fn; },
+    removeEventListener: (name) => { delete listeners[name]; },
+  };
+  const hass = fakeHass();
+  card._hass = hass;
+  card._subscribe();
+  const push = hass.subscribed[0].callback;
+  push({ revision: 1, log_count: 1, statuses: { a: { state: "idle" }, b: { state: "idle" } } });
+  assert.equal(todayLoads, 1);
+
+  globalThis.document.hidden = true;
+  push({ revision: 1, log_count: 1, delta: true, statuses: { a: { state: "running" } }, removed: [] });
+  push({ revision: 1, log_count: 2, delta: true, statuses: { b: { state: "running" } }, removed: [] });
+  assert.equal(renders, 0, "nothing drawn while hidden");
+  assert.equal(todayLoads, 1, "today's plan isn't asked for while hidden");
+
+  let asked = 0;
+  card.shadowRoot.querySelectorAll = () => { asked += 1; return []; };
+  card._tick();
+  assert.equal(asked, 0, "progress bars don't move while hidden");
+
+  globalThis.document.hidden = false;
+  listeners.visibilitychange();
+  assert.deepEqual(card._status.statuses, { a: { state: "running" }, b: { state: "running" } });
+  assert.equal(todayLoads, 2, "the plan is loaded once, with the newest log");
+  listeners.visibilitychange();
+  assert.equal(todayLoads, 2);
+  card._tick();
+  assert.ok(asked > 0);
+
+  card.disconnectedCallback();
+  assert.equal(listeners.visibilitychange, undefined);
+  delete globalThis.document;
+});

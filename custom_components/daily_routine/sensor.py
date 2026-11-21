@@ -67,6 +67,10 @@ async def async_setup_entry(
     )
 
 
+# What an entity last wrote, before it has written anything.
+_NOTHING = object()
+
+
 class RoutineStatusSensor(SensorEntity):
     """Status of one routine: idle, waiting, asking, held, running, skipped or error.
 
@@ -164,6 +168,7 @@ class KindOfDaySensor(SensorEntity):
 
     def __init__(self, coordinator: Any) -> None:
         self.coordinator = coordinator
+        self._written: Any = _NOTHING
 
     @property
     def native_value(self) -> str | None:
@@ -192,4 +197,10 @@ class KindOfDaySensor(SensorEntity):
 
     @callback
     def _handle_update(self) -> None:
+        # Told on every change in Daily Routine (1.31.1, at once); written
+        # only when what it shows changed (1.34.2).
+        shown = (self.native_value, self.extra_state_attributes)
+        if shown == self._written:
+            return
+        self._written = shown
         self.async_write_ha_state()
