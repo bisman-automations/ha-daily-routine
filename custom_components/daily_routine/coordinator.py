@@ -695,6 +695,9 @@ def _blank_runtime() -> dict[str, Any]:
         "all_away": None,  # last known "everyone away" for presence triggers
         "seen_done": None,  # in memory: names of completed items already seen
         "health_alerted": False,  # in memory: a problem was already announced
+        # In memory: its health card may be showing. True to start with, since
+        # one from before a restart or reload may still be there (1.34.3).
+        "health_card": True,
         "unavailable_since": None,  # in memory: when a needed list or device went unavailable
         "held_run": None,  # in memory: a run waiting for a list or device to come back
         "progress": None,  # in memory: the step a running routine is on, for its card
@@ -3111,7 +3114,11 @@ class HomeRoutinesCoordinator:
         if not problems:
             rt["health_alerted"] = False
             rt["unavailable_since"] = None
-            self._spawn(self._dismiss_health_notification(routine["id"]))
+            # Dismissed only when a card may be showing, not for every healthy
+            # routine at every check (a service call each) (1.34.3).
+            if rt.get("health_card", True):
+                rt["health_card"] = False
+                self._spawn(self._dismiss_health_notification(routine["id"]))
             self._release_held(routine)
             return
         if self._expire_held(routine):
@@ -3126,6 +3133,7 @@ class HomeRoutinesCoordinator:
         if not rt.get("health_alerted"):
             rt["health_alerted"] = True
             if routine["notify_on_health"]:
+                rt["health_card"] = True
                 self._send_notification(
                     f"Routine '{routine['name']}' needs attention: {' '.join(problems)}",
                     self._health_notification_id(routine["id"]),

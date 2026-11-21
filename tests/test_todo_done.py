@@ -353,3 +353,37 @@ async def test_deleting_a_routine_removes_its_health_card(
     assert [call.data["notification_id"] for call in dismissed] == [
         "daily_routine_health_lamp_gone"
     ]
+
+
+async def test_healthy_routines_dismiss_their_card_once_not_at_every_check(
+    hass: HomeAssistant, enable_custom_integrations, hass_storage
+) -> None:
+    """1.34.3: a healthy routine's card is dismissed once (one may be left from
+    before a restart), then only again after one was shown."""
+    async_mock_service(hass, "persistent_notification", "create")
+    dismissed = async_mock_service(hass, "persistent_notification", "dismiss")
+    hass.states.async_set("input_boolean.lamp_ok", "on")
+    coord = await _setup(hass)
+    await coord.async_save_routine(
+        _checked(
+            id="lamp_fine",
+            name="Lamp fine",
+            watch_entity="input_boolean.lamp_ok",
+            trigger="state_is",
+            watch_states=["on"],
+            notify_on_health=True,
+        )
+    )
+    await hass.async_block_till_done()
+    for _ in range(3):
+        coord._check_health(None)  # type: ignore[arg-type]
+        await hass.async_block_till_done()
+    assert len(dismissed) == 1, "once, for a card left from before"
+
+    hass.states.async_set("input_boolean.lamp_ok", "unavailable")
+    coord._check_health(None)  # type: ignore[arg-type]
+    hass.states.async_set("input_boolean.lamp_ok", "on")
+    for _ in range(3):
+        coord._check_health(None)  # type: ignore[arg-type]
+        await hass.async_block_till_done()
+    assert len(dismissed) == 2, "and once after the card was shown"

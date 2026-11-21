@@ -6,6 +6,9 @@ const DOMAIN = "daily_routine";
 const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const SENSOR_CLASSES = ["motion", "occupancy", "presence", "moving"];
 const REFRESH_MS = 15000;
+// After the first load or the live updates fail (Daily Routine not running,
+// no access), ask again at most this often, not on every change in the home.
+const RETRY_MS = 30000;
 // Pages that show routine cards, and so redraw when a run starts or finishes.
 const LIST_VIEWS = ["rooms", "room", "all", "todos", "today"];
 
@@ -1013,8 +1016,20 @@ class DailyRoutinePanel extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     if (hass?.services) SERVICE_DESCRIPTIONS = hass.services;
-    if (!this._data) this._load();
+    this._loadFirst();
     if (this.isConnected) this._subscribe();
+  }
+
+  // Home Assistant sends a new hass on every change in the home. Until the
+  // page has its data, one load at a time, and after one fails, again only
+  // after RETRY_MS (1.34.3).
+  _loadFirst() {
+    if (this._data || this._firstLoading || Date.now() < (this._loadRetryAt || 0)) return;
+    this._firstLoading = true;
+    Promise.resolve(this._load()).catch(() => {}).finally(() => {
+      this._firstLoading = false;
+      if (!this._data) this._loadRetryAt = Date.now() + RETRY_MS;
+    });
   }
 
   connectedCallback() {
@@ -1046,6 +1061,7 @@ class DailyRoutinePanel extends HTMLElement {
   // Run states pushed by Home Assistant as they change: Running, the step it's on, and done.
   _subscribe() {
     if (this._unsub || !this._hass?.connection?.subscribeMessage) return;
+    if (Date.now() < (this._subscribeRetryAt || 0)) return; // it just failed (1.34.3)
     // Each subscription starts with a whole status, then sends changes only.
     this._pushed = null;
     this._unsub = this._hass.connection
@@ -1055,7 +1071,11 @@ class DailyRoutinePanel extends HTMLElement {
         // Assistant says so) doesn't change what later changes merge into.
         this._onStatus({ ...this._pushed, statuses: { ...(this._pushed.statuses || {}) } });
       }, { type: `${DOMAIN}/subscribe`, delta: true });
-    this._unsub.then(() => { this._live = true; }).catch(() => { this._unsub = null; this._live = false; });
+    this._unsub.then(() => { this._live = true; }).catch(() => {
+      this._unsub = null;
+      this._live = false;
+      this._subscribeRetryAt = Date.now() + RETRY_MS;
+    });
   }
 
   _onStatus(status) {

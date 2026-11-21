@@ -182,3 +182,68 @@ test("a hidden card keeps merging and draws once when seen again (1.34.2)", () =
   assert.equal(listeners.visibilitychange, undefined);
   delete globalThis.document;
 });
+
+// 1.34.3: Home Assistant sends a new hass on every change in the home. A
+// failed subscription or first load isn't asked again on each one.
+function failingHass(onCall) {
+  const subscribed = [];
+  return {
+    subscribed,
+    callWS: onCall,
+    connection: {
+      subscribeMessage(callback, message) {
+        subscribed.push({ callback, message });
+        const failed = Promise.reject(new Error("Daily Routine isn't running."));
+        failed.catch(() => {});
+        return failed;
+      },
+    },
+  };
+}
+
+test("the card doesn't subscribe again on every change after it failed (1.34.3)", async () => {
+  const card = new Card();
+  card.attachShadow();
+  card._render = () => {};
+  const hass = failingHass(async () => ({}));
+  card.hass = hass;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(hass.subscribed.length, 1);
+  assert.equal(card._error, "Daily Routine isn't running.");
+  for (let i = 0; i < 5; i += 1) card.hass = hass;
+  assert.equal(hass.subscribed.length, 1, "not again on each change");
+  card._retryAt = Date.now() - 1;
+  card.hass = hass;
+  assert.equal(hass.subscribed.length, 2, "tried again after a while");
+});
+
+test("the panel loads once at a time and doesn't retry on every change (1.34.3)", async () => {
+  const panel = new Panel();
+  panel.attachShadow();
+  panel._render = () => {};
+  panel._showNotice = () => {};
+  const asked = [];
+  let answer;
+  const hass = failingHass((message) => {
+    asked.push(message.type);
+    if (message.type === "daily_routine/access/me") return Promise.resolve({ allowed: true, is_admin: false });
+    return new Promise((resolve, reject) => { answer = { resolve, reject }; });
+  });
+  panel.hass = hass;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  for (let i = 0; i < 5; i += 1) panel.hass = hass;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(asked.filter((t) => t === "daily_routine/overview").length, 1, "one load at a time");
+  assert.equal(hass.subscribed.length, 1, "the failed subscription isn't asked again");
+  answer.reject(new Error("Daily Routine isn't running."));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  for (let i = 0; i < 5; i += 1) panel.hass = hass;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(asked.filter((t) => t === "daily_routine/overview").length, 1, "not again on each change after it failed");
+  panel._loadRetryAt = Date.now() - 1;
+  panel._subscribeRetryAt = Date.now() - 1;
+  panel.hass = hass;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(asked.filter((t) => t === "daily_routine/overview").length, 2, "tried again after a while");
+  assert.equal(hass.subscribed.length, 2);
+});

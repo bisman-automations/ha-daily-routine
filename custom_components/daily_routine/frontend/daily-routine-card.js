@@ -8,6 +8,9 @@
 //   limit: 5                (optional: how many planned runs to show)
 
 const DOMAIN = "daily_routine";
+// After the live updates fail (Daily Routine not running, no access), ask
+// again at most this often, not on every change in the home (1.34.3).
+const RETRY_MS = 30000;
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
@@ -84,7 +87,7 @@ class DailyRoutineCard extends HTMLElement {
   }
 
   _subscribe() {
-    if (!this._hass?.connection) return;
+    if (!this._hass?.connection || Date.now() < (this._retryAt || 0)) return;
     // Each subscription starts with a whole status, then sends changes only.
     this._pushed = null;
     this._unsub = this._hass.connection.subscribeMessage((message) => {
@@ -102,6 +105,7 @@ class DailyRoutineCard extends HTMLElement {
     this._unsub.catch((err) => {
       this._error = err?.code === "unauthorized" ? "You don't have access to Daily Routine." : (err?.message || "Daily Routine isn't running.");
       this._unsub = null;
+      this._retryAt = Date.now() + RETRY_MS;
       this._render();
     });
   }

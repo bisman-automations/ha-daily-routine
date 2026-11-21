@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.34.3] - 2026-11-21
+
+### Changed
+
+- **Fewer health checks that do nothing.** Every 15 minutes (or the interval you chose), Daily Routine asked Home Assistant to remove the "needs attention" notification of every healthy routine, even when none was showing. It now does that once after starting, and after that only for a routine whose notification was actually shown.
+- **The sidebar page and the dashboard card stop asking over and over when Daily Routine isn't running.** While Daily Routine was turned off, or for someone without access, they asked Home Assistant again every time anything in the home changed. They now try again every 30 seconds, and the sidebar page loads one copy of its data at a time while it opens.
+
 ## [1.34.2] - 2026-11-20
 
 ### Changed
@@ -601,6 +608,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.34.3]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.34.2...v1.34.3
 [1.34.2]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.34.1...v1.34.2
 [1.34.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.34.0...v1.34.1
 [1.34.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.33.0...v1.34.0
