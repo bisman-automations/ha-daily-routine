@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.34.4] - 2026-11-27
+
+### Fixed
+
+- **Curtains that close to 1 or 2 % open again.** Many curtains and blinds stop just short of fully closed and report 2 %, which Home Assistant calls "open". A routine's **Open curtains and blinds** step then thought they were already open and did nothing, and **Close** looked like it hadn't worked and was sent again. A curtain or blind that reports a position now counts as closed at 5 % or less, so Open opens it, Close counts as done, and a leaving-home check no longer lists it as still open.
+
 ## [1.34.3] - 2026-11-21
 
 ### Changed
@@ -612,6 +618,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
+[1.34.4]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.34.3...v1.34.4
 [1.34.3]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.34.2...v1.34.3
 [1.34.2]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.34.1...v1.34.2
 [1.34.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.34.0...v1.34.1

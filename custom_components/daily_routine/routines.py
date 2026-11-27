@@ -62,6 +62,24 @@ DESIRED_STATE: dict[str, str] = {
     "lock.unlock": "unlocked",
 }
 
+# Curtains and blinds that report a position count as closed up to this many
+# percent open: many stop at 1 to 3 % when closed, and Home Assistant then calls
+# them "open", so "Open" was skipped as already done and "Close" looked failed.
+COVER_CLOSED_POSITION = 5
+
+
+def cover_is(state: str, position: Any, expected: str) -> bool | None:
+    """Whether an open or closed cover shows ``expected`` ("open" or "closed"),
+    judged by its position when it reports one; None when the position doesn't
+    decide (no position, moving, unknown, or another expected state)."""
+    if expected not in ("open", "closed") or state not in ("open", "closed"):
+        return None
+    if isinstance(position, bool) or not isinstance(position, (int, float)):
+        return None
+    closed = position <= COVER_CLOSED_POSITION
+    return closed if expected == "closed" else not closed
+
+
 PRESENCE_TRIGGERS = (
     TRIGGER_EVERYONE_LEAVES,
     TRIGGER_SOMEONE_ARRIVES,

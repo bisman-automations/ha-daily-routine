@@ -129,6 +129,7 @@ from .routines import (
     VALUE_TRIGGERS,
     WATCH_TRIGGERS,
     calendar_matches,
+    cover_is,
     in_dates,
     normalize_date,
     normalize_routine,
@@ -853,7 +854,15 @@ class HomeRoutinesCoordinator:
 
     def _state_is(self, entity_id: str, expected: str) -> bool:
         state = self.hass.states.get(entity_id)
-        return state is not None and state.state == expected
+        if state is None:
+            return False
+        if entity_id.startswith("cover."):
+            by_position = cover_is(
+                state.state, state.attributes.get("current_position"), expected
+            )
+            if by_position is not None:
+                return by_position
+        return state.state == expected
 
     def _zone_key(self, zone: str) -> str | None:
         """The state a person reports while inside this zone (home is reported as 'home')."""
@@ -5164,7 +5173,12 @@ class HomeRoutinesCoordinator:
         states: dict[str, tuple[str, str] | None] = {}
         for entity_id in entity_ids:
             state = self.hass.states.get(entity_id)
-            states[entity_id] = (state.name, state.state) if state else None
+            if state is None:
+                states[entity_id] = None
+                continue
+            # A curtain stopped at 2 % is closed (COVER_CLOSED_POSITION).
+            shown = "closed" if self._state_is(entity_id, "closed") else state.state
+            states[entity_id] = (state.name, shown)
         return left_open(states)
 
     def explain(self, routine_id: str) -> dict[str, Any]:
