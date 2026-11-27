@@ -68,16 +68,31 @@ DESIRED_STATE: dict[str, str] = {
 COVER_CLOSED_POSITION = 5
 
 
-def cover_is(state: str, position: Any, expected: str) -> bool | None:
+# Open and close steps for covers can set their own limits (closed_at,
+# open_at); these are the steps that take them.
+COVER_STEPS = ("cover.open_cover", "cover.close_cover")
+
+
+def cover_is(
+    state: str,
+    position: Any,
+    expected: str,
+    closed_at: int = COVER_CLOSED_POSITION,
+    open_at: int | None = None,
+) -> bool | None:
     """Whether an open or closed cover shows ``expected`` ("open" or "closed"),
     judged by its position when it reports one; None when the position doesn't
-    decide (no position, moving, unknown, or another expected state)."""
+    decide (no position, moving, unknown, or another expected state).
+
+    It counts as closed at ``closed_at`` percent open or less, and as open at
+    ``open_at`` or more (by default, anything that isn't closed)."""
     if expected not in ("open", "closed") or state not in ("open", "closed"):
         return None
     if isinstance(position, bool) or not isinstance(position, (int, float)):
         return None
-    closed = position <= COVER_CLOSED_POSITION
-    return closed if expected == "closed" else not closed
+    if expected == "closed":
+        return position <= closed_at
+    return position >= open_at if open_at is not None else position > closed_at
 
 
 PRESENCE_TRIGGERS = (
@@ -647,6 +662,18 @@ def _normalize_step(raw: dict[str, Any], index: int) -> dict[str, Any]:
                 f"Step {index}: pick rooms to only do it in some of them."
             )
         action["rooms"] = rooms
+    if service in COVER_STEPS:
+        for key, low, high, label in (
+            ("closed_at", 0, 99, "counts as closed at"),
+            ("open_at", 1, 100, "counts as open at"),
+        ):
+            value = raw.get(key)
+            if value is not None and value != "":
+                action[key] = _int(value, low, high, f"Step {index}: {label}")
+        if action.get("closed_at", COVER_CLOSED_POSITION) >= action.get("open_at", 101):
+            raise vol.Invalid(
+                f"Step {index}: counts as open at must be more than counts as closed at."
+            )
     return action
 
 

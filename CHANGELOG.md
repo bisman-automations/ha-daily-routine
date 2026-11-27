@@ -5,7 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.34.4] - 2026-11-27
+## [1.35.0] - 2026-11-27
+
+### Added
+
+- **Counts as closed at and Counts as open at** on **Open curtains and blinds** and **Close curtains and blinds** steps. Set how far open a curtain can be and still count as closed (5 % unless you change it), and how far open it has to be to count as open (by default, anything more than closed). Daily Routine uses them to skip a step that's already done and to check afterwards that it worked. For example, with **Counts as open at** 95, Open also runs for a curtain left half open. Other steps don't show these.
 
 ### Fixed
 
@@ -618,7 +622,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial release: one config entry per routine, JSON options, status sensors, presence and time triggers, safety conditions, delay steps, and a sidebar panel.
 
-[1.34.4]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.34.3...v1.34.4
+[1.35.0]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.34.3...v1.35.0
 [1.34.3]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.34.2...v1.34.3
 [1.34.2]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.34.1...v1.34.2
 [1.34.1]: https://github.com/bisman-automations/ha-daily-routine/compare/v1.34.0...v1.34.1

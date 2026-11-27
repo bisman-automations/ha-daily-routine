@@ -118,6 +118,7 @@ from .registry_cache import async_track_registries
 from .reliability import DeviceStats
 from .routines import (
     CHARGING_STATES,
+    COVER_CLOSED_POSITION,
     DESIRED_STATE,
     MODES,
     PER_PERSON_TRIGGERS,
@@ -320,6 +321,21 @@ CALENDAR_TIMEOUT_SECONDS = 20
 
 # The routines a "run another routine" step came through, so a loop is refused.
 _CHAIN: ContextVar[tuple[str, ...]] = ContextVar("daily_routine_chain", default=())
+# The cover limits (closed_at, open_at) of the step being planned or run, so the
+# state checks deep inside a step judge curtains the way that step asks.
+_COVER_LIMITS: ContextVar[tuple[int, int | None]] = ContextVar(
+    "daily_routine_cover_limits", default=(COVER_CLOSED_POSITION, None)
+)
+
+
+def _cover_limits(action: dict[str, Any]) -> tuple[int, int | None]:
+    """A step's (closed_at, open_at): its own, else the defaults."""
+    return (
+        action.get("closed_at", COVER_CLOSED_POSITION),
+        action.get("open_at"),
+    )
+
+
 # Minutes in a "wait until" step (tests make it shorter).
 SECONDS_PER_MINUTE = 60
 # "Ask me first": the phone notification's buttons, plus the routine id.
@@ -858,7 +874,10 @@ class HomeRoutinesCoordinator:
             return False
         if entity_id.startswith("cover."):
             by_position = cover_is(
-                state.state, state.attributes.get("current_position"), expected
+                state.state,
+                state.attributes.get("current_position"),
+                expected,
+                *_COVER_LIMITS.get(),
             )
             if by_position is not None:
                 return by_position
@@ -3337,6 +3356,15 @@ class HomeRoutinesCoordinator:
         self, routine: dict[str, Any], action: dict[str, Any]
     ) -> tuple[str, dict[str, Any] | None, list[str]]:
         """Return (outcome, target override or None, entities the step reaches)."""
+        token = _COVER_LIMITS.set(_cover_limits(action))
+        try:
+            return self._plan_action_inner(routine, action)
+        finally:
+            _COVER_LIMITS.reset(token)
+
+    def _plan_action_inner(
+        self, routine: dict[str, Any], action: dict[str, Any]
+    ) -> tuple[str, dict[str, Any] | None, list[str]]:
         service = action["service"]
         domain = service.split(".", 1)[0]
         target = action.get("target") or {}
@@ -4133,6 +4161,19 @@ class HomeRoutinesCoordinator:
         """Call one step's action. With several devices, a failed call is tried device
         by device, so the ones that answer still change. Afterwards, devices that should
         now be on, off, open, closed or locked are checked."""
+        token = _COVER_LIMITS.set(_cover_limits(action))
+        try:
+            return await self._run_service_step_inner(routine, index, action, override)
+        finally:
+            _COVER_LIMITS.reset(token)
+
+    async def _run_service_step_inner(
+        self,
+        routine: dict[str, Any],
+        index: int,
+        action: dict[str, Any],
+        override: dict[str, Any] | None,
+    ) -> _Failure | None:
         domain, service = action["service"].split(".", 1)
         data = dict(action.get("data") or {})
         target = override if override is not None else action.get("target")

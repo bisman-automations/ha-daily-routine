@@ -55,6 +55,10 @@ const ONLY_IF_KINDS = [["", "Always"], ["state", "A device's state"], ["mode", "
 const NORMAL_DAY = "Normal day";
 // Actions on these need a device or a room (the server's DEVICE_DOMAINS).
 const DEVICE_DOMAINS = ["cover", "light", "switch", "fan", "lock", "climate", "media_player", "valve", "vacuum", "humidifier", "water_heater", "siren", "input_boolean"];
+// Open and close steps for curtains and blinds can say when they count as
+// closed or open, by position (closed_at / open_at; COVER_CLOSED_POSITION is 5).
+const COVER_STEPS = ["cover.open_cover", "cover.close_cover"];
+const COVER_CLOSED_POSITION = 5;
 const ROOM_FILTERS = [["", "Every room picked"], ["occupied", "Only rooms someone is in"], ["empty", "Only empty rooms"]];
 
 // A device's name with the integration it comes from: the same light can be
@@ -1641,6 +1645,7 @@ class DailyRoutinePanel extends HTMLElement {
         const { fields, rest } = dataToFields(spec, a.data);
         return {
           kind: "service", service: a.service, targetMode, area: areas[0] || "", entities: [...entities], rooms: a.rooms || "",
+          closedAt: a.closed_at ?? "", openAt: a.open_at ?? "",
           voice: spec?.voice ? entities[0] || "" : "", fields,
           data: Object.keys(rest).length ? JSON.stringify(rest, null, 2) : "",
         };
@@ -1755,6 +1760,15 @@ class DailyRoutinePanel extends HTMLElement {
       const raw = { service: step.service.trim(), data };
       if (Object.keys(target).length && !spec?.untargeted) raw.target = target;
       if (step.rooms && raw.target?.area_id) raw.rooms = step.rooms;
+      if (COVER_STEPS.includes(raw.service)) {
+        const closedAt = step.closedAt === "" || step.closedAt === undefined ? null : Number(step.closedAt);
+        const openAt = step.openAt === "" || step.openAt === undefined ? null : Number(step.openAt);
+        if (closedAt !== null) raw.closed_at = closedAt;
+        if (openAt !== null) raw.open_at = openAt;
+        if (openAt !== null && openAt <= (closedAt ?? COVER_CLOSED_POSITION)) {
+          throw new Error(`Step ${index + 1}: counts as open at must be more than counts as closed at.`);
+        }
+      }
       return raw;
     }).map((raw, i) => {
       const cond = draft.actions[i].onlyIf;
@@ -4920,6 +4934,12 @@ class DailyRoutinePanel extends HTMLElement {
       return `<label>${esc(f.label)}${opt}<input ${attrs} value="${esc(Array.isArray(value) ? value.join(", ") : value)}" placeholder="${esc(f.placeholder || "")}">${help}</label>`;
     }).join("");
     const voice = spec?.voice ? pick("tts", step.voice || "", `data-si="${i}" data-sf="voice"`, "Voice") : "";
+    const coverLimits = COVER_STEPS.includes(step.service)
+      ? `<label>Counts as closed at (%) – optional<input type="number" min="0" max="99" step="1" data-si="${i}" data-sf="closedAt" value="${esc(step.closedAt ?? "")}" placeholder="${COVER_CLOSED_POSITION}">
+        <span class="muted small">Open by this much or less counts as closed. Many curtains stop at 1 or 2 % when closed.</span></label>
+        <label>Counts as open at (%) – optional<input type="number" min="1" max="100" step="1" data-si="${i}" data-sf="openAt" value="${esc(step.openAt ?? "")}" placeholder="anything more than closed">
+        <span class="muted small">Open by this much or more counts as open. Used to skip the step when it's already done, and to check it worked.</span></label>`
+      : "";
     const roomFilter = ["area", "all_areas"].includes(step.targetMode)
       ? `<label>In<select data-si="${i}" data-sf="rooms">${ROOM_FILTERS.map(([v, l]) => `<option value="${v}" ${(step.rooms || "") === v ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>
         <span class="muted small">By the rooms' motion, occupancy or presence sensors. A room without any is left alone.</span></label>`
@@ -4932,6 +4952,7 @@ class DailyRoutinePanel extends HTMLElement {
       ${voice}
       ${target}
       ${fields}
+      ${coverLimits}
       ${step.data && step.data.trim() ? `<details class="leftover"><summary class="muted small">Other settings this step has</summary>
         <p class="muted small">Settings without a field of their own, kept as they are. Clear the box to remove them.</p>
         <textarea data-si="${i}" data-sf="data" rows="2">${esc(step.data)}</textarea></details>` : ""}

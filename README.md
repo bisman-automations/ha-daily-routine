@@ -43,7 +43,7 @@
 - **Runs as often as needed.** Presence and room triggers run every time they happen (for example, every time everyone leaves), not just once a day.
 - **Dry run.** *Test* shows exactly what a routine would do right now, without touching any device.
 - **Pause switch.** *Pause all routines* stops every automatic run. Manual runs still work.
-- **Skips no-op steps.** A "lights off" step does nothing if the lights are already off. Curtains and blinds that report a position count as closed at 5% open or less, since many stop just short of 0%.
+- **Skips no-op steps.** A "lights off" step does nothing if the lights are already off. Curtains and blinds that report a position count as closed at 5% open or less, since many stop just short of 0%. An Open or Close curtains step can set its own **Counts as closed at** and **Counts as open at**.
 - **Copes with devices that don't answer.** When one device in a step can't be reached, the others still change. It's tried again a few minutes later, and your phone's failure message has a **Try again** button. After turning something on or off, Daily Routine checks it really changed.
 - **One device, several integrations.** A curtain in Home Assistant through Matter, Bluetooth and the cloud is closed one way at a time, in the order you choose, moving on only if it didn't close.
 - **Heads-up with Skip.** Optionally, a notification a few minutes before a scheduled run, with a **Skip it** button on your phone.

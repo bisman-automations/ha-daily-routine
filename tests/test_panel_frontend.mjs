@@ -2333,3 +2333,38 @@ test("countdowns don't update while the page is hidden", () => {
   assert.ok(asked > 0);
   delete globalThis.document;
 });
+
+test("curtain open and close steps keep their own closed and open limits", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "x", draft: { trigger: "time", actions: [{ service: "cover.close_cover", targetMode: "area" }] } }, "kitchen");
+  const step = panel._draft.actions[0];
+  step.closedAt = "3";
+  step.openAt = "90";
+  const raw = panel._draftToRaw(panel._draft);
+  assert.equal(raw.actions[0].closed_at, 3);
+  assert.equal(raw.actions[0].open_at, 90);
+  assert.equal(raw.actions[0].data.closed_at, undefined);
+
+  const back = panel._draftFromRoutine({ ...panel._data.routines[0], actions: raw.actions });
+  assert.equal(back.actions[0].closedAt, 3);
+  assert.equal(back.actions[0].openAt, 90);
+
+  step.openAt = "2";
+  assert.throws(() => panel._draftToRaw(panel._draft), /Step 1: counts as open at must be more/);
+});
+
+test("closed and open limits are left out of other steps", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "x", draft: { trigger: "time", actions: [{ service: "light.turn_on", targetMode: "area" }] } }, "kitchen");
+  panel._draft.actions[0].closedAt = "3";
+  const raw = panel._draftToRaw(panel._draft);
+  assert.equal(raw.actions[0].closed_at, undefined);
+});
+
+test("the closed and open limits show only on open and close curtain steps", () => {
+  const panel = makePanel();
+  panel._draft = panel._applyTemplate({ title: "x", draft: { trigger: "time", actions: [{ service: "cover.open_cover", targetMode: "area" }, { service: "cover.stop_cover", targetMode: "area" }] } }, "kitchen");
+  assert.match(panel._stepBody(panel._draft.actions[0], 0, "kitchen"), /Counts as closed at/);
+  assert.match(panel._stepBody(panel._draft.actions[0], 0, "kitchen"), /Counts as open at/);
+  assert.doesNotMatch(panel._stepBody(panel._draft.actions[1], 1, "kitchen"), /Counts as closed at/);
+});
